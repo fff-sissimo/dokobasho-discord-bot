@@ -58,6 +58,14 @@ services:
       - /local-files:/files
       - /data/n8n-video:/data/n8n-video
 
+  discord-bot:
+    build: ./discord-bot
+    restart: always
+    depends_on:
+      - n8n
+    env_file:
+      - ./discord-bot/.env
+
 volumes:
   traefik_data:
     external: true
