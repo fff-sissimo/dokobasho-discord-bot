@@ -38,6 +38,11 @@ client.once(Events.ClientReady, (c) => {
 });
 
 client.on("messageCreate", async (message) => {
+  console.log(
+    `[message] id=${message.id} author=${message.author.tag} bot=${message.author.bot} content=${JSON.stringify(
+      message.content
+    )}`
+  );
   if (message.author.bot) return;
   if (!client.user) return;
   const isDirectMention = message.mentions.users.has(client.user.id);
