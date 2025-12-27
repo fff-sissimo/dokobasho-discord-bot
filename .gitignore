@@ -1,0 +1,25 @@
+# =====================
+# Secrets
+# =====================
+.env
+
+# =====================
+# n8n runtime data
+# =====================
+.n8n/
+node_modules/
+
+# =====================
+# Docker
+# =====================
+Dockerfile
+docker-compose.yml.bak*
+
+# discord-bot の Dockerfile だけは管理する
+!discord-bot/Dockerfile
+
+# =====================
+# Logs / OS
+# =====================
+*.log
+.DS_Store
