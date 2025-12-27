@@ -46,7 +46,15 @@ client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
   if (!client.user) return;
   const isDirectMention = message.mentions.users.has(client.user.id);
-  const isReplyToBot = message.mentions.repliedUser?.id === client.user.id;
+  let isReplyToBot = message.mentions.repliedUser?.id === client.user.id;
+  if (!isReplyToBot && message.reference?.messageId) {
+    try {
+      const referencedMessage = await message.fetchReference();
+      isReplyToBot = referencedMessage.author?.id === client.user.id;
+    } catch (error) {
+      console.warn("[reply] Failed to fetch referenced message", error);
+    }
+  }
   if (!isDirectMention && !isReplyToBot) return;
 
   const payload = buildPayload(message);
