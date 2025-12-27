@@ -1,7 +1,7 @@
 const path = require("path");
 require("dotenv").config({ path: path.join(__dirname, ".env") });
 
-const { Client, GatewayIntentBits } = require("discord.js");
+const { Client, GatewayIntentBits, Events } = require("discord.js");
 
 const requireEnv = (name) => {
   const value = process.env[name];
@@ -33,8 +33,8 @@ const buildPayload = (message) => ({
   created_at: message.createdAt.toISOString(),
 });
 
-client.once("ready", () => {
-  console.log(`[ready] Logged in as ${client.user.tag}`);
+client.once(Events.ClientReady, (c) => {
+  console.log(`[clientReady] Logged in as ${c.user.tag}`);
 });
 
 client.on("messageCreate", async (message) => {
