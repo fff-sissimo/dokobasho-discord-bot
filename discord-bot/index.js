@@ -15,6 +15,42 @@ const requireEnv = (name) => {
 const token = requireEnv("DISCORD_BOT_TOKEN");
 const webhookUrl = requireEnv("N8N_WEBHOOK_URL");
 
+// In-memory cache of recent bot message IDs for reply detection.
+const BOT_MESSAGE_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const BOT_MESSAGE_CACHE_MAX = 1000;
+const botMessageCache = new Map();
+
+const pruneBotMessageCache = (now) => {
+  for (const [messageId, timestamp] of botMessageCache) {
+    if (now - timestamp > BOT_MESSAGE_CACHE_TTL_MS) {
+      botMessageCache.delete(messageId);
+    }
+  }
+  if (botMessageCache.size <= BOT_MESSAGE_CACHE_MAX) return;
+  const entries = Array.from(botMessageCache.entries());
+  entries.sort((a, b) => a[1] - b[1]);
+  const excess = entries.length - BOT_MESSAGE_CACHE_MAX;
+  for (let i = 0; i < excess; i += 1) {
+    botMessageCache.delete(entries[i][0]);
+  }
+};
+
+const rememberBotMessage = (messageId) => {
+  const now = Date.now();
+  botMessageCache.set(messageId, now);
+  pruneBotMessageCache(now);
+};
+
+const isRecentBotMessage = (messageId) => {
+  const timestamp = botMessageCache.get(messageId);
+  if (!timestamp) return false;
+  if (Date.now() - timestamp > BOT_MESSAGE_CACHE_TTL_MS) {
+    botMessageCache.delete(messageId);
+    return false;
+  }
+  return true;
+};
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -43,14 +79,28 @@ client.on("messageCreate", async (message) => {
       message.content
     )}`
   );
-  if (message.author.bot) return;
   if (!client.user) return;
+  if (message.author.bot) {
+    if (message.author.id === client.user.id) {
+      rememberBotMessage(message.id);
+    }
+    return;
+  }
   const isDirectMention = message.mentions.users.has(client.user.id);
   let isReplyToBot = message.mentions.repliedUser?.id === client.user.id;
-  if (!isReplyToBot && message.reference?.messageId) {
+  const referenceId = message.reference?.messageId;
+  if (!isReplyToBot && referenceId) {
+    if (isRecentBotMessage(referenceId)) {
+      isReplyToBot = true;
+    }
+  }
+  if (!isReplyToBot && referenceId) {
     try {
       const referencedMessage = await message.fetchReference();
       isReplyToBot = referencedMessage.author?.id === client.user.id;
+      if (isReplyToBot) {
+        rememberBotMessage(referencedMessage.id);
+      }
     } catch (error) {
       console.warn("[reply] Failed to fetch referenced message", error);
     }
