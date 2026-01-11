@@ -2,20 +2,12 @@ const path = require("path");
 require("dotenv").config({ path: path.join(__dirname, ".env") });
 
 const { Client, GatewayIntentBits, Events } = require("discord.js");
+const { getBotToken } = require("./src/config");
 const { getSheetsClient } = require('./src/google-sheets');
 const { handleCommand, handleButton } = require('./src/command-handler');
 const logger = require('./src/logger');
 
-const requireEnv = (name) => {
-  const value = process.env[name];
-  if (!value) {
-    logger.error(`[config] Missing ${name}`);
-    process.exit(1);
-  }
-  return value;
-};
-
-const token = requireEnv("BOT_TOKEN");
+const token = getBotToken();
 const webhookUrl = process.env.N8N_WEBHOOK_URL;
 
 // --- Cache (for n8n logic) ---

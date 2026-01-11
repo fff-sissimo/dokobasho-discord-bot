@@ -64,7 +64,7 @@
 
 | 変数名                  | 説明                                                              | 例                                                |
 | ----------------------- | ----------------------------------------------------------------- | ------------------------------------------------- |
-| `BOT_TOKEN`             | Discord ボットの認証トークン。                                    | `Mxxxxxxxx...`                                    |
+| `BOT_TOKEN`             | Discord ボットの認証トークン（`DISCORD_BOT_TOKEN` でも可）。       | `Mxxxxxxxx...`                                    |
 | `GOOGLE_SA_KEY_JSON`    | Google Service Account の認証キー (JSON形式をBase64エンコード)。   | `ewogICJ0eXBlIjog...`                             |
 | `SHEET_ID`              | リマインダーを保存する Google スプレッドシートのID。              | `1a2b3c...`                                       |
 | `DEFAULT_TZ`            | ユーザーがタイムゾーンを指定しなかった場合のデフォルト値。        | `Asia/Tokyo`                                      |

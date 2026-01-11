@@ -5,14 +5,11 @@ const { Client, GatewayIntentBits } = require('discord.js');
 const { getPendingReminders, updateReminder } = require('./src/google-sheets');
 const { calculateNextDate } = require('./src/utils');
 const { processReminders } = require('./src/reminder-processor');
+const { getBotToken } = require('./src/config');
 
 logger.info('Scheduler process started.');
 
-const token = process.env.BOT_TOKEN;
-if (!token) {
-    logger.error('BOT_TOKEN not found in .env file. Scheduler cannot start.');
-    process.exit(1);
-}
+const token = getBotToken();
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 

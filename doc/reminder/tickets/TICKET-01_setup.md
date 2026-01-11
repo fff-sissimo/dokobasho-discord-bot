@@ -13,7 +13,7 @@
     - `dotenv`: 環境変数の管理用
     - `uuid`: ユニークID生成用
 - [ ] `.env` ファイルを作成し、`.env_example` を参考に以下の環境変数を定義する。
-    - `BOT_TOKEN`
+    - `BOT_TOKEN` (または `DISCORD_BOT_TOKEN`)
     - `GOOGLE_SA_KEY_JSON` (Base64エンコードしたJSONキー)
     - `SHEET_ID`
     - `DEFAULT_TZ`

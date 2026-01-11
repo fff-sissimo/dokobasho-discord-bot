@@ -27,7 +27,7 @@ Discord上で動作する多機能ボット。リマインダー機能などを�
     ```
     作成した `.env` ファイルをエディタで開き、以下の項目を設定してください。
 
-    - `BOT_TOKEN`: Discord Developer Portalで取得したボットのトークン。
+    - `BOT_TOKEN`: Discord Developer Portalで取得したボットのトークン（旧設定の `DISCORD_BOT_TOKEN` でも可）。
     - `CLIENT_ID`: ボットのApplication ID。
     - `GUILD_ID`: 開発用のDiscordサーバーID（スラッシュコマンドを即時登録するために使用）。
     - `GOOGLE_SA_KEY_PATH`: Google Service Accountのキー(JSON)ファイルのパス（推奨）。リマインダー機能で必要。

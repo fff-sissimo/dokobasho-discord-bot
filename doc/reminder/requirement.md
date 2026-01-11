@@ -47,7 +47,7 @@ Google Sheets（Reminders）スキーマ（各列）
 
 追加納品物（要求）
 - Discord のスラッシュコマンド定義 JSON（Discord API 登録用）
-- Google Service Account 設定手順と必要な環境変数: BOT_TOKEN, GOOGLE_SA_KEY_JSON, SHEET_ID, DEFAULT_TZ
+- Google Service Account 設定手順と必要な環境変数: BOT_TOKEN (または DISCORD_BOT_TOKEN), GOOGLE_SA_KEY_JSON, SHEET_ID, DEFAULT_TZ
 - スケジューラの実行手順（cron/Cloud Run 等）
 - 単体テストケース（time parse の正常/異常系、権限チェック、送信フローのエラーリトリガー）
 - README にデプロイ手順と運用上の注意（タイムゾーン、再実行権限、手動再送の方法）
