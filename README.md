@@ -71,6 +71,19 @@ Discord上で動作する多機能ボット。リマインダー機能などを�
     npm test
     ```
 
+### Docker 運用時の補足
+
+-   **スラッシュコマンドの登録:**
+    ```bash
+    docker compose exec discord-bot node deploy-commands.js
+    ```
+
+-   **スケジューラの起動:**
+    リマインダーを常時稼働させるには、`docker compose` の `discord-scheduler` サービスを起動してください。
+    ```bash
+    docker compose up -d discord-scheduler
+    ```
+
 ## 運用上の注意
 
 -   **タイムゾーン**: 時刻の解釈にはサーバーのデフォルトタイムゾーンが使われますが、`/remind add` の `timezone` オプションで個別に指定することも可能です。

@@ -41,6 +41,7 @@
 
 - **役割**: 定期的にリマインダーをチェックし、通知を送信するプロセス。
 - **技術スタック**: Node.jsスクリプト、実行環境は cron, systemd timer, または Google Cloud Scheduler + Cloud Run などを想定。
+- **Docker運用**: `docker-compose.yml` の `discord-scheduler` サービスとして常駐実行する。
 - **処理フロー (毎分実行)**:
     1.  `Reminders` シートに対してクエリを実行し、以下の条件に合致する行を取得する。
         - `notify_time_utc` <= 現在時刻 (UTC)

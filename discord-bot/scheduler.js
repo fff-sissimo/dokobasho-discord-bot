@@ -6,6 +6,7 @@ const { getPendingReminders, updateReminder } = require('./src/google-sheets');
 const { calculateNextDate } = require('./src/utils');
 const { processReminders } = require('./src/reminder-processor');
 const { getBotToken } = require('./src/config');
+const { writeHeartbeat } = require('./src/scheduler-heartbeat');
 
 logger.info('Scheduler process started.');
 
@@ -20,8 +21,16 @@ const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
 client.once('ready', () => {
     logger.info(`Scheduler logged in as ${client.user.tag}`);
+    writeHeartbeat();
     // Schedule the task to run every minute.
-    cron.schedule('* * * * *', () => processReminders(client));
+    cron.schedule('* * * * *', async () => {
+        try {
+            await processReminders(client);
+            writeHeartbeat();
+        } catch (error) {
+            logger.error('[scheduler] Failed to process reminders', error);
+        }
+    });
     logger.info('Cron job scheduled to run every minute.');
 });
 

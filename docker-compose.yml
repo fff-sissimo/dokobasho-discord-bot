@@ -65,6 +65,19 @@ services:
       - n8n
     env_file:
       - ./discord-bot/.env
+
+  discord-scheduler:
+    build: ./discord-bot
+    restart: always
+    env_file:
+      - ./discord-bot/.env
+    command: ["node", "scheduler.js"]
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"const fs=require('fs');const p=process.env.SCHEDULER_HEARTBEAT_PATH||'/tmp/discord-scheduler-heartbeat';const maxAgeMs=120000;const s=fs.statSync(p);if(Date.now()-s.mtimeMs>maxAgeMs) process.exit(1);\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
     volumes:
       - /docker/n8n/discord-bot/google-service-key.json:/app/keys/google-service-key.json:ro
 

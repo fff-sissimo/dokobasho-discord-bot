@@ -15,7 +15,8 @@
 - [ ] **結果更新**:
     - **成功時**: `status` を `sent` に、`last_sent` を現在時刻に更新する。`recurring` が `off` でなければ、次回の `notify_time_utc` を計算して更新する。
     - **失敗時**: `retry_count` をインクリメントし、上限に達していなければ `status` を `pending` に戻す。上限到達時は `failed` に設定する。
-- [ ] ボット本体とは別のプロセスとして実行するためのスクリプト (`start-scheduler` など) を `package.json` に追加する。
+- [x] ボット本体とは別のプロセスとして実行するためのスクリプト (`start-scheduler` など) を `package.json` に追加する。
+- [x] Docker運用時は `discord-scheduler` サービスで `scheduler.js` を常駐実行する。
 
 ## 実装のヒント
 
