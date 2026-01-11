@@ -124,9 +124,29 @@ describe('Command Handler Integration Tests', () => {
                 notify_time_utc: fakeDate.toISOString(), status: 'pending',
             });
             expect(newReminder.key).toMatch(/^[A-HJ-NP-Z2-9]{8}$/);
+            expect(newReminder.key).toHaveLength(8);
             const reply = mockInteraction.editReply.mock.calls[0][0];
             const displayDate = `<t:${Math.floor(fakeDate.getTime() / 1000)}:F>`;
             expect(reply.content).toBe(MESSAGES.responses.created(newReminder.key, displayDate));
+        });
+
+        it('should normalize minutes-later input in Japanese', async () => {
+            mockInteraction.options.getString.mockImplementation(opt => {
+                const options = { time: '10分後', content: 'Minutes reminder' };
+                return options[opt] ?? null;
+            });
+
+            const fakeDate = new Date('2026-01-11T10:00:00.000Z');
+            chrono.parseDate.mockReturnValue(fakeDate);
+            sheets.addReminder.mockResolvedValue({ updates: { updatedCells: 1 } });
+
+            await handleCommand(mockInteraction);
+
+            expect(chrono.parseDate).toHaveBeenCalledWith(
+                'in 10 minutes',
+                expect.objectContaining({ timezone: 540 }),
+                { forwardDate: true }
+            );
         });
 
         it('should retry key generation when a collision is detected', async () => {
@@ -151,6 +171,25 @@ describe('Command Handler Integration Tests', () => {
             expect(sheets.getReminderByKey).toHaveBeenNthCalledWith(2, 'Z9H4K7M2', 'user');
             const newReminder = sheets.addReminder.mock.calls[0][0];
             expect(newReminder.key).toBe('Z9H4K7M2');
+        });
+
+        it('should return an error when key generation fails', async () => {
+            mockInteraction.options.getString.mockImplementation(opt => {
+                const options = { time: 'tomorrow at 10am', content: 'Key failure reminder' };
+                return options[opt] ?? null;
+            });
+
+            const fakeDate = new Date('2026-01-11T10:00:00.000Z');
+            chrono.parseDate.mockReturnValue(fakeDate);
+            sheets.getReminderByKey.mockResolvedValue({ id: 'existing-reminder' });
+            generateReminderKey.mockReturnValue('K7M2Z9H4');
+
+            await handleCommand(mockInteraction);
+
+            expect(generateReminderKey).toHaveBeenCalledTimes(5);
+            expect(sheets.addReminder).not.toHaveBeenCalled();
+            const reply = mockInteraction.editReply.mock.calls[0][0];
+            expect(reply.content).toBe(MESSAGES.errors.keyGenerationFailed);
         });
 
         it('should require a channel for server scope', async () => {
@@ -365,6 +404,25 @@ describe('Command Handler Integration Tests', () => {
             expect(reply.content).toBe(MESSAGES.responses.listHeader('user', 2, 2, listContent));
         });
 
+        it('should list reminders with legacy keys', async () => {
+            const legacyKey = '2d9f7f0e-2d20-4f5b-9e4a-1b9f0e1b2c3d';
+            const mockReminders = [
+                { key: legacyKey, content: 'Legacy reminder', notify_time_utc: '2026-01-11T10:00:00.000Z' },
+            ];
+            mockInteraction.options.getString.mockImplementation(opt => {
+                if (opt === 'scope') return 'user';
+                return null;
+            });
+            mockInteraction.options.getInteger.mockReturnValue(10);
+            sheets.listReminders.mockResolvedValue(mockReminders);
+
+            await handleCommand(mockInteraction);
+
+            const reply = mockInteraction.editReply.mock.calls[0][0];
+            const listContent = MESSAGES.responses.listItem(legacyKey, 'Legacy reminder', '<t:1768125600:R>');
+            expect(reply.content).toBe(MESSAGES.responses.listHeader('user', 1, 1, listContent));
+        });
+
         it('should list reminders filtered by query', async () => {
             const mockReminders = [
                 { key: 'task1', content: 'Meeting sync', notify_time_utc: '2026-01-11T10:00:00.000Z' },
@@ -402,9 +460,9 @@ describe('Command Handler Integration Tests', () => {
         });
 
         it('should delete a reminder if confirm is true', async () => {
-            const mockReminder = { id: 'reminder-id-1', key: 'delete-me', scope: 'user' };
+            const mockReminder = { id: 'reminder-id-1', key: '2d9f7f0e-2d20-4f5b-9e4a-1b9f0e1b2c3d', scope: 'user' };
             mockInteraction.options.getString.mockImplementation(opt => {
-                const options = { key: 'delete-me', scope: 'user' };
+                const options = { key: '2d9f7f0e-2d20-4f5b-9e4a-1b9f0e1b2c3d', scope: 'user' };
                 return options[opt];
             });
             mockInteraction.options.getBoolean.mockReturnValue(true); // confirm = true
@@ -413,10 +471,10 @@ describe('Command Handler Integration Tests', () => {
 
             await handleCommand(mockInteraction);
 
-            expect(sheets.getReminderByKey).toHaveBeenCalledWith('delete-me', 'user');
+            expect(sheets.getReminderByKey).toHaveBeenCalledWith('2d9f7f0e-2d20-4f5b-9e4a-1b9f0e1b2c3d', 'user');
             expect(sheets.deleteReminderById).toHaveBeenCalledWith('reminder-id-1');
             const reply = mockInteraction.editReply.mock.calls[0][0];
-            expect(reply.content).toBe(MESSAGES.responses.deleteSuccess('delete-me'));
+            expect(reply.content).toBe(MESSAGES.responses.deleteSuccess('2d9f7f0e-2d20-4f5b-9e4a-1b9f0e1b2c3d'));
         });
 
         it('should display a confirmation button if confirm is false', async () => {

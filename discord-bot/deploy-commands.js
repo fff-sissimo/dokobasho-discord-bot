@@ -9,8 +9,18 @@ const { getBotToken } = require('./src/config');
 const { CLIENT_ID, GUILD_ID } = process.env;
 const botToken = getBotToken();
 
+const hasGetSubcommand = commands.some(command =>
+    command.name === 'remind' &&
+    Array.isArray(command.options) &&
+    command.options.some(option => option.name === 'get')
+);
+
 if (!botToken || !CLIENT_ID || !GUILD_ID) {
     logger.error('Error: BOT_TOKEN (or DISCORD_BOT_TOKEN), CLIENT_ID, and GUILD_ID must be provided in the .env file.');
+    process.exit(1);
+}
+if (hasGetSubcommand) {
+    logger.error('Error: The /remind get subcommand is deprecated and must not be deployed.');
     process.exit(1);
 }
 

@@ -1,35 +1,36 @@
 const MESSAGES = {
     errors: {
-        reminderNotConfigured: 'リマインダー機能は現在設定されていません。',
-        generic: 'エラーが発生しました。詳細はログを確認してください。',
-        invalidTimezone: '❌ タイムゾーンの指定が正しくありません。例: Asia/Tokyo / JST / +09:00',
-        invalidTime: '❌ 時刻の指定が正しくありません。「明日の10時」や「2026-01-11 15:00」のように指定してください。',
+        reminderNotConfigured: 'リマインダー機能は今は使えないみたいだよ。',
+        generic: 'エラーが起きたよ。ログを見てね。',
+        keyGenerationFailed: 'キーがうまく作れなかったよ。もう一回試してね。',
+        invalidTimezone: '❌ タイムゾーンの指定が正しくないよ。例: Asia/Tokyo / JST / +09:00',
+        invalidTime: '❌ 時刻の指定が正しくないよ。「明日の10時」や「2026-01-11 15:00」みたいに書いてね。',
     },
     reminders: {
-        notification: (content) => `**リマインダー:** ${content}`,
+        notification: (content) => `やっほ、リマインダーだよ！\n\n**内容:**\n ${content}`,
     },
     responses: {
-        adminRequiredForCreate: 'サーバー全体のリマインダーを作成するには、管理者権限が必要です。',
-        adminRequiredForDelete: 'サーバー全体のリマインダーを削除するには、管理者権限が必要です。',
-        channelRequiredForServerScope: 'サーバー全体のリマインダーは通知先チャンネルの指定が必要です。',
-        created: (key, displayDate) => `✅ リマインダーを登録しました！\n**キー:** ${key}\n**次回通知:** ${displayDate}`,
-        getDisabled: 'この機能は現在停止中です。`/remind list` で一覧を確認してください。',
-        notFound: '該当するリマインダーは見つかりませんでした。',
-        listEmpty: '登録されているリマインダーはありません。',
+        adminRequiredForCreate: 'サーバー全体のリマインダーは管理者だけだよ。',
+        adminRequiredForDelete: 'サーバー全体のリマインダー削除は管理者だけだよ。',
+        channelRequiredForServerScope: 'サーバー全体なら通知チャンネルを選んでね。',
+        created: (key, displayDate) => `✅ リマインダーを登録したよ！\n**キー:** ${key}\n**次回通知:** ${displayDate}`,
+        getDisabled: 'この機能は止めてあるよ。`/remind list` で確認してね。',
+        notFound: '該当するリマインダーが見つからないよ。',
+        listEmpty: '登録されているリマインダーはないよ。',
         listItem: (key, contentPreview, displayDate) => `- \`${key}\`: ${contentPreview}... (通知: ${displayDate})`,
-        listHeader: (scope, total, displayed, listContent) => `**リマインダー一覧 (${scope}) - ${total}件中${displayed}件表示**\n${listContent}`,
-        alreadyDeleted: 'このリマインダーは既に削除されているようです。',
-        deleteConfirmLabel: 'はい、削除します',
-        deleteConfirm: (key) => `本当にリマインダー「${key}」を削除しますか？この操作は取り消せません。`,
-        deleteSuccess: (key) => `✅ リマインダー「${key}」を削除しました。`,
+        listHeader: (scope, total, displayed, listContent) => `**リマインダー一覧 (${scope}) - ${total}件中${displayed}件表示だよ**\n${listContent}`,
+        alreadyDeleted: 'このリマインダーはもう消えてるみたいだよ。',
+        deleteConfirmLabel: 'うん、削除する',
+        deleteConfirm: (key) => `本当にリマインダー「${key}」を削除する？一度消したら戻せないよ。`,
+        deleteSuccess: (key) => `✅ リマインダー「${key}」を削除したよ。`,
     },
     commands: {
         remind: {
-            description: 'リマインダーを管理します。',
+            description: 'リマインダーを管理するよ。',
             add: {
-                description: '新しいリマインダーを登録します (キーは自動生成: 8文字)。',
+                description: '新しいリマインダーを登録するよ (キーは自動生成: 8文字)。',
                 options: {
-                    time: '通知時刻 (例: 「明日の15時」「3日後 10:00」)',
+                    time: '通知時刻 (例: 「明日の15時」「10分後」「3日後 10:00」)',
                     content: 'リマインド内容 (1-2000文字)',
                     scope: '公開範囲 (デフォルト: user)',
                     channel: '通知先チャンネル (scope=server の場合は必須)',
@@ -56,7 +57,7 @@ const MESSAGES = {
                 },
             },
             list: {
-                description: 'リマインダーの一覧を表示します。',
+                description: 'リマインダーの一覧を見るよ。',
                 options: {
                     scope: '一覧表示する公開範囲',
                     query: 'キーまたは内容で検索します',
@@ -71,7 +72,7 @@ const MESSAGES = {
                 },
             },
             delete: {
-                description: 'リマインダーを削除します。',
+                description: 'リマインダーを削除するよ。',
                 options: {
                     key: '削除するリマインダーのキー',
                     scope: '公開範囲',

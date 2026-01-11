@@ -13,6 +13,7 @@ const {
 const { resolveTimezone, adjustDateForTimezone } = require('./timezone');
 const { MESSAGES } = require('./message-templates');
 const { generateReminderKey } = require('./reminder-key');
+const { normalizeTimeInput } = require('./time-input');
 
 const CONTENT_PREVIEW_LENGTH = 30;
 const MAX_KEY_ATTEMPTS = 5;
@@ -38,7 +39,8 @@ async function handleCommand(interaction) {
         const subcommand = interaction.options.getSubcommand();
 
         if (subcommand === 'add') {
-            const time = interaction.options.getString('time');
+            const rawTime = interaction.options.getString('time');
+            const time = normalizeTimeInput(rawTime);
             const content = interaction.options.getString('content');
             const scope = interaction.options.getString('scope') ?? 'user';
             const visibility = interaction.options.getString('visibility') ?? (scope === 'user' ? 'ephemeral' : 'public');
@@ -81,13 +83,23 @@ async function handleCommand(interaction) {
 
             const channelId = scope === 'server' ? targetChannel?.id : (scope === 'channel' ? interaction.channel?.id : null);
             const displayDate = `<t:${Math.floor(parsedDate.getTime() / 1000)}:F>`;
-            const key = await generateUniqueReminderKey(scope);
+            let key;
+            try {
+                key = await generateUniqueReminderKey(scope);
+            } catch (error) {
+                if (error.message === 'Failed to generate unique reminder key.') {
+                    await interaction.editReply({ content: MESSAGES.errors.keyGenerationFailed });
+                    return;
+                }
+                throw error;
+            }
             const newReminder = { id: uuidv4(), key, content, scope, guild_id: interaction.guild?.id, channel_id: channelId, user_id: interaction.user.id, notify_time_utc: parsedDate.toISOString(), timezone: resolvedTimezone.label, recurring, visibility, created_by: interaction.user.id, created_at: new Date().toISOString(), status: 'pending', last_sent: '', retry_count: 0, metadata: '{}' };
             await addReminder(newReminder);
             await interaction.editReply({ content: MESSAGES.responses.created(key, displayDate), ephemeral: visibility === 'ephemeral' });
 
         } else if (subcommand === 'get') {
             await interaction.editReply({ content: MESSAGES.responses.getDisabled });
+            return;
 
         } else if (subcommand === 'list') {
             const scope = interaction.options.getString('scope');
