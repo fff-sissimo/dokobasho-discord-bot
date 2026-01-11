@@ -7,14 +7,14 @@
 ## ToDo
 
 - [ ] **`/remind get`**:
-    - [ ] `TICKET-03` の `getReminder` を呼び出し、結果を整形してユーザーに表示する。
+    - [ ] `TICKET-03` の `getReminderByKey` を呼び出し、結果を整形してユーザーに表示する。
     - [ ] 時刻はユーザーのタイムゾーンに合わせて表示することが望ましい。
 - [ ] **`/remind list`**:
     - [ ] `TICKET-03` の `listReminders` を呼び出し、結果を箇条書き形式で表示する。
     - [ ] `query` 引数によるフィルタリングを実装する。
 - [ ] **`/remind delete`**:
     - [ ] `confirm=false` の場合、確認メッセージと「削除実行」ボタンを表示する。ボタンインタラクションを待つ処理を実装する。
-    - [ ] `confirm=true` またはボタンが押された場合、`TICKET-03` の `deleteReminder` を呼び出して削除を実行する。
+    - [ ] `confirm=true` またはボタンが押された場合、`TICKET-03` の `deleteReminderById` を呼び出して削除を実行する。
     - [ ] `scope=server` の場合の管理者権限チェックを実装する (`interaction.member.permissions.has("Administrator")`)。
 - [ ] 各コマンドのインタラクションハンドラを実装し、メインのボットプロセスに組み込む。
 

@@ -4,7 +4,9 @@
 
 Discord APIに登録するためのスラッシュコマンド定義。
 
-```json
+実装のソースは `discord-bot/src/commands.js` を参照し、こちらの内容と同期する。
+
+```jsonc
 [
   {
     "name": "remind",
@@ -43,6 +45,12 @@ Discord APIに登録するためのスラッシュコマンド定義。
               { "name": "このチャンネル (Channel)", "value": "channel" },
               { "name": "サーバー全体 (Server)", "value": "server" }
             ]
+          },
+          {
+            "name": "channel",
+            "description": "通知先チャンネル (scope=server の場合は必須)",
+            "type": 7, // CHANNEL
+            "required": false
           },
           {
             "name": "visibility",

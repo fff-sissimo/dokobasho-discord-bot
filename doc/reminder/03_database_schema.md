@@ -13,7 +13,7 @@
 | `content`         | `string`      | リマインドする内容のテキスト。                                                                   |
 | `scope`           | `string`      | リマインダーの有効範囲 (`user`, `channel`, `server`)。                                           |
 | `guild_id`        | `string`      | Discord サーバー (Guild) の ID。`scope`が `channel` または `server` の場合に記録。               |
-| `channel_id`      | `string`      | Discord チャンネルの ID。`scope`が `channel` の場合に記録。通知先として利用。                      |
+| `channel_id`      | `string`      | Discord チャンネルの ID。`scope`が `channel` または `server` の場合に記録。通知先として利用。     |
 | `user_id`         | `string`      | Discord ユーザーの ID。`scope`が `user` の場合に記録。通知先として利用。                           |
 | `notify_time_utc` | `string`      | 次回通知時刻 (ISO 8601形式, UTC)。スケジューラはこの時刻を基準に動作する。                         |
 | `timezone`        | `string`      | ユーザーが指定したタイムゾーン (`Asia/Tokyo`など)。繰り返し予定の計算に利用。                      |
@@ -21,8 +21,8 @@
 | `visibility`      | `string`      | コマンド応答の可視性 (`public`, `ephemeral`)。                                                   |
 | `created_by`      | `string`      | 登録したユーザーの Discord ID。                                                                  |
 | `created_at`      | `string`      | 登録日時 (ISO 8601形式, UTC)。                                                                   |
-| `status`          | `string`      | 現在の状態 (`pending`, `sending`, `sent`, `failed`)。スケジューラの排他制御に利用。             |
-| `last_sent`       | `string`      | 最終送信日時 (ISO 8601形式, UTC)。                                                               |
+| `status`          | `string`      | 現在の状態 (`pending`, `sending`, `sent`, `failed`, `deleted`)。スケジューラの排他制御に利用。 |
+| `last_sent`       | `string`      | 最終送信日時 (ISO 8601形式, UTC)。送信試行のロック時刻としても利用。                             |
 | `retry_count`     | `integer`     | 送信失敗時のリトライ回数。                                                                       |
 | `metadata`        | `string(JSON)`| 将来的な拡張用のJSON形式のメタデータフィールド。                                                 |
 

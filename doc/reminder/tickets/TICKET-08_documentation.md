@@ -24,6 +24,6 @@
 
 ## 関連ドキュメント
 
-- `requirement.md` (特に「追加納品物」のセクション)
-- `docker-compose.yml`
-- `Dockerfile`
+- `../requirement.md` (特に「追加納品物」のセクション)
+- `../../docker-compose.yml`
+- `../../Dockerfile`

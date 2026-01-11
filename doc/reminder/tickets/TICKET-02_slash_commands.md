@@ -6,7 +6,7 @@
 
 ## ToDo
 
-- [ ] `doc/reminder/02_api_design.md` に定義されたJSONを読み込むスクリプトを作成する。
+- [ ] `discord-bot/src/commands.js` に定義されたコマンド定義を読み込むスクリプトを作成する。
 - [ ] Discord.js の `REST` と `Routes.applicationGuildCommands` (または `applicationCommands`) を使用して、指定したサーバーまたはグローバルにコマンドを登録するロジックを実装する。
 - [ ] `package.json` に `deploy-commands` のようなスクリプトを定義し、コマンド一発で登録できるようにする。
 

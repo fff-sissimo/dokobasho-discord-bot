@@ -19,6 +19,7 @@
     - `time`: `string` (必須) - 通知時刻。自然言語（例: 「明日の15時」「3日後」）および ISO 8601 形式 (`YYYY-MM-DDTHH:mm:ss`) を受け付ける。
     - `content`: `string` (必須, 1-2000文字) - リマインド内容。
     - `scope`: `enum` (`user` | `channel` | `server`, デフォルト: `user`) - リマインダーの公開範囲。
+    - `channel`: `channel` (任意, `scope=server` の場合は必須) - 通知先チャンネル。
     - `visibility`: `enum` (`public` | `ephemeral`, デフォルト: `ephemeral` ※scope=`user`の場合) - 応答の可視性。
     - `recurring`: `enum` (`off` | `daily` | `weekly` | `monthly`, デフォルト: `off`) - 繰り返しの設定。
     - `timezone`: `string` (任意) - `time`引数の解釈に用いるタイムゾーン（例: `Asia/Tokyo`）。指定がない場合はユーザー設定またはサーバーのデフォルト設定を利用。
