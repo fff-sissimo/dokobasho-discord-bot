@@ -65,6 +65,8 @@ services:
       - n8n
     env_file:
       - ./discord-bot/.env
+    volumes:
+      - ./discord-bot/sa.json:/app/keys/sa.json:ro
 
 volumes:
   traefik_data:
