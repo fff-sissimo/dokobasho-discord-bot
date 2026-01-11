@@ -5,6 +5,7 @@ const sheets = require('../src/google-sheets');
 const chrono = require('chrono-node');
 const { ActionRowBuilder, ButtonBuilder, ButtonStyle } = require("discord.js"); // Required for testing button interactions
 const { MESSAGES } = require('../src/message-templates');
+const { generateReminderKey } = require('../src/reminder-key');
 
 const supportsIanaTimeZone = (timeZone) => {
     try {
@@ -29,6 +30,10 @@ jest.mock('../src/google-sheets', () => ({
 // Mock chrono-node to return a fixed date or null
 jest.mock('chrono-node', () => ({
     parseDate: jest.fn(),
+}));
+
+jest.mock('../src/reminder-key', () => ({
+    generateReminderKey: jest.fn(),
 }));
 
 // Mock discord.js ActionRowBuilder and ButtonBuilder
@@ -83,6 +88,8 @@ describe('Command Handler Integration Tests', () => {
         };
 
         sheets.getSheetsClient.mockResolvedValue(true); // Ensure sheets client always initializes
+        sheets.getReminderByKey.mockResolvedValue(null);
+        generateReminderKey.mockReturnValue('K7M2Z9H4');
     });
 
     afterEach(() => {
@@ -100,33 +107,55 @@ describe('Command Handler Integration Tests', () => {
 
         it('should add a new reminder successfully', async () => {
             mockInteraction.options.getString.mockImplementation(opt => {
-                const options = { key: 'test-key', time: 'tomorrow at 10am', content: 'This is a test reminder' };
+                const options = { time: 'tomorrow at 10am', content: 'This is a test reminder' };
                 return options[opt] ?? null;
             });
-            mockInteraction.options.getBoolean.mockReturnValue(false); // overwrite = false
 
             const fakeDate = new Date('2026-01-11T10:00:00.000Z');
             chrono.parseDate.mockReturnValue(fakeDate);
-            sheets.getReminderByKey.mockResolvedValue(null);
             sheets.addReminder.mockResolvedValue({ updates: { updatedCells: 1 } });
 
             await handleCommand(mockInteraction);
 
-            expect(sheets.getReminderByKey).toHaveBeenCalledWith('test-key', 'user');
             expect(sheets.addReminder).toHaveBeenCalledTimes(1);
             const newReminder = sheets.addReminder.mock.calls[0][0];
             expect(newReminder).toMatchObject({
-                key: 'test-key', content: 'This is a test reminder', scope: 'user', user_id: 'user-123',
+                content: 'This is a test reminder', scope: 'user', user_id: 'user-123',
                 notify_time_utc: fakeDate.toISOString(), status: 'pending',
             });
+            expect(newReminder.key).toMatch(/^[A-HJ-NP-Z2-9]{8}$/);
             const reply = mockInteraction.editReply.mock.calls[0][0];
             const displayDate = `<t:${Math.floor(fakeDate.getTime() / 1000)}:F>`;
-            expect(reply.content).toBe(MESSAGES.responses.created('test-key', displayDate));
+            expect(reply.content).toBe(MESSAGES.responses.created(newReminder.key, displayDate));
+        });
+
+        it('should retry key generation when a collision is detected', async () => {
+            mockInteraction.options.getString.mockImplementation(opt => {
+                const options = { time: 'tomorrow at 10am', content: 'Collision test reminder' };
+                return options[opt] ?? null;
+            });
+
+            const fakeDate = new Date('2026-01-11T10:00:00.000Z');
+            chrono.parseDate.mockReturnValue(fakeDate);
+            sheets.addReminder.mockResolvedValue({ updates: { updatedCells: 1 } });
+            generateReminderKey
+                .mockReturnValueOnce('K7M2Z9H4')
+                .mockReturnValueOnce('Z9H4K7M2');
+            sheets.getReminderByKey
+                .mockResolvedValueOnce({ id: 'existing-reminder' })
+                .mockResolvedValueOnce(null);
+
+            await handleCommand(mockInteraction);
+
+            expect(sheets.getReminderByKey).toHaveBeenNthCalledWith(1, 'K7M2Z9H4', 'user');
+            expect(sheets.getReminderByKey).toHaveBeenNthCalledWith(2, 'Z9H4K7M2', 'user');
+            const newReminder = sheets.addReminder.mock.calls[0][0];
+            expect(newReminder.key).toBe('Z9H4K7M2');
         });
 
         it('should require a channel for server scope', async () => {
             mockInteraction.options.getString.mockImplementation(opt => {
-                const options = { key: 'server-key', time: 'tomorrow at 10am', content: 'Server reminder', scope: 'server' };
+                const options = { time: 'tomorrow at 10am', content: 'Server reminder', scope: 'server' };
                 return options[opt] ?? null;
             });
             mockInteraction.options.getChannel.mockReturnValue(null);
@@ -141,7 +170,7 @@ describe('Command Handler Integration Tests', () => {
 
         it('should add a server reminder with a target channel', async () => {
             mockInteraction.options.getString.mockImplementation(opt => {
-                const options = { key: 'server-key', time: 'tomorrow at 10am', content: 'Server reminder', scope: 'server' };
+                const options = { time: 'tomorrow at 10am', content: 'Server reminder', scope: 'server' };
                 return options[opt] ?? null;
             });
             mockInteraction.options.getChannel.mockReturnValue({ id: 'channel-999' });
@@ -149,7 +178,6 @@ describe('Command Handler Integration Tests', () => {
 
             const fakeDate = new Date('2026-01-11T10:00:00.000Z');
             chrono.parseDate.mockReturnValue(fakeDate);
-            sheets.getReminderByKey.mockResolvedValue(null);
             sheets.addReminder.mockResolvedValue({ updates: { updatedCells: 1 } });
 
             await handleCommand(mockInteraction);
@@ -163,7 +191,7 @@ describe('Command Handler Integration Tests', () => {
 
         it('should fail if the time is invalid', async () => {
             mockInteraction.options.getString.mockImplementation(opt => {
-                const options = { key: 'test', time: 'invalid time', content: 'test' };
+                const options = { time: 'invalid time', content: 'test' };
                 return options[opt];
             });
             chrono.parseDate.mockReturnValue(null);
@@ -175,69 +203,15 @@ describe('Command Handler Integration Tests', () => {
             expect(reply.content).toBe(MESSAGES.errors.invalidTime);
         });
 
-        it('should fail if a reminder with the same key already exists (without overwrite)', async () => {
-            mockInteraction.options.getString.mockImplementation(opt => {
-                const options = {
-                    key: 'some-value',
-                    time: 'tomorrow at 10am',
-                    content: 'test content',
-                    timezone: null,
-                };
-                return options[opt] ?? null;
-            });
-            mockInteraction.options.getBoolean.mockReturnValue(false);
-            chrono.parseDate.mockReturnValue(new Date());
-            sheets.getReminderByKey.mockResolvedValue({ id: 'existing-id', key: 'some-value' });
-
-            await handleCommand(mockInteraction);
-
-            expect(sheets.addReminder).not.toHaveBeenCalled();
-            const reply = mockInteraction.editReply.mock.calls[0][0];
-            expect(reply.content).toBe(MESSAGES.errors.duplicateKey('some-value', 'user'));
-        });
-
-        it('should overwrite an existing reminder if overwrite option is true', async () => {
-            mockInteraction.options.getString.mockImplementation(opt => {
-                const options = { key: 'test-key', time: 'tomorrow at 10am', content: 'This is a test reminder' };
-                return options[opt] ?? null;
-            });
-            mockInteraction.options.getBoolean.mockReturnValue(true); // overwrite = true
-
-            const fakeDate = new Date('2026-01-11T10:00:00.000Z');
-            chrono.parseDate.mockReturnValue(fakeDate);
-            // getReminderByKey might still be called, but its return value won't prevent add
-            sheets.getReminderByKey.mockResolvedValue({ id: 'existing-id', key: 'test-key', rowIndex: 7 });
-            sheets.addReminder.mockResolvedValue({ updates: { updatedCells: 1 } });
-
-            await handleCommand(mockInteraction);
-
-            expect(sheets.getReminderByKey).toHaveBeenCalledTimes(1);
-            expect(sheets.addReminder).not.toHaveBeenCalled();
-            expect(sheets.updateReminder).toHaveBeenCalledWith(
-                'existing-id',
-                expect.objectContaining({
-                    content: 'This is a test reminder',
-                    notify_time_utc: fakeDate.toISOString(),
-                    status: 'pending',
-                }),
-                { rowIndex: 7 }
-            );
-            const reply = mockInteraction.editReply.mock.calls[0][0];
-            const displayDate = `<t:${Math.floor(fakeDate.getTime() / 1000)}:F>`;
-            expect(reply.content).toBe(MESSAGES.responses.updated('test-key', displayDate));
-        });
-
         it('should reject invalid timezone input', async () => {
             mockInteraction.options.getString.mockImplementation(opt => {
                 const options = {
-                    key: 'bad-tz',
                     time: 'tomorrow at 10am',
                     content: 'Invalid timezone reminder',
                     timezone: 'Invalid/Zone',
                 };
                 return options[opt] ?? null;
             });
-            mockInteraction.options.getBoolean.mockReturnValue(false);
 
             await handleCommand(mockInteraction);
 
@@ -250,18 +224,15 @@ describe('Command Handler Integration Tests', () => {
         it('should parse time with a UTC offset timezone', async () => {
             mockInteraction.options.getString.mockImplementation(opt => {
                 const options = {
-                    key: 'offset-key',
                     time: 'tomorrow at 10am',
                     content: 'Offset reminder',
                     timezone: '+08:00',
                 };
                 return options[opt] ?? null;
             });
-            mockInteraction.options.getBoolean.mockReturnValue(false);
 
             const fakeDate = new Date('2026-01-11T10:00:00.000Z');
             chrono.parseDate.mockReturnValue(fakeDate);
-            sheets.getReminderByKey.mockResolvedValue(null);
             sheets.addReminder.mockResolvedValue({ updates: { updatedCells: 1 } });
 
             await handleCommand(mockInteraction);
@@ -278,18 +249,15 @@ describe('Command Handler Integration Tests', () => {
         it('should use an IANA timezone label', async () => {
             mockInteraction.options.getString.mockImplementation(opt => {
                 const options = {
-                    key: 'iana-key',
                     time: 'tomorrow at 10am',
                     content: 'IANA reminder',
                     timezone: 'Asia/Tokyo',
                 };
                 return options[opt] ?? null;
             });
-            mockInteraction.options.getBoolean.mockReturnValue(false);
 
             const fakeDate = new Date('2026-01-11T10:00:00.000Z');
             chrono.parseDate.mockReturnValue(fakeDate);
-            sheets.getReminderByKey.mockResolvedValue(null);
             sheets.addReminder.mockResolvedValue({ updates: { updatedCells: 1 } });
 
             await handleCommand(mockInteraction);
@@ -305,18 +273,15 @@ describe('Command Handler Integration Tests', () => {
             try {
                 mockInteraction.options.getString.mockImplementation(opt => {
                     const options = {
-                        key: 'dst-key',
                         time: '2026-07-01 10:00',
                         content: 'DST reminder',
                         timezone: 'America/New_York',
                     };
                     return options[opt] ?? null;
                 });
-                mockInteraction.options.getBoolean.mockReturnValue(false);
 
                 const parsedDate = new Date('2026-07-01T15:00:00.000Z');
                 chrono.parseDate.mockReturnValue(parsedDate);
-                sheets.getReminderByKey.mockResolvedValue(null);
                 sheets.addReminder.mockResolvedValue({ updates: { updatedCells: 1 } });
 
                 await handleCommand(mockInteraction);
@@ -332,17 +297,14 @@ describe('Command Handler Integration Tests', () => {
             process.env.DEFAULT_TZ = 'UTC';
             mockInteraction.options.getString.mockImplementation(opt => {
                 const options = {
-                    key: 'default-tz',
                     time: 'tomorrow at 10am',
                     content: 'Default timezone reminder',
                 };
                 return options[opt] ?? null;
             });
-            mockInteraction.options.getBoolean.mockReturnValue(false);
 
             const fakeDate = new Date('2026-01-11T10:00:00.000Z');
             chrono.parseDate.mockReturnValue(fakeDate);
-            sheets.getReminderByKey.mockResolvedValue(null);
             sheets.addReminder.mockResolvedValue({ updates: { updatedCells: 1 } });
 
             await handleCommand(mockInteraction);
@@ -357,45 +319,17 @@ describe('Command Handler Integration Tests', () => {
         });
     });
 
-    describe('/remind get', () => {
+    describe('/remind get (disabled)', () => {
         beforeEach(() => {
             mockInteraction.options.getSubcommand.mockReturnValue('get');
         });
 
-        it('should retrieve and display reminder details if found', async () => {
-            const mockReminder = {
-                key: 'meeting',
-                scope: 'channel',
-                content: 'Team sync',
-                notify_time_utc: '2026-01-15T09:00:00.000Z',
-                recurring: 'weekly',
-            };
-            mockInteraction.options.getString.mockImplementation(opt => {
-                const options = { key: 'meeting', scope: 'channel' };
-                return options[opt];
-            });
-            sheets.getReminderByKey.mockResolvedValue(mockReminder);
-
+        it('should return a disabled message', async () => {
             await handleCommand(mockInteraction);
 
-            expect(sheets.getReminderByKey).toHaveBeenCalledWith('meeting', 'channel');
+            expect(sheets.getReminderByKey).not.toHaveBeenCalled();
             const reply = mockInteraction.editReply.mock.calls[0][0];
-            const displayDate = `<t:${Math.floor(new Date(mockReminder.notify_time_utc).getTime() / 1000)}:F>`;
-            expect(reply.content).toBe(MESSAGES.responses.details(mockReminder, displayDate));
-        });
-
-        it('should reply that no reminder was found', async () => {
-            mockInteraction.options.getString.mockImplementation(opt => {
-                const options = { key: 'non-existent', scope: 'user' };
-                return options[opt];
-            });
-            sheets.getReminderByKey.mockResolvedValue(null);
-
-            await handleCommand(mockInteraction);
-
-            expect(sheets.getReminderByKey).toHaveBeenCalledWith('non-existent', 'user');
-            const reply = mockInteraction.editReply.mock.calls[0][0];
-            expect(reply.content).toBe(MESSAGES.responses.notFound);
+            expect(reply.content).toBe(MESSAGES.responses.getDisabled);
         });
     });
 

@@ -13,12 +13,6 @@ const commands = [
                 type: 1,
                 options: [
                     {
-                        name: 'key',
-                        description: remindMessages.add.options.key,
-                        type: 3,
-                        required: true,
-                    },
-                    {
                         name: 'time',
                         description: remindMessages.add.options.time,
                         type: 3,
@@ -75,36 +69,6 @@ const commands = [
                         description: remindMessages.add.options.timezone,
                         type: 3,
                         required: false,
-                    },
-                    {
-                        name: 'overwrite',
-                        description: remindMessages.add.options.overwrite,
-                        type: 5,
-                        required: false,
-                    },
-                ],
-            },
-            {
-                name: 'get',
-                description: remindMessages.get.description,
-                type: 1,
-                options: [
-                    {
-                        name: 'key',
-                        description: remindMessages.get.options.key,
-                        type: 3,
-                        required: true,
-                    },
-                    {
-                        name: 'scope',
-                        description: remindMessages.get.options.scope,
-                        type: 3,
-                        required: true,
-                        choices: [
-                            { name: remindMessages.get.choices.scope.user, value: 'user' },
-                            { name: remindMessages.get.choices.scope.channel, value: 'channel' },
-                            { name: remindMessages.get.choices.scope.server, value: 'server' },
-                        ],
                     },
                 ],
             },

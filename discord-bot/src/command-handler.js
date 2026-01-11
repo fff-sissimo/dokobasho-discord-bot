@@ -8,13 +8,25 @@ const {
     getReminderById,
     addReminder,
     listReminders,
-    deleteReminderById,
-    updateReminder
+    deleteReminderById
 } = require('./google-sheets');
 const { resolveTimezone, adjustDateForTimezone } = require('./timezone');
 const { MESSAGES } = require('./message-templates');
+const { generateReminderKey } = require('./reminder-key');
 
 const CONTENT_PREVIEW_LENGTH = 30;
+const MAX_KEY_ATTEMPTS = 5;
+
+async function generateUniqueReminderKey(scope) {
+    for (let attempt = 0; attempt < MAX_KEY_ATTEMPTS; attempt += 1) {
+        const candidate = generateReminderKey();
+        const existing = await getReminderByKey(candidate, scope);
+        if (!existing) {
+            return candidate;
+        }
+    }
+    throw new Error('Failed to generate unique reminder key.');
+}
 
 // --- Command Handler Logic ---
 async function handleCommand(interaction) {
@@ -26,14 +38,12 @@ async function handleCommand(interaction) {
         const subcommand = interaction.options.getSubcommand();
 
         if (subcommand === 'add') {
-            const key = interaction.options.getString('key');
             const time = interaction.options.getString('time');
             const content = interaction.options.getString('content');
             const scope = interaction.options.getString('scope') ?? 'user';
             const visibility = interaction.options.getString('visibility') ?? (scope === 'user' ? 'ephemeral' : 'public');
             const recurring = interaction.options.getString('recurring') ?? 'off';
             const timezone = interaction.options.getString('timezone');
-            const overwrite = interaction.options.getBoolean('overwrite') ?? false;
             const targetChannel = interaction.options.getChannel('channel');
             const referenceInstant = new Date();
             const resolvedTimezone = resolveTimezone(timezone, referenceInstant);
@@ -69,49 +79,15 @@ async function handleCommand(interaction) {
                 );
             }
 
-            const existing = await getReminderByKey(key, scope);
-            if (existing && !overwrite) {
-                await interaction.editReply({ content: MESSAGES.errors.duplicateKey(key, scope) });
-                return;
-            }
-
             const channelId = scope === 'server' ? targetChannel?.id : (scope === 'channel' ? interaction.channel?.id : null);
             const displayDate = `<t:${Math.floor(parsedDate.getTime() / 1000)}:F>`;
-
-            if (existing && overwrite) {
-                await updateReminder(existing.id, {
-                    content,
-                    scope,
-                    guild_id: interaction.guild?.id,
-                    channel_id: channelId,
-                    user_id: interaction.user.id,
-                    notify_time_utc: parsedDate.toISOString(),
-                    timezone: resolvedTimezone.label,
-                    recurring,
-                    visibility,
-                    status: 'pending',
-                    last_sent: '',
-                    retry_count: 0,
-                    metadata: '{}',
-                }, { rowIndex: existing.rowIndex });
-                await interaction.editReply({ content: MESSAGES.responses.updated(key, displayDate), ephemeral: visibility === 'ephemeral' });
-            } else {
-                const newReminder = { id: uuidv4(), key, content, scope, guild_id: interaction.guild?.id, channel_id: channelId, user_id: interaction.user.id, notify_time_utc: parsedDate.toISOString(), timezone: resolvedTimezone.label, recurring, visibility, created_by: interaction.user.id, created_at: new Date().toISOString(), status: 'pending', last_sent: '', retry_count: 0, metadata: '{}' };
-                await addReminder(newReminder);
-                await interaction.editReply({ content: MESSAGES.responses.created(key, displayDate), ephemeral: visibility === 'ephemeral' });
-            }
+            const key = await generateUniqueReminderKey(scope);
+            const newReminder = { id: uuidv4(), key, content, scope, guild_id: interaction.guild?.id, channel_id: channelId, user_id: interaction.user.id, notify_time_utc: parsedDate.toISOString(), timezone: resolvedTimezone.label, recurring, visibility, created_by: interaction.user.id, created_at: new Date().toISOString(), status: 'pending', last_sent: '', retry_count: 0, metadata: '{}' };
+            await addReminder(newReminder);
+            await interaction.editReply({ content: MESSAGES.responses.created(key, displayDate), ephemeral: visibility === 'ephemeral' });
 
         } else if (subcommand === 'get') {
-            const key = interaction.options.getString('key');
-            const scope = interaction.options.getString('scope');
-            const reminder = await getReminderByKey(key, scope);
-            if (!reminder) {
-                await interaction.editReply({ content: MESSAGES.responses.notFound });
-                return;
-            }
-            const notifyTime = new Date(reminder.notify_time_utc);
-            const displayDate = `<t:${Math.floor(notifyTime.getTime() / 1000)}:F>`;
-            await interaction.editReply({ content: MESSAGES.responses.details(reminder, displayDate), ephemeral: true });
+            await interaction.editReply({ content: MESSAGES.responses.getDisabled });
 
         } else if (subcommand === 'list') {
             const scope = interaction.options.getString('scope');
