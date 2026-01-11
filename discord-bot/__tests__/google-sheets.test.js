@@ -1,3 +1,7 @@
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
 const base64Key = Buffer.from(JSON.stringify({
     client_email: 'test@example.com',
     private_key: 'test-key',
@@ -107,5 +111,23 @@ describe('google-sheets', () => {
         const updateCall = mockSheets.spreadsheets.values.batchUpdate.mock.calls[0][0];
         expect(updateCall.resource.data[0].range).toBe('Reminders!N2:N2');
         expect(updateCall.resource.data[0].values).toEqual([['deleted']]);
+    });
+
+    it('initializes with GOOGLE_SA_KEY_PATH', async () => {
+        const tmpPath = path.join(os.tmpdir(), `sa-key-${Date.now()}.json`);
+        fs.writeFileSync(tmpPath, JSON.stringify({
+            client_email: 'test@example.com',
+            private_key: 'test-key',
+        }));
+        delete process.env.GOOGLE_SA_KEY_JSON;
+        process.env.GOOGLE_SA_KEY_PATH = tmpPath;
+
+        try {
+            const { getSheetsClient } = require('../src/google-sheets');
+            const client = await getSheetsClient();
+            expect(client).toBe(mockSheets);
+        } finally {
+            fs.unlinkSync(tmpPath);
+        }
     });
 });
