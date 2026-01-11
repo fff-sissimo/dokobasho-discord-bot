@@ -23,3 +23,8 @@ docker-compose.yml.bak*
 # =====================
 *.log
 .DS_Store
+
+# =====================
+# Coverage
+# =====================
+discord-bot/coverage/
