@@ -57,6 +57,7 @@
 
 - **Discord API**: スラッシュコマンドの受信、メッセージ送信。
 - **Google Sheets API**: データの永続化。
+- **認証**: `google-auth-library` の `JWT` を利用し、`authorize` 後に Sheets API へ渡す。
 - **時刻パースライブラリ**: `chrono-node` や `date-fns-tz` などを利用し、自然言語の時刻解釈とタイムゾーン処理を行う。
 
 ## 4.4. 環境変数

@@ -17,7 +17,7 @@ let mockSheets;
 
 jest.mock('google-auth-library', () => ({
     JWT: jest.fn().mockImplementation(() => ({
-        getClient: jest.fn().mockResolvedValue({}),
+        authorize: jest.fn().mockResolvedValue({}),
     })),
 }));
 
@@ -111,6 +111,26 @@ describe('google-sheets', () => {
         const updateCall = mockSheets.spreadsheets.values.batchUpdate.mock.calls[0][0];
         expect(updateCall.resource.data[0].range).toBe('Reminders!N2:N2');
         expect(updateCall.resource.data[0].values).toEqual([['deleted']]);
+    });
+
+    it('calls authorize before creating sheets client', async () => {
+        const { JWT } = require('google-auth-library');
+        const authorize = jest.fn().mockResolvedValue({});
+        JWT.mockImplementationOnce(() => ({ authorize }));
+
+        const { getSheetsClient } = require('../src/google-sheets');
+        await getSheetsClient();
+
+        expect(authorize).toHaveBeenCalled();
+    });
+
+    it('throws when authorize fails', async () => {
+        const { JWT } = require('google-auth-library');
+        const authorize = jest.fn().mockRejectedValue(new Error('auth failed'));
+        JWT.mockImplementationOnce(() => ({ authorize }));
+
+        const { getSheetsClient } = require('../src/google-sheets');
+        await expect(getSheetsClient()).rejects.toThrow('auth failed');
     });
 
     it('initializes with GOOGLE_SA_KEY_PATH', async () => {

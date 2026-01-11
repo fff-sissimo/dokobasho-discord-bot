@@ -51,8 +51,8 @@ async function getSheetsClient() {
             scopes: SCOPES,
         });
 
-        const client = await auth.getClient();
-        sheets = google.sheets({ version: 'v4', auth: client });
+        await auth.authorize();
+        sheets = google.sheets({ version: 'v4', auth });
         logger.info('Google Sheets client initialized successfully.');
         return sheets;
     } catch (error) {
