@@ -2,6 +2,7 @@
 # Secrets
 # =====================
 .env
+discord-bot/google-service-key.json
 
 # =====================
 # n8n runtime data
