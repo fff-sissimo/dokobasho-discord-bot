@@ -6,6 +6,7 @@ const { getBotToken } = require("./src/config");
 const { getSheetsClient } = require('./src/google-sheets');
 const { handleCommand, handleButton } = require('./src/command-handler');
 const logger = require('./src/logger');
+const { MESSAGES } = require('./src/message-templates');
 
 const token = getBotToken();
 const webhookUrl = process.env.N8N_WEBHOOK_URL;
@@ -94,8 +95,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
     const handleError = async (error, int) => {
         logger.error('[InteractionCreate] Error:', error);
         const message = error.message.includes('GOOGLE_SA_KEY_JSON')
-            ? 'リマインダー機能は現在設定されていません。'
-            : 'エラーが発生しました。詳細はログを確認してください。';
+            ? MESSAGES.errors.reminderNotConfigured
+            : MESSAGES.errors.generic;
         
         const replyPayload = { content: message, components: [], ephemeral: true };
         try {

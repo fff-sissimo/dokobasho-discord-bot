@@ -4,6 +4,7 @@ const TIMEZONE_ABBR_OFFSETS = {
     UTC: 0,
     GMT: 0,
 };
+const { MESSAGES } = require('./message-templates');
 
 function parseTimezoneOffset(input) {
     if (!input) {
@@ -78,7 +79,7 @@ function resolveTimezone(timezoneInput, referenceInstant = new Date()) {
         }
     }
     if (offset === null) {
-        return { error: '❌ タイムゾーンの指定が正しくありません。例: Asia/Tokyo / JST / +09:00' };
+        return { error: MESSAGES.errors.invalidTimezone };
     }
 
     return { label, offset, source };

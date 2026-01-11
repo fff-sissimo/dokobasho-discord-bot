@@ -1,6 +1,7 @@
 const logger = require('./logger');
 const { getPendingReminders, updateReminder } = require('./google-sheets');
 const { calculateNextDate } = require('./utils');
+const { MESSAGES } = require('./message-templates');
 
 /**
  * Processes pending reminders, sends notifications, and updates their status.
@@ -32,7 +33,7 @@ async function processReminders(discordClient) {
             logger.debug({ reminderId: reminder.id }, 'Locked reminder.');
 
             // 2. Send notification
-            const message = `**リマインダー:** ${reminder.content}`;
+            const message = MESSAGES.reminders.notification(reminder.content);
             if (reminder.scope === 'user') {
                 const user = await discordClient.users.fetch(reminder.user_id);
                 if (user) await user.send(message);

@@ -4,6 +4,7 @@ const { handleCommand, handleButton } = require('../src/command-handler');
 const sheets = require('../src/google-sheets');
 const chrono = require('chrono-node');
 const { ActionRowBuilder, ButtonBuilder, ButtonStyle } = require("discord.js"); // Required for testing button interactions
+const { MESSAGES } = require('../src/message-templates');
 
 const supportsIanaTimeZone = (timeZone) => {
     try {
@@ -119,8 +120,8 @@ describe('Command Handler Integration Tests', () => {
                 notify_time_utc: fakeDate.toISOString(), status: 'pending',
             });
             const reply = mockInteraction.editReply.mock.calls[0][0];
-            expect(reply.content).toContain('✅ リマインダーを登録しました！');
-            expect(reply.content).toContain('**キー:** test-key');
+            const displayDate = `<t:${Math.floor(fakeDate.getTime() / 1000)}:F>`;
+            expect(reply.content).toBe(MESSAGES.responses.created('test-key', displayDate));
         });
 
         it('should require a channel for server scope', async () => {
@@ -135,7 +136,7 @@ describe('Command Handler Integration Tests', () => {
 
             expect(sheets.addReminder).not.toHaveBeenCalled();
             const reply = mockInteraction.editReply.mock.calls[0][0];
-            expect(reply.content).toContain('通知先チャンネルの指定が必要です');
+            expect(reply.content).toBe(MESSAGES.responses.channelRequiredForServerScope);
         });
 
         it('should add a server reminder with a target channel', async () => {
@@ -171,7 +172,7 @@ describe('Command Handler Integration Tests', () => {
 
             expect(sheets.addReminder).not.toHaveBeenCalled();
             const reply = mockInteraction.editReply.mock.calls[0][0];
-            expect(reply.content).toContain('❌ 時刻の指定が正しくありません。');
+            expect(reply.content).toBe(MESSAGES.errors.invalidTime);
         });
 
         it('should fail if a reminder with the same key already exists (without overwrite)', async () => {
@@ -192,7 +193,7 @@ describe('Command Handler Integration Tests', () => {
 
             expect(sheets.addReminder).not.toHaveBeenCalled();
             const reply = mockInteraction.editReply.mock.calls[0][0];
-            expect(reply.content).toContain('❌ 同じキーのリマインダーが既に存在します');
+            expect(reply.content).toBe(MESSAGES.errors.duplicateKey('some-value', 'user'));
         });
 
         it('should overwrite an existing reminder if overwrite option is true', async () => {
@@ -222,7 +223,8 @@ describe('Command Handler Integration Tests', () => {
                 { rowIndex: 7 }
             );
             const reply = mockInteraction.editReply.mock.calls[0][0];
-            expect(reply.content).toContain('✅ リマインダーを更新しました！');
+            const displayDate = `<t:${Math.floor(fakeDate.getTime() / 1000)}:F>`;
+            expect(reply.content).toBe(MESSAGES.responses.updated('test-key', displayDate));
         });
 
         it('should reject invalid timezone input', async () => {
@@ -242,7 +244,7 @@ describe('Command Handler Integration Tests', () => {
             expect(chrono.parseDate).not.toHaveBeenCalled();
             expect(sheets.addReminder).not.toHaveBeenCalled();
             const reply = mockInteraction.editReply.mock.calls[0][0];
-            expect(reply.content).toContain('タイムゾーン');
+            expect(reply.content).toBe(MESSAGES.errors.invalidTimezone);
         });
 
         it('should parse time with a UTC offset timezone', async () => {
@@ -378,9 +380,8 @@ describe('Command Handler Integration Tests', () => {
 
             expect(sheets.getReminderByKey).toHaveBeenCalledWith('meeting', 'channel');
             const reply = mockInteraction.editReply.mock.calls[0][0];
-            expect(reply.content).toContain('**リマインダー詳細**');
-            expect(reply.content).toContain('Team sync');
-            expect(reply.content).toContain('次回通知:');
+            const displayDate = `<t:${Math.floor(new Date(mockReminder.notify_time_utc).getTime() / 1000)}:F>`;
+            expect(reply.content).toBe(MESSAGES.responses.details(mockReminder, displayDate));
         });
 
         it('should reply that no reminder was found', async () => {
@@ -394,7 +395,7 @@ describe('Command Handler Integration Tests', () => {
 
             expect(sheets.getReminderByKey).toHaveBeenCalledWith('non-existent', 'user');
             const reply = mockInteraction.editReply.mock.calls[0][0];
-            expect(reply.content).toContain('該当するリマインダーは見つかりませんでした。');
+            expect(reply.content).toBe(MESSAGES.responses.notFound);
         });
     });
 
@@ -423,9 +424,11 @@ describe('Command Handler Integration Tests', () => {
                 guildId: mockInteraction.guild.id,
             });
             const reply = mockInteraction.editReply.mock.calls[0][0];
-            expect(reply.content).toContain('**リマインダー一覧 (user) - 2件中2件表示**');
-            expect(reply.content).toContain('`task1`: Do X...');
-            expect(reply.content).toContain('`task2`: Do Y...');
+            const listContent = [
+                MESSAGES.responses.listItem('task1', 'Do X', '<t:1768125600:R>'),
+                MESSAGES.responses.listItem('task2', 'Do Y', '<t:1768212000:R>'),
+            ].join('\n');
+            expect(reply.content).toBe(MESSAGES.responses.listHeader('user', 2, 2, listContent));
         });
 
         it('should list reminders filtered by query', async () => {
@@ -444,9 +447,8 @@ describe('Command Handler Integration Tests', () => {
             await handleCommand(mockInteraction);
 
             const reply = mockInteraction.editReply.mock.calls[0][0];
-            expect(reply.content).toContain('**リマインダー一覧 (user) - 1件中1件表示**');
-            expect(reply.content).toContain('`task1`: Meeting sync...');
-            expect(reply.content).not.toContain('`task2`: Do Y...');
+            const listContent = MESSAGES.responses.listItem('task1', 'Meeting sync', '<t:1768125600:R>');
+            expect(reply.content).toBe(MESSAGES.responses.listHeader('user', 1, 1, listContent));
         });
 
         it('should reply that no reminders were found', async () => {
@@ -456,7 +458,7 @@ describe('Command Handler Integration Tests', () => {
             await handleCommand(mockInteraction);
 
             const reply = mockInteraction.editReply.mock.calls[0][0];
-            expect(reply.content).toContain('登録されているリマインダーはありません。');
+            expect(reply.content).toBe(MESSAGES.responses.listEmpty);
         });
     });
 
@@ -480,7 +482,7 @@ describe('Command Handler Integration Tests', () => {
             expect(sheets.getReminderByKey).toHaveBeenCalledWith('delete-me', 'user');
             expect(sheets.deleteReminderById).toHaveBeenCalledWith('reminder-id-1');
             const reply = mockInteraction.editReply.mock.calls[0][0];
-            expect(reply.content).toContain('✅ リマインダー「delete-me」を削除しました。');
+            expect(reply.content).toBe(MESSAGES.responses.deleteSuccess('delete-me'));
         });
 
         it('should display a confirmation button if confirm is false', async () => {
@@ -497,7 +499,7 @@ describe('Command Handler Integration Tests', () => {
             expect(sheets.getReminderByKey).toHaveBeenCalledWith('delete-me', 'user');
             expect(sheets.deleteReminderById).not.toHaveBeenCalled();
             const reply = mockInteraction.editReply.mock.calls[0][0];
-            expect(reply.content).toContain('本当にリマインダー「delete-me」を削除しますか？');
+            expect(reply.content).toBe(MESSAGES.responses.deleteConfirm('delete-me'));
             expect(reply.components).toBeDefined();
             expect(ActionRowBuilder).toHaveBeenCalledTimes(1);
             expect(ButtonBuilder).toHaveBeenCalledTimes(1);
@@ -515,7 +517,7 @@ describe('Command Handler Integration Tests', () => {
 
             expect(sheets.deleteReminderById).not.toHaveBeenCalled();
             const reply = mockInteraction.editReply.mock.calls[0][0];
-            expect(reply.content).toContain('該当するリマインダーは見つかりませんでした。');
+            expect(reply.content).toBe(MESSAGES.responses.notFound);
         });
 
         it('should deny deletion for server scope without admin permissions', async () => {
@@ -532,7 +534,7 @@ describe('Command Handler Integration Tests', () => {
             expect(mockInteraction.member.permissions.has).toHaveBeenCalledWith('Administrator');
             expect(sheets.deleteReminderById).not.toHaveBeenCalled();
             const reply = mockInteraction.editReply.mock.calls[0][0];
-            expect(reply.content).toContain('サーバー全体のリマインダーを削除するには、管理者権限が必要です。');
+            expect(reply.content).toBe(MESSAGES.responses.adminRequiredForDelete);
         });
 
         it('should allow deletion for server scope with admin permissions', async () => {
@@ -551,7 +553,7 @@ describe('Command Handler Integration Tests', () => {
             expect(mockInteraction.member.permissions.has).toHaveBeenCalledWith('Administrator');
             expect(sheets.deleteReminderById).toHaveBeenCalledWith('reminder-id-server');
             const reply = mockInteraction.editReply.mock.calls[0][0];
-            expect(reply.content).toContain('✅ リマインダー「server-rem」を削除しました。');
+            expect(reply.content).toBe(MESSAGES.responses.deleteSuccess('server-rem'));
         });
     });
 
@@ -569,7 +571,7 @@ describe('Command Handler Integration Tests', () => {
             expect(sheets.getReminderById).toHaveBeenCalledWith('reminder-id-abc');
             expect(sheets.deleteReminderById).toHaveBeenCalledWith('reminder-id-abc');
             const reply = mockInteraction.editReply.mock.calls[0][0];
-            expect(reply.content).toContain('✅ リマインダー「button-delete」を削除しました。');
+            expect(reply.content).toBe(MESSAGES.responses.deleteSuccess('button-delete'));
             expect(reply.components).toEqual([]); // Components should be removed
         });
 
@@ -583,7 +585,7 @@ describe('Command Handler Integration Tests', () => {
 
             expect(sheets.deleteReminderById).not.toHaveBeenCalled();
             const reply = mockInteraction.editReply.mock.calls[0][0];
-            expect(reply.content).toContain('このリマインダーは既に削除されているようです。');
+            expect(reply.content).toBe(MESSAGES.responses.alreadyDeleted);
         });
 
         it('should deny button deletion for server scope without admin permissions', async () => {
@@ -599,7 +601,7 @@ describe('Command Handler Integration Tests', () => {
             expect(mockInteraction.member.permissions.has).toHaveBeenCalledWith('Administrator');
             expect(sheets.deleteReminderById).not.toHaveBeenCalled();
             const reply = mockInteraction.editReply.mock.calls[0][0];
-            expect(reply.content).toContain('サーバー全体のリマインダーを削除するには、管理者権限が必要です。');
+            expect(reply.content).toBe(MESSAGES.responses.adminRequiredForDelete);
         });
     });
 });

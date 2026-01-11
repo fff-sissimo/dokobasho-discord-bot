@@ -12,7 +12,9 @@ const {
     updateReminder
 } = require('./google-sheets');
 const { resolveTimezone, adjustDateForTimezone } = require('./timezone');
+const { MESSAGES } = require('./message-templates');
 
+const CONTENT_PREVIEW_LENGTH = 30;
 
 // --- Command Handler Logic ---
 async function handleCommand(interaction) {
@@ -42,11 +44,11 @@ async function handleCommand(interaction) {
 
             const hasAdminPermission = Boolean(interaction.member?.permissions?.has('Administrator'));
             if (scope === 'server' && !hasAdminPermission) {
-                await interaction.editReply({ content: 'サーバー全体のリマインダーを作成するには、管理者権限が必要です。' });
+                await interaction.editReply({ content: MESSAGES.responses.adminRequiredForCreate });
                 return;
             }
             if (scope === 'server' && !targetChannel) {
-                await interaction.editReply({ content: 'サーバー全体のリマインダーは通知先チャンネルの指定が必要です。' });
+                await interaction.editReply({ content: MESSAGES.responses.channelRequiredForServerScope });
                 return;
             }
 
@@ -56,7 +58,7 @@ async function handleCommand(interaction) {
                 { forwardDate: true }
             );
             if (!parsedDate) {
-                await interaction.editReply({ content: `❌ 時刻の指定が正しくありません。「明日の10時」や「2026-01-11 15:00」のように指定してください。` });
+                await interaction.editReply({ content: MESSAGES.errors.invalidTime });
                 return;
             }
             if (resolvedTimezone.source === 'iana') {
@@ -69,7 +71,7 @@ async function handleCommand(interaction) {
 
             const existing = await getReminderByKey(key, scope);
             if (existing && !overwrite) {
-                await interaction.editReply({ content: `❌ 同じキーのリマインダーが既に存在します (\`key: ${key}\`, \`scope: ${scope}\`)。\n上書きする場合は \`overwrite\` オプションをtrueにしてください。` });
+                await interaction.editReply({ content: MESSAGES.errors.duplicateKey(key, scope) });
                 return;
             }
 
@@ -92,11 +94,11 @@ async function handleCommand(interaction) {
                     retry_count: 0,
                     metadata: '{}',
                 }, { rowIndex: existing.rowIndex });
-                await interaction.editReply({ content: `✅ リマインダーを更新しました！\n**キー:** ${key}\n**次回通知:** ${displayDate}`, ephemeral: visibility === 'ephemeral' });
+                await interaction.editReply({ content: MESSAGES.responses.updated(key, displayDate), ephemeral: visibility === 'ephemeral' });
             } else {
                 const newReminder = { id: uuidv4(), key, content, scope, guild_id: interaction.guild?.id, channel_id: channelId, user_id: interaction.user.id, notify_time_utc: parsedDate.toISOString(), timezone: resolvedTimezone.label, recurring, visibility, created_by: interaction.user.id, created_at: new Date().toISOString(), status: 'pending', last_sent: '', retry_count: 0, metadata: '{}' };
                 await addReminder(newReminder);
-                await interaction.editReply({ content: `✅ リマインダーを登録しました！\n**キー:** ${key}\n**次回通知:** ${displayDate}`, ephemeral: visibility === 'ephemeral' });
+                await interaction.editReply({ content: MESSAGES.responses.created(key, displayDate), ephemeral: visibility === 'ephemeral' });
             }
 
         } else if (subcommand === 'get') {
@@ -104,12 +106,12 @@ async function handleCommand(interaction) {
             const scope = interaction.options.getString('scope');
             const reminder = await getReminderByKey(key, scope);
             if (!reminder) {
-                await interaction.editReply({ content: '該当するリマインダーは見つかりませんでした。' });
+                await interaction.editReply({ content: MESSAGES.responses.notFound });
                 return;
             }
             const notifyTime = new Date(reminder.notify_time_utc);
             const displayDate = `<t:${Math.floor(notifyTime.getTime() / 1000)}:F>`;
-            await interaction.editReply({ content: `**リマインダー詳細**\n- **キー:** ${reminder.key}\n- **スコープ:** ${reminder.scope}\n- **次回通知:** ${displayDate}\n- **繰り返し:** ${reminder.recurring}\n- **内容:** ${reminder.content}`, ephemeral: true });
+            await interaction.editReply({ content: MESSAGES.responses.details(reminder, displayDate), ephemeral: true });
 
         } else if (subcommand === 'list') {
             const scope = interaction.options.getString('scope');
@@ -117,17 +119,19 @@ async function handleCommand(interaction) {
             const limit = interaction.options.getInteger('limit') ?? 50;
             const reminders = await listReminders(scope, { userId: interaction.user.id, channelId: interaction.channel?.id, guildId: interaction.guild?.id });
             if (reminders.length === 0) {
-                await interaction.editReply({ content: '登録されているリマインダーはありません。' });
+                await interaction.editReply({ content: MESSAGES.responses.listEmpty });
                 return;
             }
             const filteredReminders = query ? reminders.filter(r => r.key.includes(query) || r.content.includes(query)) : reminders;
             const listContent = filteredReminders.slice(0, limit).map(r => {
                 const notifyTime = new Date(r.notify_time_utc);
                 const displayDate = `<t:${Math.floor(notifyTime.getTime() / 1000)}:R>`;
-                return `- \`${r.key}\`: ${r.content.substring(0, 30)}... (通知: ${displayDate})`;
+                const contentPreview = r.content.substring(0, CONTENT_PREVIEW_LENGTH);
+                return MESSAGES.responses.listItem(r.key, contentPreview, displayDate);
             }).join('\n');
             const total = filteredReminders.length;
-            await interaction.editReply({ content: `**リマインダー一覧 (${scope}) - ${total}件中${Math.min(limit, total)}件表示**\n${listContent}`, ephemeral: true });
+            const displayed = Math.min(limit, total);
+            await interaction.editReply({ content: MESSAGES.responses.listHeader(scope, total, displayed, listContent), ephemeral: true });
 
 
         } else if (subcommand === 'delete') {
@@ -136,27 +140,27 @@ async function handleCommand(interaction) {
             const confirm = interaction.options.getBoolean('confirm') ?? false;
 
             if (scope === 'server' && !interaction.member?.permissions?.has('Administrator')) {
-                 await interaction.editReply({ content: 'サーバー全体のリマインダーを削除するには、管理者権限が必要です。' });
+                 await interaction.editReply({ content: MESSAGES.responses.adminRequiredForDelete });
                  return;
             }
             const reminder = await getReminderByKey(key, scope);
             if (!reminder) {
-                await interaction.editReply({ content: '該当するリマインダーは見つかりませんでした。' });
+                await interaction.editReply({ content: MESSAGES.responses.notFound });
                 return;
             }
 
             if (confirm) {
                 const deleteResult = await deleteReminderById(reminder.id);
                 if (!deleteResult || deleteResult.alreadyDeleted) {
-                    await interaction.editReply({ content: 'このリマインダーは既に削除されているようです。' });
+                    await interaction.editReply({ content: MESSAGES.responses.alreadyDeleted });
                     return;
                 }
-                await interaction.editReply({ content: `✅ リマインダー「${key}」を削除しました。` });
+                await interaction.editReply({ content: MESSAGES.responses.deleteSuccess(key) });
             } else {
                 const row = new ActionRowBuilder().addComponents(
-                    new ButtonBuilder().setCustomId(`delete-confirm_${reminder.id}`).setLabel('はい、削除します').setStyle(ButtonStyle.Danger),
+                    new ButtonBuilder().setCustomId(`delete-confirm_${reminder.id}`).setLabel(MESSAGES.responses.deleteConfirmLabel).setStyle(ButtonStyle.Danger),
                 );
-                await interaction.editReply({ content: `本当にリマインダー「${key}」を削除しますか？この操作は取り消せません。`, components: [row] });
+                await interaction.editReply({ content: MESSAGES.responses.deleteConfirm(key), components: [row] });
             }
         }
     } catch (error) {
@@ -184,21 +188,21 @@ async function handleButton(interaction) {
 
         const reminder = await getReminderById(reminderId);
         if (!reminder) {
-            await interaction.editReply({ content: 'このリマインダーは既に削除されているようです。', components: [] });
+            await interaction.editReply({ content: MESSAGES.responses.alreadyDeleted, components: [] });
             return;
         }
         
         if (reminder.scope === 'server' && !interaction.member?.permissions?.has('Administrator')) {
-            await interaction.editReply({ content: 'サーバー全体のリマインダーを削除するには、管理者権限が必要です。', components: [] });
+            await interaction.editReply({ content: MESSAGES.responses.adminRequiredForDelete, components: [] });
             return;
         }
 
         const deleteResult = await deleteReminderById(reminder.id);
         if (!deleteResult || deleteResult.alreadyDeleted) {
-            await interaction.editReply({ content: 'このリマインダーは既に削除されているようです。', components: [] });
+            await interaction.editReply({ content: MESSAGES.responses.alreadyDeleted, components: [] });
             return;
         }
-        await interaction.editReply({ content: `✅ リマインダー「${reminder.key}」を削除しました。`, components: [] });
+        await interaction.editReply({ content: MESSAGES.responses.deleteSuccess(reminder.key), components: [] });
 
     } catch (error) {
         logger.error({ 

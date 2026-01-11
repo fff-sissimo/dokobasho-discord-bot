@@ -3,6 +3,7 @@
 const { processReminders } = require('../src/reminder-processor');
 const sheets = require('../src/google-sheets');
 const utils = require('../src/utils');
+const { MESSAGES } = require('../src/message-templates');
 
 // Mock external modules
 jest.mock('../src/google-sheets');
@@ -69,7 +70,9 @@ describe('Reminder Processor', () => {
 
         // 2. Send
         expect(mockDiscordClient.users.fetch).toHaveBeenCalledWith('user-abc');
-        expect((await mockDiscordClient.users.fetch()).send).toHaveBeenCalledWith('**リマインダー:** User reminder');
+        expect((await mockDiscordClient.users.fetch()).send).toHaveBeenCalledWith(
+            MESSAGES.reminders.notification('User reminder')
+        );
 
         // 3. Mark as sent
         const secondCallArg = sheets.updateReminder.mock.calls[1][1];
@@ -101,7 +104,9 @@ describe('Reminder Processor', () => {
         
         // 2. Send
         expect(mockDiscordClient.channels.fetch).toHaveBeenCalledWith('channel-xyz');
-        expect((await mockDiscordClient.channels.fetch()).send).toHaveBeenCalledWith('**リマインダー:** Channel reminder');
+        expect((await mockDiscordClient.channels.fetch()).send).toHaveBeenCalledWith(
+            MESSAGES.reminders.notification('Channel reminder')
+        );
 
         // 3. Reschedule
         expect(utils.calculateNextDate).toHaveBeenCalledWith(reminder.notify_time_utc, 'daily');
@@ -124,7 +129,9 @@ describe('Reminder Processor', () => {
         await processReminders(mockDiscordClient);
 
         expect(mockDiscordClient.channels.fetch).toHaveBeenCalledWith('channel-server');
-        expect((await mockDiscordClient.channels.fetch()).send).toHaveBeenCalledWith('**リマインダー:** Server reminder');
+        expect((await mockDiscordClient.channels.fetch()).send).toHaveBeenCalledWith(
+            MESSAGES.reminders.notification('Server reminder')
+        );
     });
 
     it('should retry a failed reminder', async () => {

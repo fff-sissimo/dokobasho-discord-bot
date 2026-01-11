@@ -1,80 +1,84 @@
+const { MESSAGES } = require('./message-templates');
+
+const remindMessages = MESSAGES.commands.remind;
+
 const commands = [
     {
         name: 'remind',
-        description: 'リマインダーを管理します。',
+        description: remindMessages.description,
         options: [
             {
                 name: 'add',
-                description: '新しいリマインダーを登録します。',
+                description: remindMessages.add.description,
                 type: 1,
                 options: [
                     {
                         name: 'key',
-                        description: 'リマインダーを識別するキー (1-100文字)',
+                        description: remindMessages.add.options.key,
                         type: 3,
                         required: true,
                     },
                     {
                         name: 'time',
-                        description: '通知時刻 (例: 「明日の15時」「3日後 10:00」)',
+                        description: remindMessages.add.options.time,
                         type: 3,
                         required: true,
                     },
                     {
                         name: 'content',
-                        description: 'リマインド内容 (1-2000文字)',
+                        description: remindMessages.add.options.content,
                         type: 3,
                         required: true,
                     },
                     {
                         name: 'scope',
-                        description: '公開範囲 (デフォルト: user)',
+                        description: remindMessages.add.options.scope,
                         type: 3,
                         required: false,
                         choices: [
-                            { name: '自分のみ (User)', value: 'user' },
-                            { name: 'このチャンネル (Channel)', value: 'channel' },
-                            { name: 'サーバー全体 (Server)', value: 'server' },
+                            { name: remindMessages.add.choices.scope.user, value: 'user' },
+                            { name: remindMessages.add.choices.scope.channel, value: 'channel' },
+                            { name: remindMessages.add.choices.scope.server, value: 'server' },
                         ],
                     },
                     {
                         name: 'channel',
-                        description: '通知先チャンネル (scope=server の場合は必須)',
+                        description: remindMessages.add.options.channel,
                         type: 7,
                         required: false,
                         channel_types: [0],
                     },
                     {
                         name: 'visibility',
-                        description: '応答の可視性 (デフォルト: ephemeral)',
+                        description: remindMessages.add.options.visibility,
                         type: 3,
                         required: false,
                         choices: [
-                            { name: '自分のみに表示 (Ephemeral)', value: 'ephemeral' },
-                            { name: '全員に表示 (Public)', value: 'public' },
+                            { name: remindMessages.add.choices.visibility.ephemeral, value: 'ephemeral' },
+                            { name: remindMessages.add.choices.visibility.public, value: 'public' },
                         ],
                     },
                     {
                         name: 'recurring',
-                        description: '繰り返しの設定 (デフォルト: off)',
+                        description: remindMessages.add.options.recurring,
                         type: 3,
                         required: false,
                         choices: [
-                            { name: 'しない (Off)', value: 'off' },
-                            { name: '毎日 (Daily)', value: 'daily' },
-                            { name: '毎週 (Weekly)', value: 'weekly' },
-                            { name: '毎月 (Monthly)', value: 'monthly' },
+                            { name: remindMessages.add.choices.recurring.off, value: 'off' },
+                            { name: remindMessages.add.choices.recurring.daily, value: 'daily' },
+                            { name: remindMessages.add.choices.recurring.weekly, value: 'weekly' },
+                            { name: remindMessages.add.choices.recurring.monthly, value: 'monthly' },
                         ],
                     },
                     {
                         name: 'timezone',
-                        description: '時刻の解釈に使うタイムゾーン (例: Asia/Tokyo)',
+                        description: remindMessages.add.options.timezone,
                         type: 3,
                         required: false,
                     },
                     {
                         name: 'overwrite',
-                        description: '既存のリマインダーを上書きしますか？',
+                        description: remindMessages.add.options.overwrite,
                         type: 5,
                         required: false,
                     },
@@ -82,53 +86,53 @@ const commands = [
             },
             {
                 name: 'get',
-                description: 'リマインダーの詳細を取得します。',
+                description: remindMessages.get.description,
                 type: 1,
                 options: [
                     {
                         name: 'key',
-                        description: '取得するリマインダーのキー',
+                        description: remindMessages.get.options.key,
                         type: 3,
                         required: true,
                     },
                     {
                         name: 'scope',
-                        description: '公開範囲',
+                        description: remindMessages.get.options.scope,
                         type: 3,
                         required: true,
                         choices: [
-                            { name: '自分のみ (User)', value: 'user' },
-                            { name: 'このチャンネル (Channel)', value: 'channel' },
-                            { name: 'サーバー全体 (Server)', value: 'server' },
+                            { name: remindMessages.get.choices.scope.user, value: 'user' },
+                            { name: remindMessages.get.choices.scope.channel, value: 'channel' },
+                            { name: remindMessages.get.choices.scope.server, value: 'server' },
                         ],
                     },
                 ],
             },
             {
                 name: 'list',
-                description: 'リマインダーの一覧を表示します。',
+                description: remindMessages.list.description,
                 type: 1,
                 options: [
                     {
                         name: 'scope',
-                        description: '一覧表示する公開範囲',
+                        description: remindMessages.list.options.scope,
                         type: 3,
                         required: true,
                         choices: [
-                            { name: '自分のみ (User)', value: 'user' },
-                            { name: 'このチャンネル (Channel)', value: 'channel' },
-                            { name: 'サーバー全体 (Server)', value: 'server' },
+                            { name: remindMessages.list.choices.scope.user, value: 'user' },
+                            { name: remindMessages.list.choices.scope.channel, value: 'channel' },
+                            { name: remindMessages.list.choices.scope.server, value: 'server' },
                         ],
                     },
                     {
                         name: 'query',
-                        description: 'キーまたは内容で検索します',
+                        description: remindMessages.list.options.query,
                         type: 3,
                         required: false,
                     },
                     {
                         name: 'limit',
-                        description: '表示件数 (デフォルト: 50)',
+                        description: remindMessages.list.options.limit,
                         type: 4,
                         required: false,
                     },
@@ -136,29 +140,29 @@ const commands = [
             },
             {
                 name: 'delete',
-                description: 'リマインダーを削除します。',
+                description: remindMessages.delete.description,
                 type: 1,
                 options: [
                     {
                         name: 'key',
-                        description: '削除するリマインダーのキー',
+                        description: remindMessages.delete.options.key,
                         type: 3,
                         required: true,
                     },
                     {
                         name: 'scope',
-                        description: '公開範囲',
+                        description: remindMessages.delete.options.scope,
                         type: 3,
                         required: true,
                         choices: [
-                            { name: '自分のみ (User)', value: 'user' },
-                            { name: 'このチャンネル (Channel)', value: 'channel' },
-                            { name: 'サーバー全体 (Server)', value: 'server' },
+                            { name: remindMessages.delete.choices.scope.user, value: 'user' },
+                            { name: remindMessages.delete.choices.scope.channel, value: 'channel' },
+                            { name: remindMessages.delete.choices.scope.server, value: 'server' },
                         ],
                     },
                     {
                         name: 'confirm',
-                        description: '確認なしで削除を実行しますか？ (デフォルト: false)',
+                        description: remindMessages.delete.options.confirm,
                         type: 5,
                         required: false,
                     },
