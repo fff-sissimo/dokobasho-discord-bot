@@ -69,3 +69,8 @@
 | `GOOGLE_SA_KEY_JSON`    | Google Service Account の認証キー (JSON形式をBase64エンコード)。   | `ewogICJ0eXBlIjog...`                             |
 | `SHEET_ID`              | リマインダーを保存する Google スプレッドシートのID。              | `1a2b3c...`                                       |
 | `DEFAULT_TZ`            | ユーザーがタイムゾーンを指定しなかった場合のデフォルト値。        | `Asia/Tokyo`                                      |
+
+- Docker運用ではホスト側の鍵ファイルをボリュームでマウントし、`GOOGLE_SA_KEY_PATH` が参照できるようにする。
+- `docker-compose.yml` ではホスト側の鍵パスを `GOOGLE_SA_KEY_FILE` で指定できる（既定は `./discord-bot/google-service-key.json`）。
+- コンテナ内の `GOOGLE_SA_KEY_PATH` は `/app/keys/google-service-key.json` を想定する。
+- `GOOGLE_SA_KEY_FILE` は Docker Compose 用のホスト環境変数で、`GOOGLE_SA_KEY_PATH` はコンテナ内の環境変数。

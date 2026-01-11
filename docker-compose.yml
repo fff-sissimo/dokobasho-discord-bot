@@ -65,6 +65,8 @@ services:
       - n8n
     env_file:
       - ./discord-bot/.env
+    volumes:
+      - ${GOOGLE_SA_KEY_FILE:-./discord-bot/google-service-key.json}:/app/keys/google-service-key.json:ro
 
   discord-scheduler:
     build: ./discord-bot
@@ -79,7 +81,7 @@ services:
       retries: 3
       start_period: 60s
     volumes:
-      - /docker/n8n/discord-bot/google-service-key.json:/app/keys/google-service-key.json:ro
+      - ${GOOGLE_SA_KEY_FILE:-./discord-bot/google-service-key.json}:/app/keys/google-service-key.json:ro
 
 volumes:
   traefik_data:

@@ -84,6 +84,14 @@ Discord上で動作する多機能ボット。リマインダー機能などを�
     docker compose up -d discord-scheduler
     ```
 
+-   **Googleサービスアカウント鍵のマウント:**
+    `GOOGLE_SA_KEY_PATH` を使う場合、ホストの鍵ファイルをコンテナにマウントします。
+    既定では `./discord-bot/google-service-key.json` を
+    `/app/keys/google-service-key.json` にマウントします。
+    別パスを使う場合はホスト側の `GOOGLE_SA_KEY_FILE` を指定してください。
+    セキュリティのため、鍵ファイルはリポジトリ外に保存し、絶対パスで `GOOGLE_SA_KEY_FILE` を設定する運用を推奨します。
+    コンテナ内の `.env` には `GOOGLE_SA_KEY_PATH=/app/keys/google-service-key.json` を設定してください。
+
 ## 運用上の注意
 
 -   **タイムゾーン**: 時刻の解釈にはサーバーのデフォルトタイムゾーンが使われますが、`/remind add` の `timezone` オプションで個別に指定することも可能です。
