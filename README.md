@@ -84,6 +84,19 @@ Discord上で動作する多機能ボット。リマインダー機能などを�
     docker compose up -d discord-scheduler
     ```
 
+-   **共有イメージ:**
+    `discord-bot` と `discord-scheduler` は `dokobasho-discord-bot:${DISCORD_BOT_IMAGE_TAG:-local}` を共有します。
+    運用環境では `DISCORD_BOT_IMAGE_TAG` にバージョン（例: `v1.2.3`）を指定してください。
+    コード更新時は両方のコンテナを再作成してください。
+    ```bash
+    docker compose build discord-bot
+    docker compose up -d --no-deps --force-recreate discord-bot discord-scheduler
+    ```
+    クリーンビルドが必要な場合は以下も実行してください。
+    ```bash
+    docker compose down -v
+    ```
+
 -   **Googleサービスアカウント鍵のマウント:**
     `GOOGLE_SA_KEY_PATH` を使う場合、ホストの鍵ファイルをコンテナにマウントします。
     既定では `./discord-bot/google-service-key.json` を

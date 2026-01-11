@@ -30,6 +30,7 @@
 
 - **役割**: Discordからのスラッシュコマンドを受け付け、初期応答を返すプロセス。
 - **技術スタック**: Node.js (discord.js), Docker
+- **Docker運用**: `discord-bot` と `discord-scheduler` は `dokobasho-discord-bot:${DISCORD_BOT_IMAGE_TAG:-local}` を共有する。
 - **処理フロー**:
     1.  ユーザーが `/remind` コマンドを実行。
     2.  コマンドの引数をパースし、バリデーションを行う。
