@@ -66,7 +66,7 @@ services:
     env_file:
       - ./discord-bot/.env
     volumes:
-      - ./discord-bot/google-service-key.json:/app/keys/google-service-key.json:ro
+      - /docker/n8n/discord-bot/google-service-key.json:/app/keys/google-service-key.json:ro
 
 volumes:
   traefik_data:
