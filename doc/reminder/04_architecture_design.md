@@ -33,7 +33,10 @@
 - **処理フロー**:
     1.  ユーザーが `/remind` コマンドを実行。
     2.  コマンドの引数をパースし、バリデーションを行う。
-    3.  時刻文字列 (`time`) を `chrono-node` 等のライブラリで解釈し、UTCの `notify_time_utc` に変換する。
+    3.  時刻文字列 (`time`) を `chrono-node` で解釈し、UTCの `notify_time_utc` に変換する。
+        - `timezone` は IANA (`Asia/Tokyo`)、UTCオフセット (`+09:00`)、省略表記 (`JST`/`UTC`/`GMT`) を解決して解釈する。
+        - IANA タイムゾーンは DST 境界をまたぐ場合にオフセット差分を補正する。
+        - `timezone` 未指定時は `DEFAULT_TZ` (未設定なら `Asia/Tokyo`) を使用する。
     4.  Google Sheets API を通じて `Reminders` シートに新しい行としてデータを書き込む。
     5.  処理結果（成功・失敗）を `visibility` 設定に従いユーザーに応答する。
 
@@ -69,7 +72,7 @@
 | `BOT_TOKEN`             | Discord ボットの認証トークン（`DISCORD_BOT_TOKEN` でも可）。       | `Mxxxxxxxx...`                                    |
 | `GOOGLE_SA_KEY_JSON`    | Google Service Account の認証キー (JSON形式をBase64エンコード)。   | `ewogICJ0eXBlIjog...`                             |
 | `SHEET_ID`              | リマインダーを保存する Google スプレッドシートのID。              | `1a2b3c...`                                       |
-| `DEFAULT_TZ`            | ユーザーがタイムゾーンを指定しなかった場合のデフォルト値。        | `Asia/Tokyo`                                      |
+| `DEFAULT_TZ`            | `timezone` 未指定時のデフォルト値 (未設定なら `Asia/Tokyo`)。     | `Asia/Tokyo`                                      |
 
 - Docker運用ではホスト側の鍵ファイルをボリュームでマウントし、`GOOGLE_SA_KEY_PATH` が参照できるようにする。
 - `docker-compose.yml` ではホスト側の鍵パスを `GOOGLE_SA_KEY_FILE` で指定できる（既定は `./discord-bot/google-service-key.json`）。

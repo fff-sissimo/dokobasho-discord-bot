@@ -17,3 +17,8 @@
 
 - [品質向上タスク in requirement.md (`../requirement.md`)](./../requirement.md)
 - [単体テスト (`../__tests__/utils.test.js`)](./../../__tests__/utils.test.js)
+
+## 補足
+
+- `time` のタイムゾーン解釈は `discord-bot/src/timezone.js` で IANA/UTCオフセット/`JST`/`UTC`/`GMT` を解決し、DST境界の補正を行う。
+- 追加のタイムゾーンテストは `discord-bot/__tests__/timezone.test.js` を参照する。

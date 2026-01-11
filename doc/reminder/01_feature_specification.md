@@ -22,7 +22,7 @@
     - `channel`: `channel` (任意, `scope=server` の場合は必須) - 通知先チャンネル。
     - `visibility`: `enum` (`public` | `ephemeral`, デフォルト: `ephemeral` ※scope=`user`の場合) - 応答の可視性。
     - `recurring`: `enum` (`off` | `daily` | `weekly` | `monthly`, デフォルト: `off`) - 繰り返しの設定。
-    - `timezone`: `string` (任意) - `time`引数の解釈に用いるタイムゾーン（例: `Asia/Tokyo`）。指定がない場合はユーザー設定またはサーバーのデフォルト設定を利用。
+    - `timezone`: `string` (任意) - `time` 引数の解釈に用いるタイムゾーン。IANA (`Asia/Tokyo`)、UTCオフセット (`+09:00`)、省略表記 (`JST`/`UTC`/`GMT`) を受け付ける。指定がない場合は `DEFAULT_TZ` (未設定なら `Asia/Tokyo`) を利用。
     - `overwrite`: `boolean` (任意, デフォルト: `false`) - `true` の場合、同一 `scope` + `key` のリマインダーが存在すれば上書きする。
 - **挙動:**
     - 同一 `scope` + `key` のリマインダーが存在し、`overwrite` が `false` の場合はエラーを返す。

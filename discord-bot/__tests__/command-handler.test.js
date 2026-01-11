@@ -5,6 +5,15 @@ const sheets = require('../src/google-sheets');
 const chrono = require('chrono-node');
 const { ActionRowBuilder, ButtonBuilder, ButtonStyle } = require("discord.js"); // Required for testing button interactions
 
+const supportsIanaTimeZone = (timeZone) => {
+    try {
+        new Intl.DateTimeFormat('en-US', { timeZone }).format();
+        return true;
+    } catch (error) {
+        return false;
+    }
+};
+
 // Mock the entire google-sheets module
 jest.mock('../src/google-sheets', () => ({
     getSheetsClient: jest.fn().mockResolvedValue(true),
@@ -45,6 +54,7 @@ jest.mock('discord.js', () => {
 
 describe('Command Handler Integration Tests', () => {
     let mockInteraction;
+    let originalDefaultTz;
     const commonMockInteractionProps = {
         deferReply: jest.fn().mockResolvedValue(true),
         editReply: jest.fn().mockResolvedValue(true),
@@ -58,6 +68,8 @@ describe('Command Handler Integration Tests', () => {
 
     beforeEach(() => {
         jest.clearAllMocks(); // Clear all mocks before each test
+        originalDefaultTz = process.env.DEFAULT_TZ;
+        process.env.DEFAULT_TZ = 'JST';
         mockInteraction = {
             ...commonMockInteractionProps,
             options: {
@@ -70,6 +82,14 @@ describe('Command Handler Integration Tests', () => {
         };
 
         sheets.getSheetsClient.mockResolvedValue(true); // Ensure sheets client always initializes
+    });
+
+    afterEach(() => {
+        if (originalDefaultTz === undefined) {
+            delete process.env.DEFAULT_TZ;
+        } else {
+            process.env.DEFAULT_TZ = originalDefaultTz;
+        }
     });
 
     describe('/remind add', () => {
@@ -155,7 +175,15 @@ describe('Command Handler Integration Tests', () => {
         });
 
         it('should fail if a reminder with the same key already exists (without overwrite)', async () => {
-            mockInteraction.options.getString.mockReturnValue('some-value');
+            mockInteraction.options.getString.mockImplementation(opt => {
+                const options = {
+                    key: 'some-value',
+                    time: 'tomorrow at 10am',
+                    content: 'test content',
+                    timezone: null,
+                };
+                return options[opt] ?? null;
+            });
             mockInteraction.options.getBoolean.mockReturnValue(false);
             chrono.parseDate.mockReturnValue(new Date());
             sheets.getReminderByKey.mockResolvedValue({ id: 'existing-id', key: 'some-value' });
@@ -195,6 +223,135 @@ describe('Command Handler Integration Tests', () => {
             );
             const reply = mockInteraction.editReply.mock.calls[0][0];
             expect(reply.content).toContain('✅ リマインダーを更新しました！');
+        });
+
+        it('should reject invalid timezone input', async () => {
+            mockInteraction.options.getString.mockImplementation(opt => {
+                const options = {
+                    key: 'bad-tz',
+                    time: 'tomorrow at 10am',
+                    content: 'Invalid timezone reminder',
+                    timezone: 'Invalid/Zone',
+                };
+                return options[opt] ?? null;
+            });
+            mockInteraction.options.getBoolean.mockReturnValue(false);
+
+            await handleCommand(mockInteraction);
+
+            expect(chrono.parseDate).not.toHaveBeenCalled();
+            expect(sheets.addReminder).not.toHaveBeenCalled();
+            const reply = mockInteraction.editReply.mock.calls[0][0];
+            expect(reply.content).toContain('タイムゾーン');
+        });
+
+        it('should parse time with a UTC offset timezone', async () => {
+            mockInteraction.options.getString.mockImplementation(opt => {
+                const options = {
+                    key: 'offset-key',
+                    time: 'tomorrow at 10am',
+                    content: 'Offset reminder',
+                    timezone: '+08:00',
+                };
+                return options[opt] ?? null;
+            });
+            mockInteraction.options.getBoolean.mockReturnValue(false);
+
+            const fakeDate = new Date('2026-01-11T10:00:00.000Z');
+            chrono.parseDate.mockReturnValue(fakeDate);
+            sheets.getReminderByKey.mockResolvedValue(null);
+            sheets.addReminder.mockResolvedValue({ updates: { updatedCells: 1 } });
+
+            await handleCommand(mockInteraction);
+
+            expect(chrono.parseDate).toHaveBeenCalledWith(
+                'tomorrow at 10am',
+                expect.objectContaining({ timezone: 480 }),
+                { forwardDate: true }
+            );
+            const newReminder = sheets.addReminder.mock.calls[0][0];
+            expect(newReminder.timezone).toBe('+08:00');
+        });
+
+        it('should use an IANA timezone label', async () => {
+            mockInteraction.options.getString.mockImplementation(opt => {
+                const options = {
+                    key: 'iana-key',
+                    time: 'tomorrow at 10am',
+                    content: 'IANA reminder',
+                    timezone: 'Asia/Tokyo',
+                };
+                return options[opt] ?? null;
+            });
+            mockInteraction.options.getBoolean.mockReturnValue(false);
+
+            const fakeDate = new Date('2026-01-11T10:00:00.000Z');
+            chrono.parseDate.mockReturnValue(fakeDate);
+            sheets.getReminderByKey.mockResolvedValue(null);
+            sheets.addReminder.mockResolvedValue({ updates: { updatedCells: 1 } });
+
+            await handleCommand(mockInteraction);
+
+            const newReminder = sheets.addReminder.mock.calls[0][0];
+            expect(newReminder.timezone).toBe('Asia/Tokyo');
+        });
+
+        const itIfIana = supportsIanaTimeZone('America/New_York') ? it : it.skip;
+        itIfIana('should adjust for DST when using an IANA timezone', async () => {
+            jest.useFakeTimers();
+            jest.setSystemTime(new Date('2026-01-10T00:00:00.000Z'));
+            try {
+                mockInteraction.options.getString.mockImplementation(opt => {
+                    const options = {
+                        key: 'dst-key',
+                        time: '2026-07-01 10:00',
+                        content: 'DST reminder',
+                        timezone: 'America/New_York',
+                    };
+                    return options[opt] ?? null;
+                });
+                mockInteraction.options.getBoolean.mockReturnValue(false);
+
+                const parsedDate = new Date('2026-07-01T15:00:00.000Z');
+                chrono.parseDate.mockReturnValue(parsedDate);
+                sheets.getReminderByKey.mockResolvedValue(null);
+                sheets.addReminder.mockResolvedValue({ updates: { updatedCells: 1 } });
+
+                await handleCommand(mockInteraction);
+
+                const newReminder = sheets.addReminder.mock.calls[0][0];
+                expect(newReminder.notify_time_utc).toBe('2026-07-01T14:00:00.000Z');
+            } finally {
+                jest.useRealTimers();
+            }
+        });
+
+        it('should fall back to DEFAULT_TZ when timezone is omitted', async () => {
+            process.env.DEFAULT_TZ = 'UTC';
+            mockInteraction.options.getString.mockImplementation(opt => {
+                const options = {
+                    key: 'default-tz',
+                    time: 'tomorrow at 10am',
+                    content: 'Default timezone reminder',
+                };
+                return options[opt] ?? null;
+            });
+            mockInteraction.options.getBoolean.mockReturnValue(false);
+
+            const fakeDate = new Date('2026-01-11T10:00:00.000Z');
+            chrono.parseDate.mockReturnValue(fakeDate);
+            sheets.getReminderByKey.mockResolvedValue(null);
+            sheets.addReminder.mockResolvedValue({ updates: { updatedCells: 1 } });
+
+            await handleCommand(mockInteraction);
+
+            expect(chrono.parseDate).toHaveBeenCalledWith(
+                'tomorrow at 10am',
+                expect.objectContaining({ timezone: 0 }),
+                { forwardDate: true }
+            );
+            const newReminder = sheets.addReminder.mock.calls[0][0];
+            expect(newReminder.timezone).toBe('UTC');
         });
     });
 

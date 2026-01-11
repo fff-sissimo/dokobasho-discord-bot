@@ -11,6 +11,7 @@ const {
     deleteReminderById,
     updateReminder
 } = require('./google-sheets');
+const { resolveTimezone, adjustDateForTimezone } = require('./timezone');
 
 
 // --- Command Handler Logic ---
@@ -32,6 +33,12 @@ async function handleCommand(interaction) {
             const timezone = interaction.options.getString('timezone');
             const overwrite = interaction.options.getBoolean('overwrite') ?? false;
             const targetChannel = interaction.options.getChannel('channel');
+            const referenceInstant = new Date();
+            const resolvedTimezone = resolveTimezone(timezone, referenceInstant);
+            if (resolvedTimezone.error) {
+                await interaction.editReply({ content: resolvedTimezone.error });
+                return;
+            }
 
             const hasAdminPermission = Boolean(interaction.member?.permissions?.has('Administrator'));
             if (scope === 'server' && !hasAdminPermission) {
@@ -43,10 +50,21 @@ async function handleCommand(interaction) {
                 return;
             }
 
-            const parsedDate = chrono.parseDate(time, { timezone, forwardDate: true });
+            let parsedDate = chrono.parseDate(
+                time,
+                { instant: referenceInstant, timezone: resolvedTimezone.offset },
+                { forwardDate: true }
+            );
             if (!parsedDate) {
                 await interaction.editReply({ content: `❌ 時刻の指定が正しくありません。「明日の10時」や「2026-01-11 15:00」のように指定してください。` });
                 return;
+            }
+            if (resolvedTimezone.source === 'iana') {
+                parsedDate = adjustDateForTimezone(
+                    parsedDate,
+                    resolvedTimezone.label,
+                    resolvedTimezone.offset
+                );
             }
 
             const existing = await getReminderByKey(key, scope);
@@ -66,7 +84,7 @@ async function handleCommand(interaction) {
                     channel_id: channelId,
                     user_id: interaction.user.id,
                     notify_time_utc: parsedDate.toISOString(),
-                    timezone: timezone ?? 'Asia/Tokyo',
+                    timezone: resolvedTimezone.label,
                     recurring,
                     visibility,
                     status: 'pending',
@@ -76,7 +94,7 @@ async function handleCommand(interaction) {
                 }, { rowIndex: existing.rowIndex });
                 await interaction.editReply({ content: `✅ リマインダーを更新しました！\n**キー:** ${key}\n**次回通知:** ${displayDate}`, ephemeral: visibility === 'ephemeral' });
             } else {
-                const newReminder = { id: uuidv4(), key, content, scope, guild_id: interaction.guild?.id, channel_id: channelId, user_id: interaction.user.id, notify_time_utc: parsedDate.toISOString(), timezone: timezone ?? 'Asia/Tokyo', recurring, visibility, created_by: interaction.user.id, created_at: new Date().toISOString(), status: 'pending', last_sent: '', retry_count: 0, metadata: '{}' };
+                const newReminder = { id: uuidv4(), key, content, scope, guild_id: interaction.guild?.id, channel_id: channelId, user_id: interaction.user.id, notify_time_utc: parsedDate.toISOString(), timezone: resolvedTimezone.label, recurring, visibility, created_by: interaction.user.id, created_at: new Date().toISOString(), status: 'pending', last_sent: '', retry_count: 0, metadata: '{}' };
                 await addReminder(newReminder);
                 await interaction.editReply({ content: `✅ リマインダーを登録しました！\n**キー:** ${key}\n**次回通知:** ${displayDate}`, ephemeral: visibility === 'ephemeral' });
             }

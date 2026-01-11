@@ -76,7 +76,7 @@ Discord APIに登録するためのスラッシュコマンド定義。
           },
           {
             "name": "timezone",
-            "description": "時刻の解釈に使うタイムゾーン (例: Asia/Tokyo)",
+            "description": "時刻の解釈に使うタイムゾーン (例: Asia/Tokyo / +09:00 / JST)",
             "type": 3, // STRING
             "required": false
           },

@@ -29,7 +29,7 @@ Google Sheets（Reminders）スキーマ（各列）
 - 再起動耐性のため全状態はシートで管理。
 
 時刻処理
-- 日本語の自然言語パース（例: 明日15時, 1時間後, 毎日10:00）。ライブラリ推奨: chrono-node/dateparser 等。サーバーデフォルトタイムゾーンを用いるが、users ごとの timezone を Users シートで保持可能。
+- 日本語の自然言語パース（例: 明日15時, 1時間後, 毎日10:00）。ライブラリ推奨: chrono-node/dateparser 等。`timezone` は IANA/UTCオフセット/`JST`/`UTC`/`GMT` を解決し、未指定時は `DEFAULT_TZ` (未設定なら `Asia/Tokyo`) を用いる。
 
 通知方法／表示
 - user scope: DM（ephemeral ではなく実際のDM通知）既定。channel scope: チャンネル投稿既定。visibility パラメータで表示制御。
@@ -47,7 +47,7 @@ Google Sheets（Reminders）スキーマ（各列）
 
 追加納品物（要求）
 - Discord のスラッシュコマンド定義 JSON（Discord API 登録用）
-- Google Service Account 設定手順と必要な環境変数: BOT_TOKEN (または DISCORD_BOT_TOKEN), GOOGLE_SA_KEY_JSON, SHEET_ID, DEFAULT_TZ
+- Google Service Account 設定手順と必要な環境変数: BOT_TOKEN (または DISCORD_BOT_TOKEN), GOOGLE_SA_KEY_JSON, SHEET_ID, DEFAULT_TZ (未設定なら Asia/Tokyo)
 - スケジューラの実行手順（cron/Cloud Run 等）
 - 単体テストケース（time parse の正常/異常系、権限チェック、送信フローのエラーリトリガー）
 - README にデプロイ手順と運用上の注意（タイムゾーン、再実行権限、手動再送の方法）
