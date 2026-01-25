@@ -7,9 +7,12 @@ const { getSheetsClient } = require('./src/google-sheets');
 const { handleCommand, handleButton } = require('./src/command-handler');
 const logger = require('./src/logger');
 const { MESSAGES } = require('./src/message-templates');
+const { createWebhookRequestBuilder } = require('./src/n8n-webhook');
 
 const token = getBotToken();
 const webhookUrl = process.env.N8N_WEBHOOK_URL;
+const webhookSecret = process.env.N8N_WEBHOOK_SECRET;
+const webhookRequest = createWebhookRequestBuilder({ webhookUrl, webhookSecret, logger });
 
 // --- Cache (for n8n logic) ---
 const BOT_MESSAGE_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
@@ -77,13 +80,15 @@ client.on("messageCreate", async (message) => {
   }
 
   if (!message.mentions.users.has(client.user.id) && !isReplyToBot) return;
+  if (!webhookRequest.shouldSend()) return;
 
   const payload = { discord_user_id: message.author.id, discord_username: message.author.username, channel_id: message.channel?.id, guild_id: message.guild?.id, message_id: message.id, content: message.content, created_at: message.createdAt.toISOString() };
 
   try {
+    const headers = webhookRequest.buildHeaders();
     const response = await fetch(webhookUrl, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers,
       body: JSON.stringify(payload),
     });
     if (!response.ok)     logger.warn(`[webhook] Non-2xx response: ${response.status}`);

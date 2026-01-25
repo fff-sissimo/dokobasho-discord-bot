@@ -22,7 +22,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
 
   n8n:
-    image: docker.n8n.io/n8nio/n8n:2.3.4
+    image: docker.n8n.io/n8nio/n8n:2.4.6
     restart: always
     ports:
       - "127.0.0.1:5678:5678"
@@ -62,7 +62,7 @@ services:
       - /data/n8n-video:/data/n8n-video
 
   n8n-runners:
-    image: n8nio/runners:2.3.4
+    image: n8nio/runners:2.4.6
     restart: always
     depends_on:
       - n8n

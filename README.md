@@ -36,6 +36,7 @@ Discord上で動作する多機能ボット。リマインダー機能などを�
     - `REMINDER_MAX_ROWS`: (任意) シート行数の上限。超過時は処理を停止して移行を促します。
     - `REMINDER_SENDING_TIMEOUT_MS`: (任意) `sending` 状態のリマインダーを再取得するまでの待機時間(ミリ秒)。
     - `N8N_WEBHOOK_URL`: (任意) n8n連携用のWebhook URL。
+    - `N8N_WEBHOOK_SECRET`: (任意) n8n Webhook の共有シークレット。Webhook Guard を有効にしている場合は必須。
 
 4.  **Google Service Account と Google Sheets API の設定:**
     - Google Cloud Platformでプロジェクトを作成し、Google Sheets APIを有効にします。
