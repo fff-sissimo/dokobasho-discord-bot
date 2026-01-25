@@ -14,18 +14,12 @@ Discord APIに登録するためのスラッシュコマンド定義。
     "options": [
       {
         "name": "add",
-        "description": "新しいリマインダーを登録します。",
+        "description": "新しいリマインダーを登録します (キーは自動生成: 8文字)。",
         "type": 1, // SUB_COMMAND
         "options": [
           {
-            "name": "key",
-            "description": "リマインダーを識別するキー (1-100文字)",
-            "type": 3, // STRING
-            "required": true
-          },
-          {
             "name": "time",
-            "description": "通知時刻 (例: 「明日の15時」「3日後 10:00」)",
+            "description": "通知時刻 (例: 「明日の15時」「10分後」「3日後 10:00」)",
             "type": 3, // STRING
             "required": true
           },
@@ -79,36 +73,6 @@ Discord APIに登録するためのスラッシュコマンド定義。
             "description": "時刻の解釈に使うタイムゾーン (例: Asia/Tokyo / +09:00 / JST)",
             "type": 3, // STRING
             "required": false
-          },
-          {
-            "name": "overwrite",
-            "description": "既存のリマインダーを上書きしますか？",
-            "type": 5, // BOOLEAN
-            "required": false
-          }
-        ]
-      },
-      {
-        "name": "get",
-        "description": "リマインダーの詳細を取得します。",
-        "type": 1, // SUB_COMMAND
-        "options": [
-          {
-            "name": "key",
-            "description": "取得するリマインダーのキー",
-            "type": 3, // STRING
-            "required": true
-          },
-          {
-            "name": "scope",
-            "description": "公開範囲",
-            "type": 3, // STRING
-            "required": true,
-            "choices": [
-              { "name": "自分のみ (User)", "value": "user" },
-              { "name": "このチャンネル (Channel)", "value": "channel" },
-              { "name": "サーバー全体 (Server)", "value": "server" }
-            ]
           }
         ]
       },
@@ -176,3 +140,6 @@ Discord APIに登録するためのスラッシュコマンド定義。
   }
 ]
 ```
+
+- `key` は `/remind add` 実行時に8文字の英数字 (I/O/0/1 を除外) で自動生成され、レスポンスおよび `/remind list` に表示される。既存キーの長さは制限せず、`list`/`delete` は文字列として扱う。
+- `/remind get` は運用中止のため、コマンド登録対象外とする。

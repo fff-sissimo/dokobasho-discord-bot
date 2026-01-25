@@ -10,9 +10,9 @@
 - [ ] `chrono-node` を使用して、`time`引数の自然言語文字列をDateオブジェクトにパースする。
     - パース失敗時は、仕様書に沿ったエラーメッセージをユーザーに返す。
 - [ ] コマンドの引数をバリデーションする (文字数制限など)。
-- [ ] `overwrite` オプションの挙動を実装する。`false` の場合は `TICKET-03` で作成した `getReminder` を使い、既存リマインダーの有無をチェックする。
+- [ ] `key` を自動生成し、登録完了メッセージと `/remind list` で確認できるようにする。
 - [ ] `scope` に応じて `guild_id`, `channel_id`, `user_id` を適切に設定する。
-- [ ] `TICKET-03` の `addReminder` (または `updateReminder`) を呼び出し、データをGoogle Sheetsに保存する。
+- [ ] `TICKET-03` の `addReminder` を呼び出し、データをGoogle Sheetsに保存する。
 - [ ] 処理結果（成功・失敗）を `visibility` の設定に従ってユーザーに返信する。
 
 ## 実装のヒント

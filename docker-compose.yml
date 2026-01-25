@@ -53,10 +53,24 @@ services:
       - N8N_PROXY_HOPS=1
       - N8N_EXECUTIONS_PROCESS=main
       - N8N_ENABLE_NODE_EXECUTIONS=true
+      - N8N_RUNNERS_ENABLED=true
+      - N8N_RUNNERS_MODE=external
+      - N8N_RUNNERS_AUTH_TOKEN=${N8N_RUNNERS_AUTH_TOKEN}
+      - N8N_RUNNERS_BROKER_LISTEN_ADDRESS=0.0.0.0
     volumes:
       - n8n_data:/home/node/.n8n
       - /local-files:/files
       - /data/n8n-video:/data/n8n-video
+
+  n8n-runners:
+    image: n8nio/runners:2.0.3
+    restart: always
+    depends_on:
+      - n8n
+    environment:
+      - N8N_RUNNERS_TASK_BROKER_URI=http://n8n:5679
+      - N8N_RUNNERS_AUTH_TOKEN=${N8N_RUNNERS_AUTH_TOKEN}
+      - N8N_RUNNERS_AUTO_SHUTDOWN_TIMEOUT=15
 
   discord-bot:
     image: dokobasho-discord-bot:${DISCORD_BOT_IMAGE_TAG:-local}

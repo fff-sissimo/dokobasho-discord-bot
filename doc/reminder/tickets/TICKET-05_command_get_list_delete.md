@@ -1,17 +1,15 @@
-# TICKET-05: `/remind get, list, delete` コマンドの実装
+# TICKET-05: `/remind list, delete` コマンドの実装
 
 ## 概要
 
-登録済みのリマインダーを管理するための `/remind get`, `/remind list`, `/remind delete` コマンドのロジックを実装する。
+登録済みのリマインダーを管理するための `/remind list`, `/remind delete` コマンドのロジックを実装する。`/remind get` は運用中止。
 
 ## ToDo
 
-- [ ] **`/remind get`**:
-    - [ ] `TICKET-03` の `getReminderByKey` を呼び出し、結果を整形してユーザーに表示する。
-    - [ ] 時刻はユーザーのタイムゾーンに合わせて表示することが望ましい。
 - [ ] **`/remind list`**:
     - [ ] `TICKET-03` の `listReminders` を呼び出し、結果を箇条書き形式で表示する。
     - [ ] `query` 引数によるフィルタリングを実装する。
+    - [ ] 自動生成された `key` を一覧に表示する。
 - [ ] **`/remind delete`**:
     - [ ] `confirm=false` の場合、確認メッセージと「削除実行」ボタンを表示する。ボタンインタラクションを待つ処理を実装する。
     - [ ] `confirm=true` またはボタンが押された場合、`TICKET-03` の `deleteReminderById` を呼び出して削除を実行する。

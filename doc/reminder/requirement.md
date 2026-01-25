@@ -4,16 +4,16 @@
 
 必須コマンド仕様
 1) /remind add
-- 引数: key:string(必須, 1-100) time:string(必須, 自然文 or ISO) content:string(必須, 1-2000) scope:enum(user|channel|server, default=user) visibility:enum(public|ephemeral, default=ephemeral for user) recurring:enum(off|daily|weekly|monthly, default=off) timezone:string(optional)
-- 挙動: 同一(scope+key) が存在する場合はエラーを返すか、--overwrite オプションで上書き可。time は自然言語（日本語含む）をパース。パース失敗時は具体例を返す。
+- 引数: time:string(必須, 自然文 or ISO) content:string(必須, 1-2000) scope:enum(user|channel|server, default=user) visibility:enum(public|ephemeral, default=ephemeral for user) recurring:enum(off|daily|weekly|monthly, default=off) timezone:string(optional)
+- 挙動: key は8文字の英数字 (I/O/0/1 を除外) で自動生成し、登録完了メッセージと list に表示する。既存のキーは長さに関係なく有効とする。time は自然言語（日本語含む）をパース。パース失敗時は具体例を返す。
 
 2) /remind get
-- 引数: key:string, scope:選択
-- 挙動: 指定のリマインダー詳細を返す（time はユーザーのタイムゾーンで表示）。存在しなければ該当なしメッセージ。
+- 運用中止（利用不可）。必要な確認は /remind list を利用する。
+- 既存リマインダーの更新は /remind list でキーを確認し、/remind delete 後に /remind add で再登録する。
 
 3) /remind list
 - 引数: scope:選択, query:string(optional), limit:int(default50)
-- 挙動: 箇条書きで一覧（key / 次回通知時刻 / 繰り返し / content の短縮表示）。
+- 挙動: 箇条書きで一覧（自動生成された8文字のkey / 次回通知時刻 / 繰り返し / content の短縮表示）。
 
 4) /remind delete
 - 引数: key:string, scope:選択, confirm:bool(optional)
@@ -29,7 +29,7 @@ Google Sheets（Reminders）スキーマ（各列）
 - 再起動耐性のため全状態はシートで管理。
 
 時刻処理
-- 日本語の自然言語パース（例: 明日15時, 1時間後, 毎日10:00）。ライブラリ推奨: chrono-node/dateparser 等。`timezone` は IANA/UTCオフセット/`JST`/`UTC`/`GMT` を解決し、未指定時は `DEFAULT_TZ` (未設定なら `Asia/Tokyo`) を用いる。
+- 日本語の自然言語パース（例: 明日15時, 10分後, 1時間後, 毎日10:00）。ライブラリ推奨: chrono-node/dateparser 等。`timezone` は IANA/UTCオフセット/`JST`/`UTC`/`GMT` を解決し、未指定時は `DEFAULT_TZ` (未設定なら `Asia/Tokyo`) を用いる。
 
 通知方法／表示
 - user scope: DM（ephemeral ではなく実際のDM通知）既定。channel scope: チャンネル投稿既定。visibility パラメータで表示制御。
@@ -42,8 +42,8 @@ Google Sheets（Reminders）スキーマ（各列）
 - 変更ログや失敗ログは同シート内カラム、または別 Log シートに記録。
 
 出力例（ユーザー向け）
-- 成功（add）: 「✅ リマインダー登録完了 — key: 学習 / 次回: 2026-01-11 15:00 (JST) / scope: channel」
-- list: 箇条書きで key — 次回 — 繰り返し — content(先頭60字)
+- 成功（add）: 「✅ リマインダー登録完了 — key: K7M2Z9H4 / 次回: 2026-01-11 15:00 (JST) / scope: channel」
+- list: 箇条書きで key — 次回 — 繰り返し — content(先頭30字)
 
 追加納品物（要求）
 - Discord のスラッシュコマンド定義 JSON（Discord API 登録用）
@@ -70,7 +70,7 @@ Google Sheets（Reminders）スキーマ（各列）
 2.  **テスト拡充**:
     -   **目的**: コードの信頼性を高め、リファクタリングを容易にする。
     -   **内容**: Jestのカバレッジを向上させる。特に、以下のテストケースを追加する。
-        -   `/remind` の `get`, `list`, `delete` サブコマンドの結合テスト。
+        -   `/remind` の `list`, `delete` サブコマンドの結合テスト。
         -   `delete` 確認ボタンのハンドラのテスト。
         -   スケジューラ (`scheduler.js`) のロジック全体のテスト（時刻通りにジョブが実行されるか、通知が正しく送信されるか、エラー処理が機能するか等）。
         -   権限チェック（管理者のみ実行可能な操作など）のテスト。

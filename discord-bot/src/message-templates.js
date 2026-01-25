@@ -20,7 +20,7 @@ const MESSAGES = {
         listItem: (key, contentPreview, displayDate) => `- \`${key}\`: ${contentPreview}... (通知: ${displayDate})`,
         listHeader: (scope, total, displayed, listContent) => `**リマインダー一覧 (${scope}) - ${total}件中${displayed}件表示だよ**\n${listContent}`,
         alreadyDeleted: 'このリマインダーはもう消えてるみたいだよ。',
-        deleteConfirmLabel: 'うん、削除する',
+        deleteConfirmLabel: '削除する',
         deleteConfirm: (key) => `本当にリマインダー「${key}」を削除する？一度消したら戻せないよ。`,
         deleteSuccess: (key) => `✅ リマインダー「${key}」を削除したよ。`,
     },
@@ -30,7 +30,7 @@ const MESSAGES = {
             add: {
                 description: '新しいリマインダーを登録するよ (キーは自動生成: 8文字)。',
                 options: {
-                    time: '通知時刻 (例: 「明日の15時」「10分後」「3日後 10:00」)',
+                    time: '通知時刻 (例: 「2026-01-15 12:00」「10分後」)',
                     content: 'リマインド内容 (1-2000文字)',
                     scope: '公開範囲 (デフォルト: user)',
                     channel: '通知先チャンネル (scope=server の場合は必須)',
