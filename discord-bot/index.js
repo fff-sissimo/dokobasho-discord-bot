@@ -10,6 +10,7 @@ const {
   DEFAULT_FAST_PATH_CAPS,
   createSlowPathWebhookClient,
   createFairyInteractionHandler,
+  createFairyMessageHandler,
 } = require("./src/fairy-fast-path");
 const { createOpenAiFirstReplyComposer } = require("./src/fairy-first-reply-ai");
 const logger = require('./src/logger');
@@ -25,6 +26,14 @@ const parsePositiveInt = (raw, fallback) => {
   const parsed = Number(raw);
   if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
   return Math.floor(parsed);
+};
+
+const parseBoolean = (raw, fallback) => {
+  if (raw === undefined || raw === null || raw === "") return fallback;
+  const normalized = String(raw).trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return fallback;
 };
 
 const collectRecentChannelContext = async (
@@ -50,6 +59,8 @@ const collectRecentChannelContext = async (
 };
 
 let fairyInteractionHandler = null;
+let fairyMessageHandler = null;
+const fairyMessageTriggerEnabled = parseBoolean(process.env.FAIRY_ENABLE_MESSAGE_TRIGGER, true);
 try {
   const slowPathClient = createSlowPathWebhookClient({
     n8nBase: process.env.N8N_BASE,
@@ -67,6 +78,11 @@ try {
   fairyInteractionHandler = createFairyInteractionHandler({
     slowPathClient,
     contextSource: (interaction) => collectRecentChannelContext(interaction),
+    firstReplyComposer,
+  });
+  fairyMessageHandler = createFairyMessageHandler({
+    slowPathClient,
+    contextSource: (message) => collectRecentChannelContext(message),
     firstReplyComposer,
   });
 } catch (error) {
@@ -119,7 +135,7 @@ client.once(Events.ClientReady, (c) => {
 
 // --- n8n Webhook Handler ---
 client.on("messageCreate", async (message) => {
-  if (!webhookUrl || !client.user || message.author.bot) {
+  if (!client.user || message.author.bot) {
     if (message.author.id === client.user?.id) rememberBotMessage(message.id);
     return;
   }
@@ -138,7 +154,37 @@ client.on("messageCreate", async (message) => {
     } catch (error) {    logger.warn("[reply] Failed to fetch referenced message", error); }
   }
 
-  if (!message.mentions.users.has(client.user.id) && !isReplyToBot) return;
+  const isMentionToBot = message.mentions.users.has(client.user.id);
+  if (!isMentionToBot && !isReplyToBot) return;
+
+  if (fairyMessageTriggerEnabled && fairyMessageHandler) {
+    try {
+      const result = await fairyMessageHandler(message);
+      if (result.handled) {
+        logger.info(
+          `[fairy] message-trigger request_id=${result.requestId} firstReply=${result.firstReplyLatencyMs}ms source=${result.firstReplySource || "fallback"}`
+        );
+        if (result.firstReplySource === "fallback" && result.firstReplyError) {
+          logger.warn(
+            { requestId: result.requestId, error: result.firstReplyError },
+            "[fairy] message-trigger first reply composer fallback"
+          );
+        }
+        if (result.enqueueError) {
+          logger.warn(
+            { requestId: result.requestId, error: result.enqueueError },
+            "[fairy] message-trigger enqueue failed"
+          );
+        }
+        return;
+      }
+    } catch (error) {
+      logger.error({ err: error }, "[fairy] message-trigger failed");
+      return;
+    }
+  }
+
+  if (!webhookUrl) return;
   if (!webhookRequest.shouldSend()) return;
 
   const payload = { discord_user_id: message.author.id, discord_username: message.author.username, channel_id: message.channel?.id, guild_id: message.guild?.id, message_id: message.id, content: message.content, created_at: message.createdAt.toISOString() };

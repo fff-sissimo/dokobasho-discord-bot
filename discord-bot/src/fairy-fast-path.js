@@ -20,13 +20,26 @@ const sanitizeSummaryText = (value) =>
 
 const normalizeMessage = (value) => String(value).replace(/\s+/g, " ").trim();
 
+const normalizeInvocationMessage = (raw) => {
+  const normalized = sanitizeSummaryText(raw);
+  return normalized || "依頼内容を確認して処理を開始する";
+};
+
 const readInvocationMessage = (interaction) => {
   const raw =
     interaction.options && typeof interaction.options.getString === "function"
       ? interaction.options.getString("request", false) || ""
       : "";
-  const normalized = sanitizeSummaryText(raw);
-  return normalized || "依頼内容を確認して処理を開始する";
+  return normalizeInvocationMessage(raw);
+};
+
+const readInvocationMessageFromMessage = (message) => {
+  const botId = message && message.client && message.client.user ? String(message.client.user.id || "") : "";
+  const raw = String((message && message.content) || "");
+  if (!botId) return normalizeInvocationMessage(raw);
+  const mentionTokenPattern = new RegExp(`<@!?${botId}>`, "g");
+  const stripped = raw.replace(mentionTokenPattern, " ");
+  return normalizeInvocationMessage(stripped);
 };
 
 const generateRequestId = (date = new Date(), randomSource = randomUUID) => {
@@ -165,6 +178,68 @@ const createSlowPathWebhookClient = ({
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+const composeFirstReply = async ({ invocationMessage, contextMessages, firstReplyComposer }) => {
+  const fallbackFirstReply = buildFirstReplyMessage(invocationMessage);
+  if (typeof firstReplyComposer !== "function") {
+    return {
+      firstReplyMessage: fallbackFirstReply,
+      firstReplySource: "fallback",
+      firstReplyError: undefined,
+    };
+  }
+
+  try {
+    const generated = await firstReplyComposer({
+      invocationMessage,
+      contextExcerpt: contextMessages,
+    });
+    return {
+      firstReplyMessage: normalizeFirstReplyForDiscord(generated, fallbackFirstReply),
+      firstReplySource: "ai",
+      firstReplyError: undefined,
+    };
+  } catch (error) {
+    return {
+      firstReplyMessage: fallbackFirstReply,
+      firstReplySource: "fallback",
+      firstReplyError: sanitizeSummaryText(String(error)).slice(0, 280),
+    };
+  }
+};
+
+const enqueueSlowPathWithRetry = async ({
+  slowPathClient,
+  payload,
+  enqueueAttempts,
+  enqueueRetryDelayMs,
+}) => {
+  let enqueueError;
+  for (let attempt = 1; attempt <= enqueueAttempts; attempt += 1) {
+    try {
+      await slowPathClient.enqueue(payload);
+      enqueueError = undefined;
+      break;
+    } catch (error) {
+      enqueueError = String(error);
+      if (attempt < enqueueAttempts) {
+        await delay(enqueueRetryDelayMs);
+      }
+    }
+  }
+  return enqueueError;
+};
+
+const buildEnqueueFailureMessage = (firstReplyMessage, enqueueError) => {
+  const detail = sanitizeSummaryText(enqueueError).slice(0, 140);
+  return [
+    firstReplyMessage,
+    "",
+    "後続処理の投入に失敗したため自動処理を開始できませんでした。",
+    `詳細: ${detail || "n8n webhook enqueue failed"}`,
+    "時間をおいて再実行してください。",
+  ].join("\n");
+};
+
 const handleFairyInteraction = async (interaction, options) => {
   if (interaction.commandName !== FAIRY_COMMAND_NAME) {
     return { handled: false };
@@ -189,23 +264,11 @@ const handleFairyInteraction = async (interaction, options) => {
 
   const requestId =
     (options.requestIdFactory && options.requestIdFactory()) || generateRequestId(new Date());
-  const fallbackFirstReply = buildFirstReplyMessage(invocationMessage);
-  let firstReplyMessage = fallbackFirstReply;
-  let firstReplySource = "fallback";
-  let firstReplyError;
-  if (typeof options.firstReplyComposer === "function") {
-    try {
-      const generated = await options.firstReplyComposer({
-        invocationMessage,
-        contextExcerpt: context.messages,
-      });
-      firstReplyMessage = normalizeFirstReplyForDiscord(generated, fallbackFirstReply);
-      firstReplySource = "ai";
-    } catch (error) {
-      firstReplyMessage = fallbackFirstReply;
-      firstReplyError = sanitizeSummaryText(String(error)).slice(0, 280);
-    }
-  }
+  const { firstReplyMessage, firstReplySource, firstReplyError } = await composeFirstReply({
+    invocationMessage,
+    contextMessages: context.messages,
+    firstReplyComposer: options.firstReplyComposer,
+  });
   const firstReplyResult = await interaction.editReply({ content: firstReplyMessage });
   const firstReplyMessageId =
     firstReplyResult && typeof firstReplyResult === "object" && typeof firstReplyResult.id === "string"
@@ -240,30 +303,15 @@ const handleFairyInteraction = async (interaction, options) => {
 
   const enqueueAttempts = Math.max(1, Number(options.enqueueAttempts || 2));
   const enqueueRetryDelayMs = Math.max(0, Number(options.enqueueRetryDelayMs || 300));
-  let enqueueError;
-
-  for (let attempt = 1; attempt <= enqueueAttempts; attempt += 1) {
-    try {
-      await options.slowPathClient.enqueue(payload);
-      enqueueError = undefined;
-      break;
-    } catch (error) {
-      enqueueError = String(error);
-      if (attempt < enqueueAttempts) {
-        await delay(enqueueRetryDelayMs);
-      }
-    }
-  }
+  const enqueueError = await enqueueSlowPathWithRetry({
+    slowPathClient: options.slowPathClient,
+    payload,
+    enqueueAttempts,
+    enqueueRetryDelayMs,
+  });
 
   if (enqueueError) {
-    const detail = sanitizeSummaryText(enqueueError).slice(0, 140);
-    const failureMessage = [
-      firstReplyMessage,
-      "",
-      "後続処理の投入に失敗したため自動処理を開始できませんでした。",
-      `詳細: ${detail || "n8n webhook enqueue failed"}`,
-      "時間をおいて再実行してください。",
-    ].join("\n");
+    const failureMessage = buildEnqueueFailureMessage(firstReplyMessage, enqueueError);
     try {
       await interaction.editReply({ content: failureMessage });
     } catch (_error) {
@@ -284,6 +332,106 @@ const handleFairyInteraction = async (interaction, options) => {
   };
 };
 
+const handleFairyMessage = async (message, options) => {
+  const now = options.now || Date.now;
+  const startedAtMs = now();
+  const invocationMessage = readInvocationMessageFromMessage(message);
+  const recentMessages = options.contextSource ? await options.contextSource(message) : [invocationMessage];
+  const caps = options.caps || DEFAULT_FAST_PATH_CAPS;
+  const context = collectFastPathContext({
+    recentMessages,
+    caps,
+    now,
+    startedAtMs,
+  });
+
+  const requestId =
+    (options.requestIdFactory && options.requestIdFactory()) || generateRequestId(new Date());
+  const { firstReplyMessage, firstReplySource, firstReplyError } = await composeFirstReply({
+    invocationMessage,
+    contextMessages: context.messages,
+    firstReplyComposer: options.firstReplyComposer,
+  });
+
+  const firstReplyResult = await message.reply({
+    content: firstReplyMessage,
+    allowedMentions: { repliedUser: false },
+  });
+  const firstReplyMessageId =
+    firstReplyResult && typeof firstReplyResult === "object" && typeof firstReplyResult.id === "string"
+      ? firstReplyResult.id
+      : null;
+  const firstReplyLatencyMs = now() - startedAtMs;
+
+  const payload = {
+    request_id: requestId,
+    event_id: message.id,
+    application_id:
+      (message.client && message.client.application && message.client.application.id) ||
+      (message.client && message.client.user && message.client.user.id) ||
+      null,
+    user_id: message.author.id,
+    channel_id: message.channelId || (message.channel && message.channel.id) || null,
+    guild_id: message.guildId || null,
+    command_name: FAIRY_COMMAND_NAME,
+    invocation_message: invocationMessage,
+    context_excerpt: context.messages,
+    context_meta: {
+      considered_messages: context.consideredMessages,
+      used_messages: context.usedMessages,
+      max_messages: caps.maxMessages,
+      max_links: caps.maxLinks,
+      max_chars: caps.maxChars,
+      collection_deadline_ms: caps.collectionDeadlineMs,
+      total_chars: context.totalChars,
+      reached_deadline: context.reachedDeadline,
+      truncated: context.truncated,
+    },
+    first_reply_message_id: firstReplyMessageId,
+    created_at:
+      message.createdAt && typeof message.createdAt.toISOString === "function"
+        ? message.createdAt.toISOString()
+        : new Date().toISOString(),
+  };
+
+  const enqueueAttempts = Math.max(1, Number(options.enqueueAttempts || 2));
+  const enqueueRetryDelayMs = Math.max(0, Number(options.enqueueRetryDelayMs || 300));
+  const enqueueError = await enqueueSlowPathWithRetry({
+    slowPathClient: options.slowPathClient,
+    payload,
+    enqueueAttempts,
+    enqueueRetryDelayMs,
+  });
+
+  if (enqueueError) {
+    const failureMessage = buildEnqueueFailureMessage(firstReplyMessage, enqueueError);
+    try {
+      if (firstReplyResult && typeof firstReplyResult.edit === "function") {
+        await firstReplyResult.edit({ content: failureMessage });
+      } else {
+        await message.reply({
+          content: failureMessage,
+          allowedMentions: { repliedUser: false },
+        });
+      }
+    } catch (_error) {
+      // keep initial message
+    }
+  }
+
+  return {
+    handled: true,
+    requestId,
+    deferLatencyMs: null,
+    firstReplyLatencyMs,
+    firstReplyMessage,
+    firstReplySource,
+    firstReplyError,
+    payload,
+    enqueueError,
+  };
+};
+
 const createFairyInteractionHandler = (options) => async (interaction) => {
   if (!interaction.isChatInputCommand || !interaction.isChatInputCommand()) {
     return { handled: false };
@@ -294,6 +442,13 @@ const createFairyInteractionHandler = (options) => async (interaction) => {
   return handleFairyInteraction(interaction, options);
 };
 
+const createFairyMessageHandler = (options) => async (message) => {
+  if (!message || !message.content || !message.author || message.author.bot) {
+    return { handled: false };
+  }
+  return handleFairyMessage(message, options);
+};
+
 module.exports = {
   FAIRY_COMMAND_NAME,
   DEFAULT_FAST_PATH_CAPS,
@@ -302,4 +457,5 @@ module.exports = {
   collectFastPathContext,
   createSlowPathWebhookClient,
   createFairyInteractionHandler,
+  createFairyMessageHandler,
 };

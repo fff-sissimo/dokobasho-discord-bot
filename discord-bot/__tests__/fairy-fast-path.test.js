@@ -4,6 +4,7 @@ const {
   buildFirstReplyMessage,
   collectFastPathContext,
   createFairyInteractionHandler,
+  createFairyMessageHandler,
 } = require("../src/fairy-fast-path");
 
 describe("fairy fast path", () => {
@@ -191,5 +192,51 @@ describe("fairy fast path", () => {
     expect(result.firstReplySource).toBe("fallback");
     expect(enqueue).toHaveBeenCalledTimes(1);
     expect(enqueue.mock.calls[0][0].first_reply_message_id).toBe("112233445566778899");
+  });
+
+  it("handles mention/reply message and enqueues slow path payload", async () => {
+    const enqueue = jest.fn().mockResolvedValue({ status: 200 });
+    const replyEdit = jest.fn().mockResolvedValue(undefined);
+    const handler = createFairyMessageHandler({
+      slowPathClient: { enqueue },
+      contextSource: async () => ["msg-context-1", "msg-context-2"],
+      requestIdFactory: () => "RQ-20260223-000000000-eeeeeeeeeeee",
+      firstReplyComposer: async () => "了解だよ。まず整理してから、要点をわかりやすく返すね。ちょっと待っててね。",
+      enqueueAttempts: 1,
+    });
+
+    const message = {
+      id: "msg_001",
+      content: "<@1100870989518213200> テストして？",
+      createdAt: new Date("2026-02-23T12:00:00.000Z"),
+      channelId: "723456789012345678",
+      guildId: "823456789012345678",
+      author: { id: "user_msg_001", bot: false },
+      client: {
+        user: { id: "1100870989518213200" },
+        application: { id: "app_msg_001" },
+      },
+      reply: jest.fn().mockResolvedValue({ id: "msg_reply_001", edit: replyEdit }),
+    };
+
+    const result = await handler(message);
+
+    expect(result.handled).toBe(true);
+    expect(result.firstReplySource).toBe("ai");
+    expect(message.reply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining("ちょっと待っててね"),
+      })
+    );
+    expect(enqueue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        request_id: "RQ-20260223-000000000-eeeeeeeeeeee",
+        event_id: "msg_001",
+        user_id: "user_msg_001",
+        command_name: "fairy",
+        invocation_message: "テストして",
+        first_reply_message_id: "msg_reply_001",
+      })
+    );
   });
 });

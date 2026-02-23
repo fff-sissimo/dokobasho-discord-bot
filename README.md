@@ -5,10 +5,10 @@ Discord上で動作する多機能ボット。リマインダー機能と `/fair
 ## 機能
 
 - **リマインダー機能**: `/remind` コマンドを使って、個人・チャンネル・サーバー単位でのリマインダーを設定できます。
-- **Fast Path 機能**: `/fairy` コマンドで一次回答を返し、n8n slow-path に処理を引き継ぎます。
+- **Fast Path 機能**: `/fairy` コマンド、Botへのメンション、Botへの返信で一次回答を返し、n8n slow-path に処理を引き継ぎます。
   - 一次回答は、これからどう進めるかを口語で簡潔に伝えます。
   - slow-path payload には `first_reply_message_id` を含めるため、n8n 側で最終回答時に一次回答を削除する運用が可能です。
-- **n8n連携**: メンションや返信に反応して、指定したn8nのWebhookに情報を送信します。
+- **n8n連携**: メンションや返信に反応して、指定したn8nのWebhookに情報を送信します（`FAIRY_ENABLE_MESSAGE_TRIGGER=false` の場合）。
 
 ## 開発環境のセットアップ
 
@@ -45,8 +45,9 @@ Discord上で動作する多機能ボット。リマインダー機能と `/fair
     - `N8N_SLOW_PATH_TIMEOUT_MS`: (任意) slow-path Webhook timeout(ms)。未指定時 `8000`。
     - `OPENAI_API_KEY`: (任意) `/fairy` 一次回答を AI 生成するための API キー。未設定時はフォールバック文を返します。
     - `FIRST_REPLY_AI_MODEL`: (任意) 一次回答用モデル。未指定時 `o4-mini`。
-    - `FIRST_REPLY_AI_TIMEOUT_MS`: (任意) 一次回答生成タイムアウト(ms)。未指定時 `2500`。
+    - `FIRST_REPLY_AI_TIMEOUT_MS`: (任意) 一次回答生成タイムアウト(ms)。未指定時 `5000`。
     - `OPENAI_BASE_URL`: (任意) OpenAI API base URL。未指定時 `https://api.openai.com`。
+    - `FAIRY_ENABLE_MESSAGE_TRIGGER`: (任意) `true/1` でメンション・返信を `/fairy` と同等に処理。未指定時 `true`。`false/0` の場合は従来の `N8N_WEBHOOK_URL` 経路を使います。
 
 4.  **Google Service Account と Google Sheets API の設定:**
     - Google Cloud Platformでプロジェクトを作成し、Google Sheets APIを有効にします。
