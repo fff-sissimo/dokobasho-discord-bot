@@ -9,7 +9,8 @@ describe("fairy first reply ai", () => {
     const content = buildFallbackFirstReplyMessage("一次回答を確認して？");
     expect(content).toContain("一次回答を確認して");
     expect(content).toContain("まず文脈と関連情報を整理して");
-    expect(content).toContain("少し待ってください");
+    expect(content).toContain("ちょっと待っててね");
+    expect(content).toContain("返すね");
     expect(content).not.toContain("Request:");
     expect(content).not.toContain("進捗:");
     expect(content).not.toContain("方針:");
@@ -21,7 +22,7 @@ describe("fairy first reply ai", () => {
       "fallback"
     );
     expect(normalized).toContain("対応を開始します。 少し待ってください。");
-    expect(normalized).toContain("まず文脈と関連情報を整理して");
+    expect(normalized).toContain("まず文脈と関連情報を整理して、要点からわかりやすく返すね。");
     expect(normalized).not.toContain("方針:");
   });
 

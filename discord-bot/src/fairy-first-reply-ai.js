@@ -10,12 +10,12 @@ const stripReplyMetadata = (value) =>
     .filter((line) => line.length > 0 && !line.includes("Request:") && !line.includes("進捗:"))
     .join(" ");
 
-const DEFAULT_PLAN_SENTENCE = "まず文脈と関連情報を整理して、結論から簡潔に返します。";
+const DEFAULT_PLAN_SENTENCE = "まず文脈と関連情報を整理して、要点からわかりやすく返すね。";
 
 const buildFallbackFirstReplyMessage = (invocationMessage) => {
   const summary = sanitizeSummaryText(invocationMessage).slice(0, 90);
-  if (summary) return `${summary}を確認して進めます。${DEFAULT_PLAN_SENTENCE} 少し待ってください。`;
-  return `内容を確認して進めます。${DEFAULT_PLAN_SENTENCE} 少し待ってください。`;
+  if (summary) return `${summary}のこと、すぐ確認するね。${DEFAULT_PLAN_SENTENCE} ちょっと待っててね。`;
+  return `内容をすぐ確認するね。${DEFAULT_PLAN_SENTENCE} ちょっと待っててね。`;
 };
 
 const normalizeFirstReplyForDiscord = (raw, fallbackMessage) => {
@@ -42,14 +42,15 @@ const buildPrompt = ({ invocationMessage, contextExcerpt }) => {
 
   return [
     "あなたはDiscordで一次受付メッセージだけを返すアシスタントです。",
-    "日本語で、簡潔に1文または2文で返してください。",
+    "日本語で、妖精のように親しみやすく、簡潔に1文または2文で返してください。",
     "制約:",
     "- 進捗ステータスやRequest IDは書かない",
-    "- これからの進め方を口語で自然に伝える（例: まず〜してから〜します）",
+    "- これからの進め方を口語で自然に伝える（例: まず〜してから〜するね）",
+    "- 口調はやわらかく、親しみやすい語尾（〜するね、〜だよ）を使う",
     "- 「方針:」のようなラベルは使わない",
     "- 箇条書き・見出しは使わない",
     "- 疑問形にしない",
-    "- 受付済みであることと、少し待つ案内を含める",
+    "- 受付済みであることと、少し待つ案内を含める（例: ちょっと待っててね）",
     "",
     `依頼: ${normalizedInvocation}`,
     contextPreview ? `参考文脈: ${contextPreview}` : "参考文脈: なし",
