@@ -74,6 +74,8 @@ describe("fairy fast path", () => {
     const result = await handler(interaction);
 
     expect(result.handled).toBe(true);
+    expect(result.firstReplySource).toBe("ai");
+    expect(result.firstReplyError).toBeUndefined();
     expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: false });
     expect(interaction.editReply).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -117,6 +119,7 @@ describe("fairy fast path", () => {
     const contents = interaction.editReply.mock.calls.map((args) => args[0].content);
 
     expect(result.handled).toBe(true);
+    expect(result.firstReplySource).toBe("fallback");
     expect(result.enqueueError).toContain("enqueue down");
     expect(contents[1]).toContain("後続処理の投入に失敗したため自動処理を開始できませんでした。");
   });
@@ -151,6 +154,8 @@ describe("fairy fast path", () => {
     const firstContent = interaction.editReply.mock.calls[0][0].content;
 
     expect(result.handled).toBe(true);
+    expect(result.firstReplySource).toBe("fallback");
+    expect(result.firstReplyError).toContain("openai unavailable");
     expect(firstContent).toContain("少し待ってください");
     expect(firstContent).toContain("まず文脈と関連情報を整理して");
     expect(firstContent).not.toContain("Request:");
@@ -182,6 +187,7 @@ describe("fairy fast path", () => {
     const result = await handler(interaction);
 
     expect(result.handled).toBe(true);
+    expect(result.firstReplySource).toBe("fallback");
     expect(enqueue).toHaveBeenCalledTimes(1);
     expect(enqueue.mock.calls[0][0].first_reply_message_id).toBe("112233445566778899");
   });

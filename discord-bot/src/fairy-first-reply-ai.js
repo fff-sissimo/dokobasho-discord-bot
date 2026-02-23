@@ -83,65 +83,90 @@ const extractOutputText = (body) => {
 
 const trimBaseUrl = (value) => String(value).replace(/\/+$/, "");
 
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 const createOpenAiFirstReplyComposer = ({
   apiKey,
   model = "o4-mini",
-  timeoutMs = 2500,
+  timeoutMs = 5000,
   apiBase = "https://api.openai.com",
+  modelFallbacks = ["gpt-4.1-mini", "gpt-4o-mini"],
+  retryDelayMs = 200,
+  maxAttemptsPerModel = 1,
   fetchImpl = fetch,
 }) => {
   const normalizedApiKey = String(apiKey || "").trim();
   if (!normalizedApiKey) throw new Error("OPENAI_API_KEY is empty");
   const endpoint = `${trimBaseUrl(apiBase)}/v1/responses`;
   const safeTimeoutMs = Math.max(100, Number(timeoutMs) || 2500);
+  const safeRetryDelayMs = Math.max(0, Number(retryDelayMs) || 0);
+  const safeMaxAttemptsPerModel = Math.max(1, Number(maxAttemptsPerModel) || 1);
+  const modelCandidates = Array.from(
+    new Set([model, ...(Array.isArray(modelFallbacks) ? modelFallbacks : [])].filter(Boolean))
+  );
 
   return async ({ invocationMessage, contextExcerpt }) => {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), safeTimeoutMs);
-    const requestBody = {
-      model,
-      input: [
-        {
-          role: "system",
-          content: [{ type: "input_text", text: "簡潔な一次受付メッセージを作成してください。" }],
-        },
-        {
-          role: "user",
-          content: [{ type: "input_text", text: buildPrompt({ invocationMessage, contextExcerpt }) }],
-        },
-      ],
-      max_output_tokens: 120,
-    };
+    const prompt = buildPrompt({ invocationMessage, contextExcerpt });
+    const errors = [];
 
-    try {
-      const response = await fetchImpl(endpoint, {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${normalizedApiKey}`,
-          "content-type": "application/json",
-          accept: "application/json",
-        },
-        body: JSON.stringify(requestBody),
-        signal: controller.signal,
-      });
+    for (const candidateModel of modelCandidates) {
+      for (let attempt = 1; attempt <= safeMaxAttemptsPerModel; attempt += 1) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), safeTimeoutMs);
+        const requestBody = {
+          model: candidateModel,
+          input: [
+            {
+              role: "system",
+              content: [{ type: "input_text", text: "簡潔な一次受付メッセージを作成してください。" }],
+            },
+            {
+              role: "user",
+              content: [{ type: "input_text", text: prompt }],
+            },
+          ],
+          max_output_tokens: 120,
+        };
 
-      if (!response.ok) {
-        const errorBody = await response.text().catch(() => "");
-        throw new Error(`openai first reply failed: status=${response.status} body=${errorBody.slice(0, 240)}`);
+        try {
+          const response = await fetchImpl(endpoint, {
+            method: "POST",
+            headers: {
+              authorization: `Bearer ${normalizedApiKey}`,
+              "content-type": "application/json",
+              accept: "application/json",
+            },
+            body: JSON.stringify(requestBody),
+            signal: controller.signal,
+          });
+
+          if (!response.ok) {
+            const errorBody = await response.text().catch(() => "");
+            throw new Error(
+              `status=${response.status} body=${errorBody.slice(0, 200)}`
+            );
+          }
+
+          const body = await response.json();
+          const text = extractOutputText(body);
+          if (!text) throw new Error("empty output_text");
+          return text;
+        } catch (error) {
+          const message =
+            error instanceof Error && error.name === "AbortError"
+              ? `timeoutMs=${safeTimeoutMs}`
+              : String(error);
+          errors.push(`model=${candidateModel} attempt=${attempt} error=${sanitizeSummaryText(message).slice(0, 200)}`);
+          if (attempt < safeMaxAttemptsPerModel && safeRetryDelayMs > 0) {
+            await delay(safeRetryDelayMs);
+          }
+        } finally {
+          clearTimeout(timer);
+        }
       }
-
-      const body = await response.json();
-      const text = extractOutputText(body);
-      if (!text) throw new Error("openai first reply failed: empty output_text");
-      return text;
-    } catch (error) {
-      if (error instanceof Error && error.name === "AbortError") {
-        throw new Error(`openai first reply timed out: timeoutMs=${safeTimeoutMs}`);
-      }
-      throw error;
-    } finally {
-      clearTimeout(timer);
     }
+
+    throw new Error(`openai first reply failed: ${errors.join(" | ").slice(0, 1000)}`);
   };
 };
 

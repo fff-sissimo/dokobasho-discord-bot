@@ -191,6 +191,8 @@ const handleFairyInteraction = async (interaction, options) => {
     (options.requestIdFactory && options.requestIdFactory()) || generateRequestId(new Date());
   const fallbackFirstReply = buildFirstReplyMessage(invocationMessage);
   let firstReplyMessage = fallbackFirstReply;
+  let firstReplySource = "fallback";
+  let firstReplyError;
   if (typeof options.firstReplyComposer === "function") {
     try {
       const generated = await options.firstReplyComposer({
@@ -198,8 +200,10 @@ const handleFairyInteraction = async (interaction, options) => {
         contextExcerpt: context.messages,
       });
       firstReplyMessage = normalizeFirstReplyForDiscord(generated, fallbackFirstReply);
-    } catch (_error) {
+      firstReplySource = "ai";
+    } catch (error) {
       firstReplyMessage = fallbackFirstReply;
+      firstReplyError = sanitizeSummaryText(String(error)).slice(0, 280);
     }
   }
   const firstReplyResult = await interaction.editReply({ content: firstReplyMessage });
@@ -273,6 +277,8 @@ const handleFairyInteraction = async (interaction, options) => {
     deferLatencyMs,
     firstReplyLatencyMs,
     firstReplyMessage,
+    firstReplySource,
+    firstReplyError,
     payload,
     enqueueError,
   };

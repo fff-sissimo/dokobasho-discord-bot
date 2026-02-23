@@ -188,8 +188,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
             const result = await fairyInteractionHandler(interaction);
             if (result.handled) {
                 logger.info(
-                  `[fairy] handled request_id=${result.requestId} defer=${result.deferLatencyMs}ms firstReply=${result.firstReplyLatencyMs}ms`
+                  `[fairy] handled request_id=${result.requestId} defer=${result.deferLatencyMs}ms firstReply=${result.firstReplyLatencyMs}ms source=${result.firstReplySource || "fallback"}`
                 );
+                if (result.firstReplySource === "fallback" && result.firstReplyError) {
+                    logger.warn(
+                      { requestId: result.requestId, error: result.firstReplyError },
+                      "[fairy] first reply composer fallback"
+                    );
+                }
                 if (result.enqueueError) {
                     logger.warn({ requestId: result.requestId, error: result.enqueueError }, "[fairy] enqueue failed");
                 }
