@@ -13,10 +13,11 @@ describe("fairy fast path", () => {
     expect(id).toBe("RQ-20260223-123456789-1234567890ab");
   });
 
-  it("builds first reply message with progress marker", () => {
-    const message = buildFirstReplyMessage("確認して？", "RQ-20260223-000000000-aaaaaaaaaaaa");
-    expect(message).toContain("了解、いま確認中なので待ってて。");
-    expect(message).toContain("Request: RQ-20260223-000000000-aaaaaaaaaaaa / 進捗: 準備中");
+  it("builds concise first reply message without progress metadata", () => {
+    const message = buildFirstReplyMessage("確認して？");
+    expect(message).toContain("少し待ってください");
+    expect(message).not.toContain("Request:");
+    expect(message).not.toContain("進捗:");
     expect(message.includes("？")).toBe(false);
   });
 
@@ -43,6 +44,12 @@ describe("fairy fast path", () => {
       slowPathClient: { enqueue },
       contextSource: async () => ["latest context", "another line"],
       requestIdFactory: () => "RQ-20260223-000000000-aaaaaaaaaaaa",
+      firstReplyComposer: async () =>
+        [
+          "対応を開始します。",
+          "Request: RQ-20260223-000000000-aaaaaaaaaaaa / 進捗: 準備中",
+          "少し待ってください。",
+        ].join("\n"),
       enqueueAttempts: 1,
     });
 
@@ -68,7 +75,7 @@ describe("fairy fast path", () => {
     expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: false });
     expect(interaction.editReply).toHaveBeenCalledWith(
       expect.objectContaining({
-        content: expect.stringContaining("Request: RQ-20260223-000000000-aaaaaaaaaaaa / 進捗: 準備中"),
+        content: expect.stringContaining("対応を開始します。 少し待ってください。"),
       })
     );
     expect(enqueue).toHaveBeenCalledTimes(1);
@@ -109,5 +116,40 @@ describe("fairy fast path", () => {
     expect(result.handled).toBe(true);
     expect(result.enqueueError).toContain("enqueue down");
     expect(contents[1]).toContain("後続処理の投入に失敗したため自動処理を開始できませんでした。");
+  });
+
+  it("falls back when first reply composer fails", async () => {
+    const enqueue = jest.fn().mockResolvedValue({ status: 200 });
+    const handler = createFairyInteractionHandler({
+      slowPathClient: { enqueue },
+      contextSource: async () => ["ctx"],
+      firstReplyComposer: async () => {
+        throw new Error("openai unavailable");
+      },
+      requestIdFactory: () => "RQ-20260223-000000000-cccccccccccc",
+      enqueueAttempts: 1,
+    });
+
+    const interaction = {
+      isChatInputCommand: () => true,
+      commandName: FAIRY_COMMAND_NAME,
+      id: "evt_789",
+      token: "token_789",
+      applicationId: "app_789",
+      user: { id: "user_789" },
+      channelId: "423456789012345678",
+      guildId: null,
+      options: { getString: () => "テスト依頼" },
+      deferReply: jest.fn().mockResolvedValue(undefined),
+      editReply: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const result = await handler(interaction);
+    const firstContent = interaction.editReply.mock.calls[0][0].content;
+
+    expect(result.handled).toBe(true);
+    expect(firstContent).toContain("少し待ってください");
+    expect(firstContent).not.toContain("Request:");
+    expect(firstContent).not.toContain("進捗:");
   });
 });

@@ -41,6 +41,10 @@ Discord上で動作する多機能ボット。リマインダー機能と `/fair
     - `N8N_BASE`: `/fairy` slow-path 連携先の n8n ベースURL。
     - `N8N_SLOW_PATH_WEBHOOK_PATH`: (任意) slow-path Webhook path。未指定時 `/webhook/fairy-slow-path`。
     - `N8N_SLOW_PATH_TIMEOUT_MS`: (任意) slow-path Webhook timeout(ms)。未指定時 `8000`。
+    - `OPENAI_API_KEY`: (任意) `/fairy` 一次回答を AI 生成するための API キー。未設定時はフォールバック文を返します。
+    - `FIRST_REPLY_AI_MODEL`: (任意) 一次回答用モデル。未指定時 `o4-mini`。
+    - `FIRST_REPLY_AI_TIMEOUT_MS`: (任意) 一次回答生成タイムアウト(ms)。未指定時 `2500`。
+    - `OPENAI_BASE_URL`: (任意) OpenAI API base URL。未指定時 `https://api.openai.com`。
 
 4.  **Google Service Account と Google Sheets API の設定:**
     - Google Cloud Platformでプロジェクトを作成し、Google Sheets APIを有効にします。

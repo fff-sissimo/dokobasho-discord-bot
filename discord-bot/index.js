@@ -11,6 +11,7 @@ const {
   createSlowPathWebhookClient,
   createFairyInteractionHandler,
 } = require("./src/fairy-fast-path");
+const { createOpenAiFirstReplyComposer } = require("./src/fairy-first-reply-ai");
 const logger = require('./src/logger');
 const { MESSAGES } = require('./src/message-templates');
 const { createWebhookRequestBuilder } = require('./src/n8n-webhook');
@@ -55,9 +56,18 @@ try {
     webhookPath: process.env.N8N_SLOW_PATH_WEBHOOK_PATH,
     timeoutMs: parsePositiveInt(process.env.N8N_SLOW_PATH_TIMEOUT_MS, 8000),
   });
+  const firstReplyComposer = process.env.OPENAI_API_KEY
+    ? createOpenAiFirstReplyComposer({
+        apiKey: process.env.OPENAI_API_KEY,
+        model: process.env.FIRST_REPLY_AI_MODEL || "o4-mini",
+        timeoutMs: parsePositiveInt(process.env.FIRST_REPLY_AI_TIMEOUT_MS, 2500),
+        apiBase: process.env.OPENAI_BASE_URL || "https://api.openai.com",
+      })
+    : undefined;
   fairyInteractionHandler = createFairyInteractionHandler({
     slowPathClient,
     contextSource: (interaction) => collectRecentChannelContext(interaction),
+    firstReplyComposer,
   });
 } catch (error) {
   logger.warn({ err: error }, "[fairy] disabled due to invalid configuration");

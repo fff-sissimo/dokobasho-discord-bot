@@ -1,6 +1,10 @@
 "use strict";
 
 const { randomUUID } = require("node:crypto");
+const {
+  buildFallbackFirstReplyMessage,
+  normalizeFirstReplyForDiscord,
+} = require("./fairy-first-reply-ai");
 
 const FAIRY_COMMAND_NAME = "fairy";
 
@@ -41,16 +45,7 @@ const generateRequestId = (date = new Date(), randomSource = randomUUID) => {
   return `RQ-${yyyymmdd}-${hhmmssmmm}-${entropy}`;
 };
 
-const buildFirstReplyMessage = (invocationMessage, requestId) => {
-  const summary = sanitizeSummaryText(invocationMessage).slice(0, 160);
-  const safeSummary = summary || "依頼内容を確認中";
-  return [
-    "了解、いま確認中なので待ってて。",
-    `今わかること：${safeSummary}`,
-    "これからやること：文脈収集→記憶検索→Notion確認",
-    `Request: ${requestId} / 進捗: 準備中`,
-  ].join("\n");
-};
+const buildFirstReplyMessage = (invocationMessage) => buildFallbackFirstReplyMessage(invocationMessage);
 
 const collectFastPathContext = ({ recentMessages, caps, now = Date.now, startedAtMs = now() }) => {
   const source = recentMessages.slice(0, caps.maxMessages);
@@ -194,7 +189,19 @@ const handleFairyInteraction = async (interaction, options) => {
 
   const requestId =
     (options.requestIdFactory && options.requestIdFactory()) || generateRequestId(new Date());
-  const firstReplyMessage = buildFirstReplyMessage(invocationMessage, requestId);
+  const fallbackFirstReply = buildFirstReplyMessage(invocationMessage);
+  let firstReplyMessage = fallbackFirstReply;
+  if (typeof options.firstReplyComposer === "function") {
+    try {
+      const generated = await options.firstReplyComposer({
+        invocationMessage,
+        contextExcerpt: context.messages,
+      });
+      firstReplyMessage = normalizeFirstReplyForDiscord(generated, fallbackFirstReply);
+    } catch (_error) {
+      firstReplyMessage = fallbackFirstReply;
+    }
+  }
   await interaction.editReply({ content: firstReplyMessage });
   const firstReplyLatencyMs = now() - startedAtMs;
 
