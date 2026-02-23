@@ -89,6 +89,8 @@ describe("fairy fast path", () => {
       expect.objectContaining({
         request_id: "RQ-20260223-000000000-aaaaaaaaaaaa",
         command_name: "fairy",
+        trigger_source: "interaction",
+        source_message_id: null,
         context_excerpt: ["latest context", "another line"],
         first_reply_message_id: null,
       })
@@ -232,6 +234,8 @@ describe("fairy fast path", () => {
       expect.objectContaining({
         request_id: "RQ-20260223-000000000-eeeeeeeeeeee",
         event_id: "msg_001",
+        trigger_source: "message",
+        source_message_id: "msg_001",
         user_id: "user_msg_001",
         command_name: "fairy",
         invocation_message: "テストして",

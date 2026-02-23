@@ -280,6 +280,8 @@ const handleFairyInteraction = async (interaction, options) => {
     request_id: requestId,
     event_id: interaction.id,
     application_id: interaction.applicationId,
+    trigger_source: "interaction",
+    source_message_id: null,
     user_id: interaction.user.id,
     channel_id: interaction.channelId,
     guild_id: interaction.guildId || null,
@@ -370,6 +372,8 @@ const handleFairyMessage = async (message, options) => {
       (message.client && message.client.application && message.client.application.id) ||
       (message.client && message.client.user && message.client.user.id) ||
       null,
+    trigger_source: "message",
+    source_message_id: message.id,
     user_id: message.author.id,
     channel_id: message.channelId || (message.channel && message.channel.id) || null,
     guild_id: message.guildId || null,
