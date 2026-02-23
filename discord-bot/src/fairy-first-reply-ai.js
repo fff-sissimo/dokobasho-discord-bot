@@ -12,15 +12,19 @@ const stripReplyMetadata = (value) =>
 
 const buildFallbackFirstReplyMessage = (invocationMessage) => {
   const summary = sanitizeSummaryText(invocationMessage).slice(0, 90);
-  if (summary) return `${summary}を確認して進めます。少し待ってください。`;
-  return "内容を確認して進めます。少し待ってください。";
+  const policy = "方針: 文脈と関連情報を整理し、結論から簡潔に返します。";
+  if (summary) return `${summary}を確認して進めます。${policy} 少し待ってください。`;
+  return `内容を確認して進めます。${policy} 少し待ってください。`;
 };
 
 const normalizeFirstReplyForDiscord = (raw, fallbackMessage) => {
   const withoutMeta = stripReplyMetadata(raw);
   const compact = sanitizeSummaryText(withoutMeta);
   if (!compact) return fallbackMessage;
-  return compact.slice(0, 180);
+  const withPolicy = compact.includes("方針:")
+    ? compact
+    : `${compact} 方針: 文脈と関連情報を整理し、結論から簡潔に返します。`;
+  return withPolicy.slice(0, 180);
 };
 
 const buildPrompt = ({ invocationMessage, contextExcerpt }) => {
@@ -36,6 +40,7 @@ const buildPrompt = ({ invocationMessage, contextExcerpt }) => {
     "日本語で、簡潔に1文または2文で返してください。",
     "制約:",
     "- 進捗ステータスやRequest IDは書かない",
+    "- 必ず「方針: ...」を1つ含める",
     "- 箇条書き・見出しは使わない",
     "- 疑問形にしない",
     "- 受付済みであることと、少し待つ案内を含める",

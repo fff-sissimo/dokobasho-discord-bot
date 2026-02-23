@@ -16,6 +16,7 @@ describe("fairy fast path", () => {
   it("builds concise first reply message without progress metadata", () => {
     const message = buildFirstReplyMessage("確認して？");
     expect(message).toContain("少し待ってください");
+    expect(message).toContain("方針:");
     expect(message).not.toContain("Request:");
     expect(message).not.toContain("進捗:");
     expect(message.includes("？")).toBe(false);
@@ -75,7 +76,7 @@ describe("fairy fast path", () => {
     expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: false });
     expect(interaction.editReply).toHaveBeenCalledWith(
       expect.objectContaining({
-        content: expect.stringContaining("対応を開始します。 少し待ってください。"),
+        content: expect.stringContaining("対応を開始します。 少し待ってください。 方針:"),
       })
     );
     expect(enqueue).toHaveBeenCalledTimes(1);
@@ -84,6 +85,7 @@ describe("fairy fast path", () => {
         request_id: "RQ-20260223-000000000-aaaaaaaaaaaa",
         command_name: "fairy",
         context_excerpt: ["latest context", "another line"],
+        first_reply_message_id: null,
       })
     );
   });
@@ -149,7 +151,36 @@ describe("fairy fast path", () => {
 
     expect(result.handled).toBe(true);
     expect(firstContent).toContain("少し待ってください");
+    expect(firstContent).toContain("方針:");
     expect(firstContent).not.toContain("Request:");
     expect(firstContent).not.toContain("進捗:");
+  });
+
+  it("stores first reply message id in slow-path payload when available", async () => {
+    const enqueue = jest.fn().mockResolvedValue({ status: 200 });
+    const handler = createFairyInteractionHandler({
+      slowPathClient: { enqueue },
+      requestIdFactory: () => "RQ-20260223-000000000-dddddddddddd",
+      enqueueAttempts: 1,
+    });
+    const interaction = {
+      isChatInputCommand: () => true,
+      commandName: FAIRY_COMMAND_NAME,
+      id: "evt_msgid_001",
+      token: "token_msgid_001",
+      applicationId: "app_msgid_001",
+      user: { id: "user_msgid_001" },
+      channelId: "523456789012345678",
+      guildId: "623456789012345678",
+      options: { getString: () => "メッセージID検証" },
+      deferReply: jest.fn().mockResolvedValue(undefined),
+      editReply: jest.fn().mockResolvedValue({ id: "112233445566778899" }),
+    };
+
+    const result = await handler(interaction);
+
+    expect(result.handled).toBe(true);
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    expect(enqueue.mock.calls[0][0].first_reply_message_id).toBe("112233445566778899");
   });
 });

@@ -202,7 +202,11 @@ const handleFairyInteraction = async (interaction, options) => {
       firstReplyMessage = fallbackFirstReply;
     }
   }
-  await interaction.editReply({ content: firstReplyMessage });
+  const firstReplyResult = await interaction.editReply({ content: firstReplyMessage });
+  const firstReplyMessageId =
+    firstReplyResult && typeof firstReplyResult === "object" && typeof firstReplyResult.id === "string"
+      ? firstReplyResult.id
+      : null;
   const firstReplyLatencyMs = now() - startedAtMs;
 
   const payload = {
@@ -226,6 +230,7 @@ const handleFairyInteraction = async (interaction, options) => {
       reached_deadline: context.reachedDeadline,
       truncated: context.truncated,
     },
+    first_reply_message_id: firstReplyMessageId,
     created_at: new Date().toISOString(),
   };
 
