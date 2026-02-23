@@ -81,6 +81,23 @@ const extractOutputText = (body) => {
   return "";
 };
 
+const extractChatCompletionText = (body) => {
+  if (!body || typeof body !== "object" || !Array.isArray(body.choices)) return "";
+  const firstChoice = body.choices[0];
+  const content = firstChoice && firstChoice.message && firstChoice.message.content;
+  if (typeof content === "string" && content.trim().length > 0) return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((part) => {
+      if (!part || typeof part !== "object") return "";
+      if (typeof part.text === "string") return part.text;
+      if (typeof part.content === "string") return part.content;
+      return "";
+    })
+    .join(" ")
+    .trim();
+};
+
 const trimBaseUrl = (value) => String(value).replace(/\/+$/, "");
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -97,7 +114,9 @@ const createOpenAiFirstReplyComposer = ({
 }) => {
   const normalizedApiKey = String(apiKey || "").trim();
   if (!normalizedApiKey) throw new Error("OPENAI_API_KEY is empty");
-  const endpoint = `${trimBaseUrl(apiBase)}/v1/responses`;
+  const base = trimBaseUrl(apiBase);
+  const responsesEndpoint = `${base}/v1/responses`;
+  const chatCompletionsEndpoint = `${base}/v1/chat/completions`;
   const safeTimeoutMs = Math.max(100, Number(timeoutMs) || 2500);
   const safeRetryDelayMs = Math.max(0, Number(retryDelayMs) || 0);
   const safeMaxAttemptsPerModel = Math.max(1, Number(maxAttemptsPerModel) || 1);
@@ -111,9 +130,45 @@ const createOpenAiFirstReplyComposer = ({
 
     for (const candidateModel of modelCandidates) {
       for (let attempt = 1; attempt <= safeMaxAttemptsPerModel; attempt += 1) {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), safeTimeoutMs);
-        const requestBody = {
+        const attemptWithEndpoint = async (endpoint, requestBody, extractor, apiLabel) => {
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), safeTimeoutMs);
+          try {
+            const response = await fetchImpl(endpoint, {
+              method: "POST",
+              headers: {
+                authorization: `Bearer ${normalizedApiKey}`,
+                "content-type": "application/json",
+                accept: "application/json",
+              },
+              body: JSON.stringify(requestBody),
+              signal: controller.signal,
+            });
+
+            if (!response.ok) {
+              const errorBody = await response.text().catch(() => "");
+              throw new Error(`status=${response.status} body=${errorBody.slice(0, 200)}`);
+            }
+
+            const body = await response.json();
+            const text = extractor(body);
+            if (!text) throw new Error("empty output_text");
+            return text;
+          } catch (error) {
+            const message =
+              error instanceof Error && error.name === "AbortError"
+                ? `timeoutMs=${safeTimeoutMs}`
+                : String(error);
+            errors.push(
+              `api=${apiLabel} model=${candidateModel} attempt=${attempt} error=${sanitizeSummaryText(message).slice(0, 200)}`
+            );
+            return "";
+          } finally {
+            clearTimeout(timer);
+          }
+        };
+
+        const responsesRequestBody = {
           model: candidateModel,
           input: [
             {
@@ -128,40 +183,38 @@ const createOpenAiFirstReplyComposer = ({
           max_output_tokens: 120,
         };
 
-        try {
-          const response = await fetchImpl(endpoint, {
-            method: "POST",
-            headers: {
-              authorization: `Bearer ${normalizedApiKey}`,
-              "content-type": "application/json",
-              accept: "application/json",
+        const responsesText = await attemptWithEndpoint(
+          responsesEndpoint,
+          responsesRequestBody,
+          extractOutputText,
+          "responses"
+        );
+        if (responsesText) return responsesText;
+
+        const chatCompletionsRequestBody = {
+          model: candidateModel,
+          messages: [
+            {
+              role: "developer",
+              content: "簡潔な一次受付メッセージを作成してください。",
             },
-            body: JSON.stringify(requestBody),
-            signal: controller.signal,
-          });
+            {
+              role: "user",
+              content: prompt,
+            },
+          ],
+          max_completion_tokens: 120,
+        };
+        const chatCompletionsText = await attemptWithEndpoint(
+          chatCompletionsEndpoint,
+          chatCompletionsRequestBody,
+          extractChatCompletionText,
+          "chat.completions"
+        );
+        if (chatCompletionsText) return chatCompletionsText;
 
-          if (!response.ok) {
-            const errorBody = await response.text().catch(() => "");
-            throw new Error(
-              `status=${response.status} body=${errorBody.slice(0, 200)}`
-            );
-          }
-
-          const body = await response.json();
-          const text = extractOutputText(body);
-          if (!text) throw new Error("empty output_text");
-          return text;
-        } catch (error) {
-          const message =
-            error instanceof Error && error.name === "AbortError"
-              ? `timeoutMs=${safeTimeoutMs}`
-              : String(error);
-          errors.push(`model=${candidateModel} attempt=${attempt} error=${sanitizeSummaryText(message).slice(0, 200)}`);
-          if (attempt < safeMaxAttemptsPerModel && safeRetryDelayMs > 0) {
-            await delay(safeRetryDelayMs);
-          }
-        } finally {
-          clearTimeout(timer);
+        if (attempt < safeMaxAttemptsPerModel && safeRetryDelayMs > 0) {
+          await delay(safeRetryDelayMs);
         }
       }
     }

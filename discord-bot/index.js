@@ -60,7 +60,7 @@ try {
     ? createOpenAiFirstReplyComposer({
         apiKey: process.env.OPENAI_API_KEY,
         model: process.env.FIRST_REPLY_AI_MODEL || "o4-mini",
-        timeoutMs: parsePositiveInt(process.env.FIRST_REPLY_AI_TIMEOUT_MS, 2500),
+        timeoutMs: parsePositiveInt(process.env.FIRST_REPLY_AI_TIMEOUT_MS, 5000),
         apiBase: process.env.OPENAI_BASE_URL || "https://api.openai.com",
       })
     : undefined;
