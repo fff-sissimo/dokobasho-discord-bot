@@ -16,9 +16,10 @@ describe("fairy fast path", () => {
   it("builds concise first reply message without progress metadata", () => {
     const message = buildFirstReplyMessage("確認して？");
     expect(message).toContain("少し待ってください");
-    expect(message).toContain("方針:");
+    expect(message).toContain("まず文脈と関連情報を整理して");
     expect(message).not.toContain("Request:");
     expect(message).not.toContain("進捗:");
+    expect(message).not.toContain("方針:");
     expect(message.includes("？")).toBe(false);
   });
 
@@ -76,7 +77,7 @@ describe("fairy fast path", () => {
     expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: false });
     expect(interaction.editReply).toHaveBeenCalledWith(
       expect.objectContaining({
-        content: expect.stringContaining("対応を開始します。 少し待ってください。 方針:"),
+        content: expect.stringContaining("対応を開始します。 少し待ってください。 まず文脈と関連情報を整理して、結論から簡潔に返します。"),
       })
     );
     expect(enqueue).toHaveBeenCalledTimes(1);
@@ -151,9 +152,10 @@ describe("fairy fast path", () => {
 
     expect(result.handled).toBe(true);
     expect(firstContent).toContain("少し待ってください");
-    expect(firstContent).toContain("方針:");
+    expect(firstContent).toContain("まず文脈と関連情報を整理して");
     expect(firstContent).not.toContain("Request:");
     expect(firstContent).not.toContain("進捗:");
+    expect(firstContent).not.toContain("方針:");
   });
 
   it("stores first reply message id in slow-path payload when available", async () => {

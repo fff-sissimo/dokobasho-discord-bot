@@ -10,20 +10,25 @@ const stripReplyMetadata = (value) =>
     .filter((line) => line.length > 0 && !line.includes("Request:") && !line.includes("進捗:"))
     .join(" ");
 
+const DEFAULT_PLAN_SENTENCE = "まず文脈と関連情報を整理して、結論から簡潔に返します。";
+
 const buildFallbackFirstReplyMessage = (invocationMessage) => {
   const summary = sanitizeSummaryText(invocationMessage).slice(0, 90);
-  const policy = "方針: 文脈と関連情報を整理し、結論から簡潔に返します。";
-  if (summary) return `${summary}を確認して進めます。${policy} 少し待ってください。`;
-  return `内容を確認して進めます。${policy} 少し待ってください。`;
+  if (summary) return `${summary}を確認して進めます。${DEFAULT_PLAN_SENTENCE} 少し待ってください。`;
+  return `内容を確認して進めます。${DEFAULT_PLAN_SENTENCE} 少し待ってください。`;
 };
 
 const normalizeFirstReplyForDiscord = (raw, fallbackMessage) => {
   const withoutMeta = stripReplyMetadata(raw);
   const compact = sanitizeSummaryText(withoutMeta);
   if (!compact) return fallbackMessage;
-  const withPolicy = compact.includes("方針:")
-    ? compact
-    : `${compact} 方針: 文脈と関連情報を整理し、結論から簡潔に返します。`;
+  const hasNaturalPlan =
+    compact.includes("まず") ||
+    compact.includes("先に") ||
+    compact.includes("これから") ||
+    compact.includes("整理して") ||
+    compact.includes("結論から");
+  const withPolicy = hasNaturalPlan ? compact : `${compact} ${DEFAULT_PLAN_SENTENCE}`;
   return withPolicy.slice(0, 180);
 };
 
@@ -40,7 +45,8 @@ const buildPrompt = ({ invocationMessage, contextExcerpt }) => {
     "日本語で、簡潔に1文または2文で返してください。",
     "制約:",
     "- 進捗ステータスやRequest IDは書かない",
-    "- 必ず「方針: ...」を1つ含める",
+    "- これからの進め方を口語で自然に伝える（例: まず〜してから〜します）",
+    "- 「方針:」のようなラベルは使わない",
     "- 箇条書き・見出しは使わない",
     "- 疑問形にしない",
     "- 受付済みであることと、少し待つ案内を含める",
