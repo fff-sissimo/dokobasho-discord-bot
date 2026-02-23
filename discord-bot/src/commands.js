@@ -1,6 +1,7 @@
 const { MESSAGES } = require('./message-templates');
 
 const remindMessages = MESSAGES.commands.remind;
+const fairyMessages = MESSAGES.commands.fairy;
 
 const commands = [
     {
@@ -131,6 +132,18 @@ const commands = [
                         required: false,
                     },
                 ],
+            },
+        ],
+    },
+    {
+        name: 'fairy',
+        description: fairyMessages.description,
+        options: [
+            {
+                name: 'request',
+                description: fairyMessages.options.request,
+                type: 3,
+                required: false,
             },
         ],
     },

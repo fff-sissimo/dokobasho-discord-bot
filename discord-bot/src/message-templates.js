@@ -1,6 +1,7 @@
 const MESSAGES = {
     errors: {
         reminderNotConfigured: 'リマインダー機能は今は使えないみたいだよ。',
+        fairyNotConfigured: 'Fairy機能の接続先が未設定だよ。管理者に確認してね。',
         generic: 'エラーが起きたよ。ログを見てね。',
         keyGenerationFailed: 'キーがうまく作れなかったよ。もう一回試してね。',
         invalidTimezone: '❌ タイムゾーンの指定が正しくないよ。例: Asia/Tokyo / JST / +09:00',
@@ -20,7 +21,7 @@ const MESSAGES = {
         listItem: (key, contentPreview, displayDate) => `- \`${key}\`: ${contentPreview}... (通知: ${displayDate})`,
         listHeader: (scope, total, displayed, listContent) => `**リマインダー一覧 (${scope}) - ${total}件中${displayed}件表示だよ**\n${listContent}`,
         alreadyDeleted: 'このリマインダーはもう消えてるみたいだよ。',
-        deleteConfirmLabel: '削除する',
+        deleteConfirmLabel: 'うん、削除する',
         deleteConfirm: (key) => `本当にリマインダー「${key}」を削除する？一度消したら戻せないよ。`,
         deleteSuccess: (key) => `✅ リマインダー「${key}」を削除したよ。`,
     },
@@ -85,6 +86,12 @@ const MESSAGES = {
                         server: 'サーバー全体 (Server)',
                     },
                 },
+            },
+        },
+        fairy: {
+            description: '依頼内容を受け取り、処理の進捗を返すよ。',
+            options: {
+                request: '依頼内容（省略可）',
             },
         },
     },

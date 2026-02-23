@@ -1,10 +1,11 @@
 # Dokobasho Discord Bot
 
-Discord上で動作する多機能ボット。リマインダー機能などを提供します。
+Discord上で動作する多機能ボット。リマインダー機能と `/fairy` 連携を提供します。
 
 ## 機能
 
 - **リマインダー機能**: `/remind` コマンドを使って、個人・チャンネル・サーバー単位でのリマインダーを設定できます。
+- **Fast Path 機能**: `/fairy` コマンドで一次回答を返し、n8n slow-path に処理を引き継ぎます。
 - **n8n連携**: メンションや返信に反応して、指定したn8nのWebhookに情報を送信します。
 
 ## 開発環境のセットアップ
@@ -37,6 +38,9 @@ Discord上で動作する多機能ボット。リマインダー機能などを�
     - `REMINDER_SENDING_TIMEOUT_MS`: (任意) `sending` 状態のリマインダーを再取得するまでの待機時間(ミリ秒)。
     - `N8N_WEBHOOK_URL`: (任意) n8n連携用のWebhook URL。
     - `N8N_WEBHOOK_SECRET`: (任意) n8n Webhook の共有シークレット。Webhook Guard を有効にしている場合は必須。
+    - `N8N_BASE`: `/fairy` slow-path 連携先の n8n ベースURL。
+    - `N8N_SLOW_PATH_WEBHOOK_PATH`: (任意) slow-path Webhook path。未指定時 `/webhook/fairy-slow-path`。
+    - `N8N_SLOW_PATH_TIMEOUT_MS`: (任意) slow-path Webhook timeout(ms)。未指定時 `8000`。
 
 4.  **Google Service Account と Google Sheets API の設定:**
     - Google Cloud Platformでプロジェクトを作成し、Google Sheets APIを有効にします。
