@@ -13,6 +13,7 @@ const {
   createFairyMessageHandler,
 } = require("./src/fairy-fast-path");
 const { createOpenAiFirstReplyComposer } = require("./src/fairy-first-reply-ai");
+const { createPermanentMemorySyncServer } = require("./src/permanent-memory-sync-server");
 const logger = require('./src/logger');
 const { MESSAGES } = require('./src/message-templates');
 const { createWebhookRequestBuilder } = require('./src/n8n-webhook');
@@ -34,6 +35,12 @@ const parseBoolean = (raw, fallback) => {
   if (["1", "true", "yes", "on"].includes(normalized)) return true;
   if (["0", "false", "no", "off"].includes(normalized)) return false;
   return fallback;
+};
+
+const parseOptionalString = (raw, fallback = "") => {
+  if (raw === undefined || raw === null) return fallback;
+  const value = String(raw).trim();
+  return value === "" ? fallback : value;
 };
 
 const collectRecentChannelContext = async (
@@ -60,6 +67,7 @@ const collectRecentChannelContext = async (
 
 let fairyInteractionHandler = null;
 let fairyMessageHandler = null;
+let permanentMemorySyncRuntime = null;
 const fairyMessageTriggerEnabled = parseBoolean(process.env.FAIRY_ENABLE_MESSAGE_TRIGGER, true);
 try {
   const slowPathClient = createSlowPathWebhookClient({
@@ -87,6 +95,24 @@ try {
   });
 } catch (error) {
   logger.warn({ err: error }, "[fairy] disabled due to invalid configuration");
+}
+
+const permanentMemorySyncEnabled = parseBoolean(process.env.PERMANENT_MEMORY_SYNC_ENABLED, false);
+if (permanentMemorySyncEnabled) {
+  try {
+    const syncServer = createPermanentMemorySyncServer({
+      token: parseOptionalString(process.env.PERMANENT_MEMORY_SYNC_TOKEN, ""),
+      outputDir: parseOptionalString(process.env.PERMANENT_MEMORY_SYNC_DIR, "/app/permanent-memory"),
+      outputFile: parseOptionalString(process.env.PERMANENT_MEMORY_SYNC_FILE, "permanent-memory.md"),
+      path: parseOptionalString(process.env.PERMANENT_MEMORY_SYNC_PATH, "/internal/permanent-memory/sync"),
+      port: parsePositiveInt(process.env.PERMANENT_MEMORY_SYNC_PORT, 8789),
+      host: parseOptionalString(process.env.PERMANENT_MEMORY_SYNC_HOST, "0.0.0.0"),
+      logger,
+    });
+    permanentMemorySyncRuntime = syncServer;
+  } catch (error) {
+    logger.error({ err: error }, "[permanent-sync] failed to configure server");
+  }
 }
 
 // --- Cache (for n8n logic) ---
@@ -262,6 +288,38 @@ client.on(Events.InteractionCreate, async (interaction) => {
 client.login(token).catch((error) => {
   logger.error("[login] Failed to login", error);
   process.exit(1);
+});
+
+if (permanentMemorySyncRuntime) {
+  permanentMemorySyncRuntime.start().catch((error) => {
+    logger.error({ err: error }, "[permanent-sync] failed to start server");
+    process.exit(1);
+  });
+}
+
+const shutdown = async (signal) => {
+  logger.info({ signal }, "[shutdown] received signal");
+  if (permanentMemorySyncRuntime) {
+    try {
+      await permanentMemorySyncRuntime.stop();
+    } catch (error) {
+      logger.error({ err: error }, "[permanent-sync] failed to stop server");
+    }
+  }
+  try {
+    await client.destroy();
+  } catch (error) {
+    logger.error({ err: error }, "[shutdown] failed to destroy discord client");
+  }
+  process.exit(0);
+};
+
+process.on("SIGTERM", () => {
+  void shutdown("SIGTERM");
+});
+
+process.on("SIGINT", () => {
+  void shutdown("SIGINT");
 });
 
 process.on("unhandledRejection", (error) => {

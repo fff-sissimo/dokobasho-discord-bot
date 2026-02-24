@@ -81,6 +81,7 @@ services:
       - ./discord-bot/.env
     volumes:
       - ${GOOGLE_SA_KEY_FILE:-./discord-bot/google-service-key.json}:/app/keys/google-service-key.json:ro
+      - ${PERMANENT_MEMORY_HOST_DIR:-./discord-bot/permanent-memory}:/app/permanent-memory
 
   discord-scheduler:
     image: dokobasho-discord-bot:${DISCORD_BOT_IMAGE_TAG:-local}
