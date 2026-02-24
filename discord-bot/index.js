@@ -102,7 +102,7 @@ if (permanentMemorySyncEnabled) {
   try {
     const syncServer = createPermanentMemorySyncServer({
       token: parseOptionalString(process.env.PERMANENT_MEMORY_SYNC_TOKEN, ""),
-      outputDir: parseOptionalString(process.env.PERMANENT_MEMORY_SYNC_DIR, "/app/permanent-memory"),
+      outputDir: parseOptionalString(process.env.PERMANENT_MEMORY_SYNC_DIR, "/opt/dokobasho/permanent-memory"),
       outputFile: parseOptionalString(process.env.PERMANENT_MEMORY_SYNC_FILE, "permanent-memory.md"),
       path: parseOptionalString(process.env.PERMANENT_MEMORY_SYNC_PATH, "/internal/permanent-memory/sync"),
       port: parsePositiveInt(process.env.PERMANENT_MEMORY_SYNC_PORT, 8789),

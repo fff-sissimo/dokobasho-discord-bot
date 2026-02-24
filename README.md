@@ -52,7 +52,7 @@ Discord上で動作する多機能ボット。リマインダー機能と `/fair
     - `PERMANENT_MEMORY_SYNC_PORT`: (任意) 同期Webhook受信ポート。未指定時 `8789`。
     - `PERMANENT_MEMORY_SYNC_PATH`: (任意) 同期Webhook受信パス。未指定時 `/internal/permanent-memory/sync`。
     - `PERMANENT_MEMORY_SYNC_TOKEN`: (推奨) 同期Webhook共有トークン。n8nのHTTP Requestから `x-permanent-sync-token` で送信してください。
-    - `PERMANENT_MEMORY_SYNC_DIR`: (任意) Markdown保存ディレクトリ。未指定時 `/app/permanent-memory`。
+    - `PERMANENT_MEMORY_SYNC_DIR`: (任意) Markdown保存ディレクトリ。未指定時 `/opt/dokobasho/permanent-memory`。
     - `PERMANENT_MEMORY_SYNC_FILE`: (任意) Markdown保存ファイル名。未指定時 `permanent-memory.md`。
 
 4.  **Google Service Account と Google Sheets API の設定:**
@@ -123,9 +123,8 @@ Discord上で動作する多機能ボット。リマインダー機能と `/fair
     セキュリティのため、鍵ファイルはリポジトリ外に保存し、絶対パスで `GOOGLE_SA_KEY_FILE` を設定する運用を推奨します。
     コンテナ内の `.env` には `GOOGLE_SA_KEY_PATH=/app/keys/google-service-key.json` を設定してください。
 
--   **恒久記憶 Markdown の保存先マウント:**
-    `docker-compose.yml` では `PERMANENT_MEMORY_HOST_DIR`（既定: `./discord-bot/permanent-memory`）を
-    コンテナ内 `/app/permanent-memory` へマウントします。
+-   **恒久記憶 Markdown の保存先:**
+    Hostinger の現行構成では `/docker/n8n/discord-bot-runtime` をコンテナ内 `/opt/dokobasho` へマウントしているため、既定の保存先 `/opt/dokobasho/permanent-memory` は VPS 側に永続化されます。
     n8n からは `http://discord-bot:${PERMANENT_MEMORY_SYNC_PORT}${PERMANENT_MEMORY_SYNC_PATH}` へ
     `POST` し、ヘッダー `x-permanent-sync-token` に `PERMANENT_MEMORY_SYNC_TOKEN` を設定してください。
 
