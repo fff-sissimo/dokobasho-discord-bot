@@ -89,7 +89,7 @@ describe("fairy fast path", () => {
       expect.objectContaining({
         request_id: "RQ-20260223-000000000-aaaaaaaaaaaa",
         command_name: "fairy",
-        trigger_source: "interaction",
+        trigger_source: "slash_command",
         source_message_id: null,
         context_excerpt: ["latest context", "another line"],
         first_reply_message_id: null,
@@ -196,7 +196,7 @@ describe("fairy fast path", () => {
     expect(enqueue.mock.calls[0][0].first_reply_message_id).toBe("112233445566778899");
   });
 
-  it("handles mention/reply message and enqueues slow path payload", async () => {
+  it("handles mention message and enqueues slow path payload", async () => {
     const enqueue = jest.fn().mockResolvedValue({ status: 200 });
     const replyEdit = jest.fn().mockResolvedValue(undefined);
     const handler = createFairyMessageHandler({
@@ -234,12 +234,51 @@ describe("fairy fast path", () => {
       expect.objectContaining({
         request_id: "RQ-20260223-000000000-eeeeeeeeeeee",
         event_id: "msg_001",
-        trigger_source: "message",
+        trigger_source: "mention",
         source_message_id: "msg_001",
         user_id: "user_msg_001",
         command_name: "fairy",
         invocation_message: "テストして",
         first_reply_message_id: "msg_reply_001",
+      })
+    );
+  });
+
+  it("handles reply message trigger source metadata", async () => {
+    const enqueue = jest.fn().mockResolvedValue({ status: 200 });
+    const handler = createFairyMessageHandler({
+      slowPathClient: { enqueue },
+      contextSource: async () => ["msg-context-reply"],
+      requestIdFactory: () => "RQ-20260223-000000000-ffffffffffff",
+      enqueueAttempts: 1,
+    });
+
+    const message = {
+      id: "msg_002",
+      content: "追加で教えて",
+      createdAt: new Date("2026-02-23T12:01:00.000Z"),
+      channelId: "723456789012345678",
+      guildId: "823456789012345678",
+      author: { id: "user_msg_002", bot: false },
+      client: {
+        user: { id: "1100870989518213200" },
+        application: { id: "app_msg_002" },
+      },
+      reply: jest.fn().mockResolvedValue({ id: "msg_reply_002", edit: jest.fn().mockResolvedValue(undefined) }),
+    };
+
+    const result = await handler(message, {
+      messageTriggerSource: "reply",
+      sourceMessageId: "msg_source_reply_002",
+    });
+
+    expect(result.handled).toBe(true);
+    expect(enqueue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        request_id: "RQ-20260223-000000000-ffffffffffff",
+        trigger_source: "reply",
+        source_message_id: "msg_source_reply_002",
+        first_reply_message_id: "msg_reply_002",
       })
     );
   });

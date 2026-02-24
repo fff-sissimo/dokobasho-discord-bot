@@ -7,6 +7,7 @@ const {
 } = require("./fairy-first-reply-ai");
 
 const FAIRY_COMMAND_NAME = "fairy";
+const SLOW_PATH_TRIGGER_SOURCES = Object.freeze(["slash_command", "mention", "reply"]);
 
 const DEFAULT_FAST_PATH_CAPS = Object.freeze({
   maxMessages: 20,
@@ -14,6 +15,20 @@ const DEFAULT_FAST_PATH_CAPS = Object.freeze({
   maxChars: 6000,
   collectionDeadlineMs: 1200,
 });
+
+const isValidTriggerSource = (value) => SLOW_PATH_TRIGGER_SOURCES.includes(value);
+
+const validateTriggerSourcePair = (triggerSource, sourceMessageId) => {
+  if (!isValidTriggerSource(triggerSource)) {
+    throw new Error(`invalid trigger source: ${String(triggerSource)}`);
+  }
+  if (triggerSource === "slash_command" && sourceMessageId !== null) {
+    throw new Error("invalid trigger/source pairing: slash_command requires source_message_id=null");
+  }
+  if (triggerSource !== "slash_command" && (typeof sourceMessageId !== "string" || sourceMessageId.length === 0)) {
+    throw new Error(`invalid trigger/source pairing: ${triggerSource} requires non-empty source_message_id`);
+  }
+};
 
 const sanitizeSummaryText = (value) =>
   String(value).replace(/[?？]/g, "").replace(/\s+/g, " ").trim();
@@ -247,6 +262,9 @@ const handleFairyInteraction = async (interaction, options) => {
 
   const now = options.now || Date.now;
   const startedAtMs = now();
+  const triggerSource = options.triggerSource || "slash_command";
+  const sourceMessageId = options.sourceMessageId === undefined ? null : options.sourceMessageId;
+  validateTriggerSourcePair(triggerSource, sourceMessageId);
   await interaction.deferReply({ ephemeral: false });
   const deferLatencyMs = now() - startedAtMs;
 
@@ -280,8 +298,8 @@ const handleFairyInteraction = async (interaction, options) => {
     request_id: requestId,
     event_id: interaction.id,
     application_id: interaction.applicationId,
-    trigger_source: "interaction",
-    source_message_id: null,
+    trigger_source: triggerSource,
+    source_message_id: sourceMessageId,
     user_id: interaction.user.id,
     channel_id: interaction.channelId,
     guild_id: interaction.guildId || null,
@@ -337,6 +355,9 @@ const handleFairyInteraction = async (interaction, options) => {
 const handleFairyMessage = async (message, options) => {
   const now = options.now || Date.now;
   const startedAtMs = now();
+  const triggerSource = options.messageTriggerSource || "mention";
+  const sourceMessageId = options.sourceMessageId === undefined ? message.id : options.sourceMessageId;
+  validateTriggerSourcePair(triggerSource, sourceMessageId);
   const invocationMessage = readInvocationMessageFromMessage(message);
   const recentMessages = options.contextSource ? await options.contextSource(message) : [invocationMessage];
   const caps = options.caps || DEFAULT_FAST_PATH_CAPS;
@@ -372,8 +393,8 @@ const handleFairyMessage = async (message, options) => {
       (message.client && message.client.application && message.client.application.id) ||
       (message.client && message.client.user && message.client.user.id) ||
       null,
-    trigger_source: "message",
-    source_message_id: message.id,
+    trigger_source: triggerSource,
+    source_message_id: sourceMessageId,
     user_id: message.author.id,
     channel_id: message.channelId || (message.channel && message.channel.id) || null,
     guild_id: message.guildId || null,
@@ -446,11 +467,12 @@ const createFairyInteractionHandler = (options) => async (interaction) => {
   return handleFairyInteraction(interaction, options);
 };
 
-const createFairyMessageHandler = (options) => async (message) => {
+const createFairyMessageHandler = (options) => async (message, runtimeOptions = {}) => {
   if (!message || !message.content || !message.author || message.author.bot) {
     return { handled: false };
   }
-  return handleFairyMessage(message, options);
+  const triggerOptions = { ...options, ...runtimeOptions };
+  return handleFairyMessage(message, triggerOptions);
 };
 
 module.exports = {

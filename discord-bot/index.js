@@ -159,7 +159,11 @@ client.on("messageCreate", async (message) => {
 
   if (fairyMessageTriggerEnabled && fairyMessageHandler) {
     try {
-      const result = await fairyMessageHandler(message);
+      const triggerSource = isReplyToBot ? "reply" : "mention";
+      const result = await fairyMessageHandler(message, {
+        messageTriggerSource: triggerSource,
+        sourceMessageId: message.id,
+      });
       if (result.handled) {
         logger.info(
           `[fairy] message-trigger request_id=${result.requestId} firstReply=${result.firstReplyLatencyMs}ms source=${result.firstReplySource || "fallback"}`
