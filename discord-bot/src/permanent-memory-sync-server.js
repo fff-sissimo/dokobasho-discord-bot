@@ -3,11 +3,13 @@
 const http = require("node:http");
 const path = require("node:path");
 const crypto = require("node:crypto");
-const { mkdir, appendFile } = require("node:fs/promises");
+const { mkdir, appendFile, readFile } = require("node:fs/promises");
 
 const DEFAULT_PATH = "/internal/permanent-memory/sync";
+const DEFAULT_READ_PATH = "/internal/permanent-memory/read";
 const DEFAULT_FILE = "permanent-memory.md";
 const DEFAULT_MAX_BODY_BYTES = 256 * 1024;
+const DEFAULT_MAX_READ_CHARS = 8000;
 
 const toStringOrEmpty = (value) => (value === undefined || value === null ? "" : String(value));
 
@@ -147,26 +149,96 @@ const parseRoutePath = (rawPath) => {
   return pathText.startsWith("/") ? pathText : `/${pathText}`;
 };
 
+const resolveTailChars = (rawTailChars, maxReadChars) => {
+  const parsed = Number(rawTailChars);
+  if (!Number.isFinite(parsed) || parsed <= 0) return maxReadChars;
+  return Math.min(Math.floor(parsed), maxReadChars);
+};
+
 const createPermanentMemorySyncServer = ({
   token,
   outputDir,
   outputFile = DEFAULT_FILE,
   path: routePath = DEFAULT_PATH,
+  readPath = DEFAULT_READ_PATH,
   host = "0.0.0.0",
   port = 8789,
   maxBodyBytes = DEFAULT_MAX_BODY_BYTES,
+  maxReadChars = DEFAULT_MAX_READ_CHARS,
   logger = console,
 } = {}) => {
   const normalizedRoute = parseRoutePath(routePath);
+  const normalizedReadRoute = parseRoutePath(readPath || DEFAULT_READ_PATH);
   const expectedToken = toStringOrEmpty(token).trim();
+  const safeMaxReadChars =
+    Number.isFinite(Number(maxReadChars)) && Number(maxReadChars) > 0
+      ? Math.floor(Number(maxReadChars))
+      : DEFAULT_MAX_READ_CHARS;
   const normalizedOutputDir = path.resolve(outputDir || path.join(process.cwd(), "permanent-memory"));
   const normalizedFileName = path.basename(toStringOrEmpty(outputFile).trim() || DEFAULT_FILE);
   const outputPath = path.join(normalizedOutputDir, normalizedFileName);
 
   let server = null;
 
+  const isAuthorized = (req) => {
+    if (!expectedToken) return true;
+    const providedToken = toStringOrEmpty(req.headers["x-permanent-sync-token"]);
+    return Boolean(providedToken) && timingSafeEqualText(providedToken, expectedToken);
+  };
+
+  const handleReadRequest = async (req, res, reqUrl) => {
+    if (req.method !== "GET") {
+      writeJson(res, 405, { error: "method_not_allowed" });
+      return;
+    }
+
+    if (!isAuthorized(req)) {
+      writeJson(res, 401, { error: "unauthorized" });
+      return;
+    }
+
+    const tailChars = resolveTailChars(reqUrl.searchParams.get("tail_chars"), safeMaxReadChars);
+
+    let rawContent = "";
+    try {
+      rawContent = await readFile(outputPath, "utf8");
+    } catch (error) {
+      if (error && error.code === "ENOENT") {
+        writeJson(res, 200, {
+          ok: true,
+          exists: false,
+          output_path: outputPath,
+          total_chars: 0,
+          returned_chars: 0,
+          tail_chars: tailChars,
+          content: "",
+        });
+        return;
+      }
+      logger.error({ err: error }, "[permanent-sync] failed to read markdown");
+      writeJson(res, 500, { error: "failed_to_read" });
+      return;
+    }
+
+    const content = rawContent.length > tailChars ? rawContent.slice(-tailChars) : rawContent;
+    writeJson(res, 200, {
+      ok: true,
+      exists: true,
+      output_path: outputPath,
+      total_chars: rawContent.length,
+      returned_chars: content.length,
+      tail_chars: tailChars,
+      content,
+    });
+  };
+
   const handleRequest = async (req, res) => {
     const reqUrl = new URL(req.url || "/", "http://127.0.0.1");
+    if (reqUrl.pathname === normalizedReadRoute) {
+      await handleReadRequest(req, res, reqUrl);
+      return;
+    }
+
     if (reqUrl.pathname !== normalizedRoute) {
       writeJson(res, 404, { error: "not_found" });
       return;
@@ -177,12 +249,9 @@ const createPermanentMemorySyncServer = ({
       return;
     }
 
-    if (expectedToken) {
-      const providedToken = toStringOrEmpty(req.headers["x-permanent-sync-token"]);
-      if (!providedToken || !timingSafeEqualText(providedToken, expectedToken)) {
-        writeJson(res, 401, { error: "unauthorized" });
-        return;
-      }
+    if (!isAuthorized(req)) {
+      writeJson(res, 401, { error: "unauthorized" });
+      return;
     }
 
     let bodyText = "";
@@ -287,6 +356,7 @@ const createPermanentMemorySyncServer = ({
           host,
           port: activePort,
           route: normalizedRoute,
+          readRoute: normalizedReadRoute,
           outputPath,
         },
         "[permanent-sync] server started"

@@ -105,7 +105,9 @@ if (permanentMemorySyncEnabled) {
       outputDir: parseOptionalString(process.env.PERMANENT_MEMORY_SYNC_DIR, "/opt/dokobasho/permanent-memory"),
       outputFile: parseOptionalString(process.env.PERMANENT_MEMORY_SYNC_FILE, "permanent-memory.md"),
       path: parseOptionalString(process.env.PERMANENT_MEMORY_SYNC_PATH, "/internal/permanent-memory/sync"),
+      readPath: parseOptionalString(process.env.PERMANENT_MEMORY_READ_PATH, "/internal/permanent-memory/read"),
       port: parsePositiveInt(process.env.PERMANENT_MEMORY_SYNC_PORT, 8789),
+      maxReadChars: parsePositiveInt(process.env.PERMANENT_MEMORY_READ_MAX_CHARS, 8000),
       host: parseOptionalString(process.env.PERMANENT_MEMORY_SYNC_HOST, "0.0.0.0"),
       logger,
     });

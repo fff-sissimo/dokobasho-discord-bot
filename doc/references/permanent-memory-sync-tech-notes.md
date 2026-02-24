@@ -22,3 +22,5 @@
 - n8n から `discord-bot` コンテナ内の内部HTTPエンドポイントへPOST。
 - 受信 payload を Markdown に整形し、VPS 上の bind mount ディレクトリへ保存。
 - トークン一致と payload 最低限バリデーションを実装する。
+- 親AI 側は同サービスの `GET /internal/permanent-memory/read` で Markdown を取得し、
+  `tail_chars` クエリで返却文字数を制御する。
