@@ -97,7 +97,7 @@ try {
   logger.warn({ err: error }, "[fairy] disabled due to invalid configuration");
 }
 
-const permanentMemorySyncEnabled = parseBoolean(process.env.PERMANENT_MEMORY_SYNC_ENABLED, false);
+const permanentMemorySyncEnabled = parseBoolean(process.env.PERMANENT_MEMORY_SYNC_ENABLED, true);
 if (permanentMemorySyncEnabled) {
   try {
     const syncServer = createPermanentMemorySyncServer({
