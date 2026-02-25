@@ -137,6 +137,25 @@ Discord上で動作する多機能ボット。リマインダー機能と `/fair
     親AI などの読取側は `http://discord-bot:${PERMANENT_MEMORY_SYNC_PORT}${PERMANENT_MEMORY_READ_PATH}?tail_chars=4000`
     を `GET` し、必要に応じて同じ `x-permanent-sync-token` ヘッダーを付与してください。
 
+### fairy-core 本番反映手順
+
+`@fff-sissimo/fairy-core` を更新して反映する場合は、以下の順で実施します。
+
+1. `discord-bot/package.json` の `@fff-sissimo/fairy-core` version を更新する（固定 version）。
+2. Hostinger の環境変数に `NODE_AUTH_TOKEN` が設定されていることを確認する。
+3. `discord-bot` ディレクトリで `npm ci --omit=dev` を実行する。
+4. `docker compose up -d --no-deps --force-recreate discord-bot discord-scheduler` で再起動する。
+5. `/fairy` の一次回答と slow-path 連携をスモーク確認する。
+
+### fairy-core ロールバック手順
+
+障害時は次の手順でロールバックします。
+
+1. `discord-bot/package.json` の `@fff-sissimo/fairy-core` を **1 version** 前に戻す。
+2. `npm ci --omit=dev` を実行する。
+3. `docker compose up -d --no-deps --force-recreate discord-bot discord-scheduler` で再起動する。
+4. 復旧確認後、障害ログへ「原因・実施時刻・再発防止案」を記録する。
+
 ## 運用上の注意
 
 -   **タイムゾーン**: 時刻の解釈にはサーバーのデフォルトタイムゾーンが使われますが、`/remind add` の `timezone` オプションで個別に指定することも可能です。
