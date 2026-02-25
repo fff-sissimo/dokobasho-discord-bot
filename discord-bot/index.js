@@ -12,7 +12,8 @@ const {
   createFairyInteractionHandler,
   createFairyMessageHandler,
 } = require("./src/fairy-fast-path");
-const { createOpenAiFirstReplyComposer } = require("./src/fairy-first-reply-ai");
+const { fairyCoreAdapter } = require("./src/fairy-core-adapter");
+const { createOpenAiFirstReplyComposer } = fairyCoreAdapter;
 const { createPermanentMemorySyncServer } = require("./src/permanent-memory-sync-server");
 const logger = require('./src/logger');
 const { MESSAGES } = require('./src/message-templates');

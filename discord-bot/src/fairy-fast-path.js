@@ -1,13 +1,15 @@
 "use strict";
 
 const { randomUUID } = require("node:crypto");
+const { fairyCoreAdapter } = require("./fairy-core-adapter");
+
+const FAIRY_COMMAND_NAME = "fairy";
 const {
   buildFallbackFirstReplyMessage,
   normalizeFirstReplyForDiscord,
-} = require("./fairy-first-reply-ai");
-
-const FAIRY_COMMAND_NAME = "fairy";
-const SLOW_PATH_TRIGGER_SOURCES = Object.freeze(["slash_command", "mention", "reply"]);
+  assertSlowPathJobPayloadContract,
+  SLOW_PATH_TRIGGER_SOURCES,
+} = fairyCoreAdapter;
 
 const DEFAULT_FAST_PATH_CAPS = Object.freeze({
   maxMessages: 20,
@@ -255,6 +257,11 @@ const buildEnqueueFailureMessage = (firstReplyMessage, enqueueError) => {
   ].join("\n");
 };
 
+const buildPayloadContractFailure = (error) => {
+  const detail = sanitizeSummaryText(String(error)).slice(0, 200);
+  return `slow-path payload contract failed: ${detail || "unknown validation error"}`;
+};
+
 const handleFairyInteraction = async (interaction, options) => {
   if (interaction.commandName !== FAIRY_COMMAND_NAME) {
     return { handled: false };
@@ -320,15 +327,22 @@ const handleFairyInteraction = async (interaction, options) => {
     first_reply_message_id: firstReplyMessageId,
     created_at: new Date().toISOString(),
   };
-
+  let enqueueError;
+  try {
+    assertSlowPathJobPayloadContract(payload);
+  } catch (error) {
+    enqueueError = buildPayloadContractFailure(error);
+  }
   const enqueueAttempts = Math.max(1, Number(options.enqueueAttempts || 2));
   const enqueueRetryDelayMs = Math.max(0, Number(options.enqueueRetryDelayMs || 300));
-  const enqueueError = await enqueueSlowPathWithRetry({
-    slowPathClient: options.slowPathClient,
-    payload,
-    enqueueAttempts,
-    enqueueRetryDelayMs,
-  });
+  if (!enqueueError) {
+    enqueueError = await enqueueSlowPathWithRetry({
+      slowPathClient: options.slowPathClient,
+      payload,
+      enqueueAttempts,
+      enqueueRetryDelayMs,
+    });
+  }
 
   if (enqueueError) {
     const failureMessage = buildEnqueueFailureMessage(firstReplyMessage, enqueueError);
@@ -418,15 +432,22 @@ const handleFairyMessage = async (message, options) => {
         ? message.createdAt.toISOString()
         : new Date().toISOString(),
   };
-
+  let enqueueError;
+  try {
+    assertSlowPathJobPayloadContract(payload);
+  } catch (error) {
+    enqueueError = buildPayloadContractFailure(error);
+  }
   const enqueueAttempts = Math.max(1, Number(options.enqueueAttempts || 2));
   const enqueueRetryDelayMs = Math.max(0, Number(options.enqueueRetryDelayMs || 300));
-  const enqueueError = await enqueueSlowPathWithRetry({
-    slowPathClient: options.slowPathClient,
-    payload,
-    enqueueAttempts,
-    enqueueRetryDelayMs,
-  });
+  if (!enqueueError) {
+    enqueueError = await enqueueSlowPathWithRetry({
+      slowPathClient: options.slowPathClient,
+      payload,
+      enqueueAttempts,
+      enqueueRetryDelayMs,
+    });
+  }
 
   if (enqueueError) {
     const failureMessage = buildEnqueueFailureMessage(firstReplyMessage, enqueueError);
