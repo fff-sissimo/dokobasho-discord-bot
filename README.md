@@ -52,6 +52,10 @@ Discord上で動作する多機能ボット。リマインダー機能と `/fair
     - `FIRST_REPLY_AI_MODEL`: (任意) 一次回答用モデル。未指定時 `o4-mini`。
     - `FIRST_REPLY_AI_TIMEOUT_MS`: (任意) 一次回答生成タイムアウト(ms)。未指定時 `5000`。
     - `OPENAI_BASE_URL`: (任意) OpenAI API base URL。未指定時 `https://api.openai.com`。
+    - `NOTION_TOKEN`: (推奨) Notion連携トークン。`n8n` と `n8n-runners` の両方に渡します。
+    - `NOTION_API_KEY`: (任意) 互換用の別名トークン。`NOTION_TOKEN` を優先します。
+    - `NOTION_VERSION`: (任意) Notion-Version ヘッダ。未指定時 `2022-06-28`。
+    - `NOTION_API_BASE_URL`: (任意) Notion API base URL。未指定時 `https://api.notion.com/v1`。
     - `FAIRY_ENABLE_MESSAGE_TRIGGER`: (任意) `true/1` でメンション・返信を `/fairy` と同等に処理。未指定時 `true`。`false/0` の場合は従来の `N8N_WEBHOOK_URL` 経路を使います。
     - `PERMANENT_MEMORY_SYNC_ENABLED`: (任意) `true/1` で恒久記憶同期Webhook受信を有効化。未指定時 `true`。
     - `PERMANENT_MEMORY_SYNC_PORT`: (任意) 同期Webhook受信ポート。未指定時 `8789`。

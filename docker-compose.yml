@@ -56,6 +56,10 @@ services:
       - N8N_RUNNERS_MODE=external
       - N8N_RUNNERS_AUTH_TOKEN=${N8N_RUNNERS_AUTH_TOKEN}
       - N8N_RUNNERS_BROKER_LISTEN_ADDRESS=0.0.0.0
+      - NOTION_TOKEN=${NOTION_TOKEN}
+      - NOTION_API_KEY=${NOTION_API_KEY:-}
+      - NOTION_VERSION=${NOTION_VERSION:-2022-06-28}
+      - NOTION_API_BASE_URL=${NOTION_API_BASE_URL:-https://api.notion.com/v1}
     volumes:
       - n8n_data:/home/node/.n8n
       - /local-files:/files
@@ -70,6 +74,10 @@ services:
       - N8N_RUNNERS_TASK_BROKER_URI=http://n8n:5679
       - N8N_RUNNERS_AUTH_TOKEN=${N8N_RUNNERS_AUTH_TOKEN}
       - N8N_RUNNERS_AUTO_SHUTDOWN_TIMEOUT=15
+      - NOTION_TOKEN=${NOTION_TOKEN}
+      - NOTION_API_KEY=${NOTION_API_KEY:-}
+      - NOTION_VERSION=${NOTION_VERSION:-2022-06-28}
+      - NOTION_API_BASE_URL=${NOTION_API_BASE_URL:-https://api.notion.com/v1}
 
   discord-bot:
     image: dokobasho-discord-bot:${DISCORD_BOT_IMAGE_TAG:-local}
