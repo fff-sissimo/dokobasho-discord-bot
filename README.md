@@ -8,7 +8,7 @@ Discord上で動作する多機能ボット。リマインダー機能と `/fair
 - **Fast Path 機能**: `/fairy` コマンド、Botへのメンション、Botへの返信で一次回答を返し、n8n slow-path に処理を引き継ぎます。
   - 一次回答は、これからどう進めるかを口語で簡潔に伝えます。
   - slow-path payload には `first_reply_message_id` を含めるため、n8n 側で最終回答時に一次回答を削除する運用が可能です。
-  - `@fff-sissimo/fairy-core` が利用可能な環境では package 実装を優先し、取得できない場合はローカル実装へ自動フォールバックします。
+  - 一次回答生成と slow-path payload 生成は `@fff-sissimo/fairy-core` 実装を利用します（ローカルフォールバックなし）。
 - **n8n連携**: メンションや返信に反応して、指定したn8nのWebhookに情報を送信します（`FAIRY_ENABLE_MESSAGE_TRIGGER=false` の場合）。
 
 ## 開発環境のセットアップ
@@ -25,7 +25,7 @@ Discord上で動作する多機能ボット。リマインダー機能と `/fair
     ```
     `@fff-sissimo/fairy-core` は GitHub Packages から取得するため、インストール前に `NODE_AUTH_TOKEN` を環境変数へ設定してください。
     `discord-bot/.npmrc` は `//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}` を参照します。トークンの平文を `.npmrc` へ直接書かないでください。
-    `NODE_AUTH_TOKEN` が未設定または無効で package を取得できない場合でも、bot はローカル実装フォールバックで動作します（ただし package 側の最新修正は反映されません）。
+    `NODE_AUTH_TOKEN` が未設定または無効で package を取得できない場合、bot は起動できません。先に認証情報を設定してください。
 
 3.  **環境変数を設定:**
     `discord-bot` ディレクトリにある `.env_example` をコピーして `.env` ファイルを作成します。

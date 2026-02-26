@@ -5,15 +5,14 @@ const packageJsonPath = path.resolve(__dirname, "..", "package.json");
 const npmrcPath = path.resolve(__dirname, "..", ".npmrc");
 
 describe("fairy-core migration contract", () => {
-  it("@fff-sissimo/fairy-core を固定versionで依存する", () => {
+  it("@fff-sissimo/fairy-core を固定versionで通常依存する", () => {
     const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
-    const version =
-      (packageJson.dependencies && packageJson.dependencies["@fff-sissimo/fairy-core"]) ||
-      (packageJson.optionalDependencies && packageJson.optionalDependencies["@fff-sissimo/fairy-core"]);
+    const version = packageJson.dependencies && packageJson.dependencies["@fff-sissimo/fairy-core"];
     expect(typeof version).toBe("string");
     expect(version).toMatch(/^\d+\.\d+\.\d+$/);
     expect(version.startsWith("^")).toBe(false);
     expect(version.startsWith("~")).toBe(false);
+    expect(packageJson.optionalDependencies?.["@fff-sissimo/fairy-core"]).toBeUndefined();
   });
 
   it(".npmrc が NODE_AUTH_TOKEN を環境変数参照する", () => {

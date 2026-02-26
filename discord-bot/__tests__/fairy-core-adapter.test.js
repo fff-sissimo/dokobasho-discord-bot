@@ -8,17 +8,17 @@ describe("fairy-core adapter", () => {
           return {
             buildFallbackFirstReplyMessage: () => "package-first-reply",
             normalizeFirstReplyForDiscord: () => "package-normalized",
-            createOpenAiFirstReplyComposer: () => "package-composer"
+            createOpenAiFirstReplyComposer: () => "package-composer",
           };
         }
         if (moduleName === "@fff-sissimo/fairy-core/slow-path-payload") {
           return {
             SLOW_PATH_TRIGGER_SOURCES: ["slash_command", "mention", "reply"],
-            assertSlowPathJobPayloadContract: () => {}
+            assertSlowPathJobPayloadContract: () => {},
           };
         }
         throw new Error(`unexpected module: ${moduleName}`);
-      }
+      },
     });
 
     expect(adapter.source.firstReply).toBe("package");
@@ -28,33 +28,56 @@ describe("fairy-core adapter", () => {
     expect(() => adapter.assertSlowPathJobPayloadContract()).not.toThrow();
   });
 
-  it("package が使えない場合はローカル実装へフォールバックする", () => {
-    const adapter = createFairyCoreAdapter({
-      requireImpl: () => {
-        throw new Error("module not found");
-      }
-    });
+  it("package が使えない場合は初期化エラーにする", () => {
+    expect(() =>
+      createFairyCoreAdapter({
+        requireImpl: () => {
+          throw new Error("module not found");
+        },
+      })
+    ).toThrow("module not found");
+  });
 
-    expect(adapter.source.firstReply).toBe("local-fallback");
-    expect(adapter.source.slowPath).toBe("local-fallback");
-    expect(typeof adapter.buildFallbackFirstReplyMessage).toBe("function");
-    expect(typeof adapter.assertSlowPathJobPayloadContract).toBe("function");
+  it("package export が不足している場合は初期化エラーにする", () => {
+    expect(() =>
+      createFairyCoreAdapter({
+        requireImpl: (moduleName) => {
+          if (moduleName === "@fff-sissimo/fairy-core/first-reply") {
+            return {
+              buildFallbackFirstReplyMessage: () => "ok",
+            };
+          }
+          if (moduleName === "@fff-sissimo/fairy-core/slow-path-payload") {
+            return {
+              SLOW_PATH_TRIGGER_SOURCES: ["slash_command", "mention", "reply"],
+              assertSlowPathJobPayloadContract: () => {},
+            };
+          }
+          throw new Error(`unexpected module: ${moduleName}`);
+        },
+      })
+    ).toThrow("invalid fairy-core export");
   });
 
   it("real fairy-core package が導入済みなら export 契約を満たす", () => {
-    let firstReplyModule;
-    let slowPathModule;
-    try {
-      firstReplyModule = require("@fff-sissimo/fairy-core/first-reply");
-      slowPathModule = require("@fff-sissimo/fairy-core/slow-path-payload");
-    } catch (_error) {
-      return;
-    }
+    const adapter = createFairyCoreAdapter({
+      requireImpl: (moduleName) => {
+        if (
+          moduleName === "@fff-sissimo/fairy-core/first-reply" ||
+          moduleName === "@fff-sissimo/fairy-core/slow-path-payload"
+        ) {
+          return require(moduleName);
+        }
+        throw new Error(`unexpected module: ${moduleName}`);
+      },
+    });
 
-    expect(typeof firstReplyModule.buildFallbackFirstReplyMessage).toBe("function");
-    expect(typeof firstReplyModule.normalizeFirstReplyForDiscord).toBe("function");
-    expect(typeof firstReplyModule.createOpenAiFirstReplyComposer).toBe("function");
-    expect(Array.isArray(slowPathModule.SLOW_PATH_TRIGGER_SOURCES)).toBe(true);
-    expect(typeof slowPathModule.assertSlowPathJobPayloadContract).toBe("function");
+    expect(adapter.source.firstReply).toBe("package");
+    expect(adapter.source.slowPath).toBe("package");
+    expect(typeof adapter.buildFallbackFirstReplyMessage).toBe("function");
+    expect(typeof adapter.normalizeFirstReplyForDiscord).toBe("function");
+    expect(typeof adapter.createOpenAiFirstReplyComposer).toBe("function");
+    expect(Array.isArray(adapter.SLOW_PATH_TRIGGER_SOURCES)).toBe(true);
+    expect(typeof adapter.assertSlowPathJobPayloadContract).toBe("function");
   });
 });

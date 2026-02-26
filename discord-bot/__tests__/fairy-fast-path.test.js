@@ -16,9 +16,8 @@ describe("fairy fast path", () => {
 
   it("builds concise first reply message without progress metadata", () => {
     const message = buildFirstReplyMessage("確認して？");
-    expect(message).toContain("ちょっと待っててね");
-    expect(message).toContain("まず文脈と関連情報を整理して");
-    expect(message).toContain("返すね");
+    expect(message).toContain("少し待ってください");
+    expect(message).toContain("確認して");
     expect(message).not.toContain("Request:");
     expect(message).not.toContain("進捗:");
     expect(message).not.toContain("方針:");
@@ -81,7 +80,7 @@ describe("fairy fast path", () => {
     expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: false });
     expect(interaction.editReply).toHaveBeenCalledWith(
       expect.objectContaining({
-        content: expect.stringContaining("対応を開始します。 少し待ってください。 まず文脈と関連情報を整理して、要点からわかりやすく返すね。"),
+        content: expect.stringContaining("対応を開始します。 少し待ってください。"),
       })
     );
     expect(enqueue).toHaveBeenCalledTimes(1);
@@ -160,8 +159,7 @@ describe("fairy fast path", () => {
     expect(result.handled).toBe(true);
     expect(result.firstReplySource).toBe("fallback");
     expect(result.firstReplyError).toContain("openai unavailable");
-    expect(firstContent).toContain("ちょっと待っててね");
-    expect(firstContent).toContain("まず文脈と関連情報を整理して");
+    expect(firstContent).toContain("少し待ってください");
     expect(firstContent).not.toContain("Request:");
     expect(firstContent).not.toContain("進捗:");
     expect(firstContent).not.toContain("方針:");
