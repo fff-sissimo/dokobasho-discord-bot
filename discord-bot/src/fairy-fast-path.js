@@ -195,33 +195,13 @@ const createSlowPathWebhookClient = ({
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-const composeFirstReply = async ({ invocationMessage, contextMessages, firstReplyComposer }) => {
+const composeFirstReply = async ({ invocationMessage }) => {
   const fallbackFirstReply = buildFirstReplyMessage(invocationMessage);
-  if (typeof firstReplyComposer !== "function") {
-    return {
-      firstReplyMessage: fallbackFirstReply,
-      firstReplySource: "fallback",
-      firstReplyError: undefined,
-    };
-  }
-
-  try {
-    const generated = await firstReplyComposer({
-      invocationMessage,
-      contextExcerpt: contextMessages,
-    });
-    return {
-      firstReplyMessage: normalizeFirstReplyForDiscord(generated, fallbackFirstReply),
-      firstReplySource: "ai",
-      firstReplyError: undefined,
-    };
-  } catch (error) {
-    return {
-      firstReplyMessage: fallbackFirstReply,
-      firstReplySource: "fallback",
-      firstReplyError: sanitizeSummaryText(String(error)).slice(0, 280),
-    };
-  }
+  return {
+    firstReplyMessage: normalizeFirstReplyForDiscord("", fallbackFirstReply),
+    firstReplySource: "fallback",
+    firstReplyError: undefined,
+  };
 };
 
 const enqueueSlowPathWithRetry = async ({
@@ -291,8 +271,6 @@ const handleFairyInteraction = async (interaction, options) => {
     (options.requestIdFactory && options.requestIdFactory()) || generateRequestId(new Date());
   const { firstReplyMessage, firstReplySource, firstReplyError } = await composeFirstReply({
     invocationMessage,
-    contextMessages: context.messages,
-    firstReplyComposer: options.firstReplyComposer,
   });
   const firstReplyResult = await interaction.editReply({ content: firstReplyMessage });
   const firstReplyMessageId =
@@ -386,8 +364,6 @@ const handleFairyMessage = async (message, options) => {
     (options.requestIdFactory && options.requestIdFactory()) || generateRequestId(new Date());
   const { firstReplyMessage, firstReplySource, firstReplyError } = await composeFirstReply({
     invocationMessage,
-    contextMessages: context.messages,
-    firstReplyComposer: options.firstReplyComposer,
   });
 
   const firstReplyResult = await message.reply({

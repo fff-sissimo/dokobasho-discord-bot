@@ -20,9 +20,9 @@ const ensureFunctionExport = (module, name, moduleName) => {
 };
 
 const createFairyCoreAdapter = ({ requireImpl = defaultRequireImpl } = {}) => {
-  const firstReplyModule = requireImpl("@fff-sissimo/fairy-core/first-reply");
+  const firstReplyModule = requireImpl("./fairy-first-reply-ai");
   for (const name of REQUIRED_FIRST_REPLY_EXPORTS) {
-    ensureFunctionExport(firstReplyModule, name, "@fff-sissimo/fairy-core/first-reply");
+    ensureFunctionExport(firstReplyModule, name, "./fairy-first-reply-ai");
   }
 
   const slowPathModule = requireImpl("@fff-sissimo/fairy-core/slow-path-payload");
@@ -42,7 +42,7 @@ const createFairyCoreAdapter = ({ requireImpl = defaultRequireImpl } = {}) => {
     SLOW_PATH_TRIGGER_SOURCES: Object.freeze([...slowPathModule.SLOW_PATH_TRIGGER_SOURCES]),
     assertSlowPathJobPayloadContract: slowPathModule.assertSlowPathJobPayloadContract,
     source: {
-      firstReply: "package",
+      firstReply: "local",
       slowPath: "package",
     },
   };

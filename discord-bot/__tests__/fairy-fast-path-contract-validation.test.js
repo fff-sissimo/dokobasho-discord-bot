@@ -2,8 +2,8 @@ const loadFastPathWithAdapter = (assertImpl) => {
   jest.resetModules();
   jest.doMock("../src/fairy-core-adapter", () => ({
     fairyCoreAdapter: {
-      buildFallbackFirstReplyMessage: () => "受け付けたよ。ちょっと待っててね。",
-      normalizeFirstReplyForDiscord: (raw, fallback) => raw || fallback,
+      buildFallbackFirstReplyMessage: () => "-# 確認中…",
+      normalizeFirstReplyForDiscord: () => "-# 確認中…",
       assertSlowPathJobPayloadContract: assertImpl,
       SLOW_PATH_TRIGGER_SOURCES: ["slash_command", "mention", "reply"],
     },

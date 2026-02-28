@@ -16,12 +16,7 @@ describe("fairy fast path", () => {
 
   it("builds concise first reply message without progress metadata", () => {
     const message = buildFirstReplyMessage("確認して？");
-    expect(message).toContain("少し待ってください");
-    expect(message).toContain("確認して");
-    expect(message).not.toContain("Request:");
-    expect(message).not.toContain("進捗:");
-    expect(message).not.toContain("方針:");
-    expect(message.includes("？")).toBe(false);
+    expect(message).toBe("-# 確認中…");
   });
 
   it("collects context with char cap truncation", () => {
@@ -47,12 +42,6 @@ describe("fairy fast path", () => {
       slowPathClient: { enqueue },
       contextSource: async () => ["latest context", "another line"],
       requestIdFactory: () => "RQ-20260223-000000000-aaaaaaaaaaaa",
-      firstReplyComposer: async () =>
-        [
-          "対応を開始します。",
-          "Request: RQ-20260223-000000000-aaaaaaaaaaaa / 進捗: 準備中",
-          "少し待ってください。",
-        ].join("\n"),
       enqueueAttempts: 1,
     });
 
@@ -75,12 +64,12 @@ describe("fairy fast path", () => {
     const result = await handler(interaction);
 
     expect(result.handled).toBe(true);
-    expect(result.firstReplySource).toBe("ai");
+    expect(result.firstReplySource).toBe("fallback");
     expect(result.firstReplyError).toBeUndefined();
     expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: false });
     expect(interaction.editReply).toHaveBeenCalledWith(
       expect.objectContaining({
-        content: expect.stringContaining("対応を開始します。 少し待ってください。"),
+        content: "-# 確認中…",
       })
     );
     expect(enqueue).toHaveBeenCalledTimes(1);
@@ -127,14 +116,11 @@ describe("fairy fast path", () => {
     expect(contents[1]).toContain("後続処理の投入に失敗したため自動処理を開始できませんでした。");
   });
 
-  it("falls back when first reply composer fails", async () => {
+  it("always returns fixed first reply", async () => {
     const enqueue = jest.fn().mockResolvedValue({ status: 200 });
     const handler = createFairyInteractionHandler({
       slowPathClient: { enqueue },
       contextSource: async () => ["ctx"],
-      firstReplyComposer: async () => {
-        throw new Error("openai unavailable");
-      },
       requestIdFactory: () => "RQ-20260223-000000000-cccccccccccc",
       enqueueAttempts: 1,
     });
@@ -158,11 +144,8 @@ describe("fairy fast path", () => {
 
     expect(result.handled).toBe(true);
     expect(result.firstReplySource).toBe("fallback");
-    expect(result.firstReplyError).toContain("openai unavailable");
-    expect(firstContent).toContain("少し待ってください");
-    expect(firstContent).not.toContain("Request:");
-    expect(firstContent).not.toContain("進捗:");
-    expect(firstContent).not.toContain("方針:");
+    expect(result.firstReplyError).toBeUndefined();
+    expect(firstContent).toBe("-# 確認中…");
   });
 
   it("stores first reply message id in slow-path payload when available", async () => {
@@ -201,7 +184,6 @@ describe("fairy fast path", () => {
       slowPathClient: { enqueue },
       contextSource: async () => ["msg-context-1", "msg-context-2"],
       requestIdFactory: () => "RQ-20260223-000000000-eeeeeeeeeeee",
-      firstReplyComposer: async () => "了解だよ。まず整理してから、要点をわかりやすく返すね。ちょっと待っててね。",
       enqueueAttempts: 1,
     });
 
@@ -222,10 +204,10 @@ describe("fairy fast path", () => {
     const result = await handler(message);
 
     expect(result.handled).toBe(true);
-    expect(result.firstReplySource).toBe("ai");
+    expect(result.firstReplySource).toBe("fallback");
     expect(message.reply).toHaveBeenCalledWith(
       expect.objectContaining({
-        content: expect.stringContaining("ちょっと待っててね"),
+        content: "-# 確認中…",
       })
     );
     expect(enqueue).toHaveBeenCalledWith(

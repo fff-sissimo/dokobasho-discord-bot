@@ -3,18 +3,13 @@ const {
   normalizeFirstReplyForDiscord,
   createOpenAiFirstReplyComposer,
   sanitizePromptLiteral,
+  FIXED_FIRST_REPLY_MESSAGE,
 } = require("../src/fairy-first-reply-ai");
 
 describe("fairy first reply ai", () => {
   it("builds fallback first reply", () => {
     const content = buildFallbackFirstReplyMessage("一次回答を確認して？");
-    expect(content).toContain("一次回答を確認して");
-    expect(content).toContain("まず文脈と関連情報を整理して");
-    expect(content).toContain("ちょっと待っててね");
-    expect(content).toContain("返すね");
-    expect(content).not.toContain("Request:");
-    expect(content).not.toContain("進捗:");
-    expect(content).not.toContain("方針:");
+    expect(content).toBe(FIXED_FIRST_REPLY_MESSAGE);
   });
 
   it("normalizes generated content and strips metadata lines", () => {
@@ -22,9 +17,7 @@ describe("fairy first reply ai", () => {
       ["対応を開始します。", "Request: RQ-1 / 進捗: 準備中", "少し待ってください。"].join("\n"),
       "fallback"
     );
-    expect(normalized).toContain("対応を開始します。 少し待ってください。");
-    expect(normalized).toContain("まず文脈と関連情報を整理して、要点からわかりやすく返すね。");
-    expect(normalized).not.toContain("方針:");
+    expect(normalized).toBe(FIXED_FIRST_REPLY_MESSAGE);
   });
 
   it("calls responses API and returns output_text", async () => {

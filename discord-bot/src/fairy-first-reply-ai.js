@@ -3,6 +3,8 @@
 const sanitizeSummaryText = (value) =>
   String(value).replace(/[?？]/g, "").replace(/\s+/g, " ").trim();
 
+const FIXED_FIRST_REPLY_MESSAGE = "-# 確認中…";
+
 const stripReplyMetadata = (value) =>
   String(value)
     .split(/\r?\n/)
@@ -66,23 +68,14 @@ const sanitizePromptLiteral = (input) => {
 };
 
 const buildFallbackFirstReplyMessage = (invocationMessage) => {
-  const summary = sanitizeSummaryText(invocationMessage).slice(0, 90);
-  if (summary) return `${summary}のこと、すぐ確認するね。${DEFAULT_PLAN_SENTENCE} ちょっと待っててね。`;
-  return `内容をすぐ確認するね。${DEFAULT_PLAN_SENTENCE} ちょっと待っててね。`;
+  void invocationMessage;
+  return FIXED_FIRST_REPLY_MESSAGE;
 };
 
 const normalizeFirstReplyForDiscord = (raw, fallbackMessage) => {
-  const withoutMeta = stripReplyMetadata(raw);
-  const compact = sanitizeSummaryText(withoutMeta);
-  if (!compact) return fallbackMessage;
-  const hasNaturalPlan =
-    compact.includes("まず") ||
-    compact.includes("先に") ||
-    compact.includes("これから") ||
-    compact.includes("整理して") ||
-    compact.includes("結論から");
-  const withPolicy = hasNaturalPlan ? compact : `${compact} ${DEFAULT_PLAN_SENTENCE}`;
-  return withPolicy.slice(0, 180);
+  void raw;
+  void fallbackMessage;
+  return FIXED_FIRST_REPLY_MESSAGE;
 };
 
 const buildPrompt = ({ invocationMessage, contextExcerpt }) => {
@@ -283,4 +276,5 @@ module.exports = {
   normalizeFirstReplyForDiscord,
   createOpenAiFirstReplyComposer,
   sanitizePromptLiteral,
+  FIXED_FIRST_REPLY_MESSAGE,
 };
