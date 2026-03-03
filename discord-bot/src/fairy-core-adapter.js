@@ -29,6 +29,12 @@ const createFairyCoreAdapter = ({ requireImpl = defaultRequireImpl } = {}) => {
   if (!Array.isArray(slowPathModule && slowPathModule.SLOW_PATH_TRIGGER_SOURCES)) {
     throw new Error("invalid fairy-core export: @fff-sissimo/fairy-core/slow-path-payload.SLOW_PATH_TRIGGER_SOURCES");
   }
+  const schemaVersion =
+    slowPathModule &&
+    typeof slowPathModule.SLOW_PATH_PAYLOAD_SCHEMA_VERSION === "string" &&
+    slowPathModule.SLOW_PATH_PAYLOAD_SCHEMA_VERSION.length > 0
+      ? slowPathModule.SLOW_PATH_PAYLOAD_SCHEMA_VERSION
+      : "2";
   ensureFunctionExport(
     slowPathModule,
     "assertSlowPathJobPayloadContract",
@@ -40,6 +46,7 @@ const createFairyCoreAdapter = ({ requireImpl = defaultRequireImpl } = {}) => {
     normalizeFirstReplyForDiscord: firstReplyModule.normalizeFirstReplyForDiscord,
     createOpenAiFirstReplyComposer: firstReplyModule.createOpenAiFirstReplyComposer,
     SLOW_PATH_TRIGGER_SOURCES: Object.freeze([...slowPathModule.SLOW_PATH_TRIGGER_SOURCES]),
+    SLOW_PATH_PAYLOAD_SCHEMA_VERSION: schemaVersion,
     assertSlowPathJobPayloadContract: slowPathModule.assertSlowPathJobPayloadContract,
     source: {
       firstReply: "local",

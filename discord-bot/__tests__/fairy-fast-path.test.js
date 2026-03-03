@@ -1,3 +1,13 @@
+jest.mock("../src/fairy-core-adapter", () => ({
+  fairyCoreAdapter: {
+    buildFallbackFirstReplyMessage: () => "-# 確認中…",
+    normalizeFirstReplyForDiscord: () => "-# 確認中…",
+    assertSlowPathJobPayloadContract: () => {},
+    SLOW_PATH_PAYLOAD_SCHEMA_VERSION: "2",
+    SLOW_PATH_TRIGGER_SOURCES: ["slash_command", "mention", "reply"],
+  },
+}));
+
 const {
   FAIRY_COMMAND_NAME,
   generateRequestId,
@@ -75,6 +85,7 @@ describe("fairy fast path", () => {
     expect(enqueue).toHaveBeenCalledTimes(1);
     expect(enqueue).toHaveBeenCalledWith(
       expect.objectContaining({
+        schema_version: "2",
         request_id: "RQ-20260223-000000000-aaaaaaaaaaaa",
         command_name: "fairy",
         trigger_source: "slash_command",
@@ -212,6 +223,7 @@ describe("fairy fast path", () => {
     );
     expect(enqueue).toHaveBeenCalledWith(
       expect.objectContaining({
+        schema_version: "2",
         request_id: "RQ-20260223-000000000-eeeeeeeeeeee",
         event_id: "msg_001",
         trigger_source: "mention",

@@ -14,6 +14,7 @@ describe("fairy-core adapter", () => {
         if (moduleName === "@fff-sissimo/fairy-core/slow-path-payload") {
           return {
             SLOW_PATH_TRIGGER_SOURCES: ["slash_command", "mention", "reply"],
+            SLOW_PATH_PAYLOAD_SCHEMA_VERSION: "2",
             assertSlowPathJobPayloadContract: () => {},
           };
         }
@@ -26,6 +27,7 @@ describe("fairy-core adapter", () => {
     expect(adapter.buildFallbackFirstReplyMessage("x")).toBe("local-first-reply");
     expect(typeof adapter.assertSlowPathJobPayloadContract).toBe("function");
     expect(() => adapter.assertSlowPathJobPayloadContract()).not.toThrow();
+    expect(adapter.SLOW_PATH_PAYLOAD_SCHEMA_VERSION).toBe("2");
   });
 
   it("package が使えない場合は初期化エラーにする", () => {
@@ -50,6 +52,7 @@ describe("fairy-core adapter", () => {
           if (moduleName === "@fff-sissimo/fairy-core/slow-path-payload") {
             return {
               SLOW_PATH_TRIGGER_SOURCES: ["slash_command", "mention", "reply"],
+              SLOW_PATH_PAYLOAD_SCHEMA_VERSION: "2",
               assertSlowPathJobPayloadContract: () => {},
             };
           }
@@ -77,6 +80,7 @@ describe("fairy-core adapter", () => {
     expect(typeof adapter.normalizeFirstReplyForDiscord).toBe("function");
     expect(typeof adapter.createOpenAiFirstReplyComposer).toBe("function");
     expect(Array.isArray(adapter.SLOW_PATH_TRIGGER_SOURCES)).toBe(true);
+    expect(typeof adapter.SLOW_PATH_PAYLOAD_SCHEMA_VERSION).toBe("string");
     expect(typeof adapter.assertSlowPathJobPayloadContract).toBe("function");
   });
 });

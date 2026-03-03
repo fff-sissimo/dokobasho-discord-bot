@@ -8,6 +8,7 @@ const {
   buildFallbackFirstReplyMessage,
   normalizeFirstReplyForDiscord,
   assertSlowPathJobPayloadContract,
+  SLOW_PATH_PAYLOAD_SCHEMA_VERSION,
   SLOW_PATH_TRIGGER_SOURCES,
 } = fairyCoreAdapter;
 
@@ -280,6 +281,7 @@ const handleFairyInteraction = async (interaction, options) => {
   const firstReplyLatencyMs = now() - startedAtMs;
 
   const payload = {
+    schema_version: SLOW_PATH_PAYLOAD_SCHEMA_VERSION,
     request_id: requestId,
     event_id: interaction.id,
     application_id: interaction.applicationId,
@@ -377,6 +379,7 @@ const handleFairyMessage = async (message, options) => {
   const firstReplyLatencyMs = now() - startedAtMs;
 
   const payload = {
+    schema_version: SLOW_PATH_PAYLOAD_SCHEMA_VERSION,
     request_id: requestId,
     event_id: message.id,
     application_id:
