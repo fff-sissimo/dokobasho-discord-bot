@@ -5,6 +5,7 @@ const loadFastPathWithAdapter = (assertImpl) => {
       buildFallbackFirstReplyMessage: () => "-# 確認中…",
       normalizeFirstReplyForDiscord: () => "-# 確認中…",
       assertSlowPathJobPayloadContract: assertImpl,
+      SLOW_PATH_PAYLOAD_SCHEMA_VERSION: "2",
       SLOW_PATH_TRIGGER_SOURCES: ["slash_command", "mention", "reply"],
     },
   }));
