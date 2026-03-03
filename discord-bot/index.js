@@ -48,6 +48,14 @@ const collectRecentChannelContext = async (
   interaction,
   limit = DEFAULT_FAST_PATH_CAPS.maxMessages
 ) => {
+  const entries = await collectRecentChannelContextEntries(interaction, limit);
+  return entries.map((entry) => entry.content);
+};
+
+const collectRecentChannelContextEntries = async (
+  interaction,
+  limit = DEFAULT_FAST_PATH_CAPS.maxMessages
+) => {
   const channel = interaction.channel;
   if (!channel || !channel.messages || typeof channel.messages.fetch !== "function") {
     return [];
@@ -59,8 +67,22 @@ const collectRecentChannelContext = async (
       (a, b) => (a.createdTimestamp || 0) - (b.createdTimestamp || 0)
     );
     return ordered
-      .map((message) => (typeof message.content === "string" ? message.content.trim() : ""))
-      .filter((content) => content.length > 0);
+      .map((message) => ({
+        message_id: typeof message.id === "string" ? message.id.trim() : "",
+        author_user_id:
+          message && message.author && typeof message.author.id === "string"
+            ? message.author.id.trim()
+            : "",
+        author_is_bot: Boolean(message && message.author && message.author.bot),
+        content: typeof message.content === "string" ? message.content.trim() : "",
+      }))
+      .filter(
+        (entry) =>
+          entry.message_id.length > 0 &&
+          entry.author_user_id.length > 0 &&
+          entry.author_is_bot === false &&
+          entry.content.length > 0
+      );
   } catch (_error) {
     return [];
   }
@@ -87,11 +109,13 @@ try {
   fairyInteractionHandler = createFairyInteractionHandler({
     slowPathClient,
     contextSource: (interaction) => collectRecentChannelContext(interaction),
+    contextEntriesSource: (interaction) => collectRecentChannelContextEntries(interaction),
     firstReplyComposer,
   });
   fairyMessageHandler = createFairyMessageHandler({
     slowPathClient,
     contextSource: (message) => collectRecentChannelContext(message),
+    contextEntriesSource: (message) => collectRecentChannelContextEntries(message),
     firstReplyComposer,
   });
 } catch (error) {

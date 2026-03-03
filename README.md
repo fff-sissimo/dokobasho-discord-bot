@@ -150,6 +150,15 @@ Discord上で動作する多機能ボット。リマインダー機能と `/fair
 3. `discord-bot` ディレクトリで `npm ci --omit=dev` を実行する。
 4. `docker compose up -d --no-deps --force-recreate discord-bot discord-scheduler` で再起動する。
 5. `/fairy` の一次回答と slow-path 連携をスモーク確認する。
+6. reminder の誤登録防止を確認する。
+   - `@どこばしょのようせい test` のような曖昧入力で、Bot の一次回答文が履歴候補として採用されないことを確認する。
+   - 明示的な本文（例: `5分後に「洗濯物を取り込む」`）では従来どおり登録できることを確認する。
+
+#### fairy-core v1.1.0 の追加確認項目（speaker-aware context）
+
+- slow-path payload の `context_entries` が送信されること（`context_excerpt` は互換保持）。
+- `context_entries` では `author_is_bot=true` の履歴が除外されること。
+- reminder 本文補完は依頼者 (`author_user_id == user_id`) の発言が優先されること。
 
 ### fairy-core ロールバック手順
 

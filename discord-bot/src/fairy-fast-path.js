@@ -38,6 +38,19 @@ const sanitizeSummaryText = (value) =>
 
 const normalizeMessage = (value) => String(value).replace(/\s+/g, " ").trim();
 
+const normalizeContextEntries = (entries) => {
+  if (!Array.isArray(entries)) return [];
+  return entries
+    .filter((entry) => entry && typeof entry === "object" && !Array.isArray(entry))
+    .map((entry) => ({
+      message_id: String(entry.message_id || "").trim(),
+      author_user_id: String(entry.author_user_id || "").trim(),
+      author_is_bot: Boolean(entry.author_is_bot),
+      content: normalizeMessage(String(entry.content || "")),
+    }))
+    .filter((entry) => entry.message_id && entry.author_user_id && entry.content && entry.author_is_bot === false);
+};
+
 const normalizeInvocationMessage = (raw) => {
   const normalized = sanitizeSummaryText(raw);
   return normalized || "依頼内容を確認して処理を開始する";
@@ -257,9 +270,13 @@ const handleFairyInteraction = async (interaction, options) => {
   const deferLatencyMs = now() - startedAtMs;
 
   const invocationMessage = readInvocationMessage(interaction);
+  const contextEntries = normalizeContextEntries(
+    typeof options.contextEntriesSource === "function" ? await options.contextEntriesSource(interaction) : []
+  );
+  const contextMessagesFromEntries = contextEntries.map((entry) => entry.content);
   const recentMessages = options.contextSource
     ? await options.contextSource(interaction)
-    : [invocationMessage];
+    : (contextMessagesFromEntries.length > 0 ? contextMessagesFromEntries : [invocationMessage]);
   const caps = options.caps || DEFAULT_FAST_PATH_CAPS;
   const context = collectFastPathContext({
     recentMessages,
@@ -293,6 +310,7 @@ const handleFairyInteraction = async (interaction, options) => {
     command_name: FAIRY_COMMAND_NAME,
     invocation_message: invocationMessage,
     context_excerpt: context.messages,
+    ...(contextEntries.length > 0 ? { context_entries: contextEntries } : {}),
     context_meta: {
       considered_messages: context.consideredMessages,
       used_messages: context.usedMessages,
@@ -353,7 +371,13 @@ const handleFairyMessage = async (message, options) => {
   const sourceMessageId = options.sourceMessageId === undefined ? message.id : options.sourceMessageId;
   validateTriggerSourcePair(triggerSource, sourceMessageId);
   const invocationMessage = readInvocationMessageFromMessage(message);
-  const recentMessages = options.contextSource ? await options.contextSource(message) : [invocationMessage];
+  const contextEntries = normalizeContextEntries(
+    typeof options.contextEntriesSource === "function" ? await options.contextEntriesSource(message) : []
+  );
+  const contextMessagesFromEntries = contextEntries.map((entry) => entry.content);
+  const recentMessages = options.contextSource
+    ? await options.contextSource(message)
+    : (contextMessagesFromEntries.length > 0 ? contextMessagesFromEntries : [invocationMessage]);
   const caps = options.caps || DEFAULT_FAST_PATH_CAPS;
   const context = collectFastPathContext({
     recentMessages,
@@ -394,6 +418,7 @@ const handleFairyMessage = async (message, options) => {
     command_name: FAIRY_COMMAND_NAME,
     invocation_message: invocationMessage,
     context_excerpt: context.messages,
+    ...(contextEntries.length > 0 ? { context_entries: contextEntries } : {}),
     context_meta: {
       considered_messages: context.consideredMessages,
       used_messages: context.usedMessages,

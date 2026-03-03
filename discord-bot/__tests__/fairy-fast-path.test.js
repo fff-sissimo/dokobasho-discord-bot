@@ -51,6 +51,14 @@ describe("fairy fast path", () => {
     const handler = createFairyInteractionHandler({
       slowPathClient: { enqueue },
       contextSource: async () => ["latest context", "another line"],
+      contextEntriesSource: async () => [
+        {
+          message_id: "msg_ctx_001",
+          author_user_id: "user_123",
+          author_is_bot: false,
+          content: "latest context",
+        },
+      ],
       requestIdFactory: () => "RQ-20260223-000000000-aaaaaaaaaaaa",
       enqueueAttempts: 1,
     });
@@ -91,6 +99,14 @@ describe("fairy fast path", () => {
         trigger_source: "slash_command",
         source_message_id: null,
         context_excerpt: ["latest context", "another line"],
+        context_entries: [
+          {
+            message_id: "msg_ctx_001",
+            author_user_id: "user_123",
+            author_is_bot: false,
+            content: "latest context",
+          },
+        ],
         first_reply_message_id: null,
       })
     );
@@ -194,6 +210,20 @@ describe("fairy fast path", () => {
     const handler = createFairyMessageHandler({
       slowPathClient: { enqueue },
       contextSource: async () => ["msg-context-1", "msg-context-2"],
+      contextEntriesSource: async () => [
+        {
+          message_id: "msg_ctx_002",
+          author_user_id: "user_msg_001",
+          author_is_bot: false,
+          content: "msg-context-1",
+        },
+        {
+          message_id: "msg_ctx_003",
+          author_user_id: "bot_001",
+          author_is_bot: true,
+          content: "bot-context",
+        },
+      ],
       requestIdFactory: () => "RQ-20260223-000000000-eeeeeeeeeeee",
       enqueueAttempts: 1,
     });
@@ -232,6 +262,14 @@ describe("fairy fast path", () => {
         command_name: "fairy",
         invocation_message: "テストして",
         first_reply_message_id: "msg_reply_001",
+        context_entries: [
+          {
+            message_id: "msg_ctx_002",
+            author_user_id: "user_msg_001",
+            author_is_bot: false,
+            content: "msg-context-1",
+          },
+        ],
       })
     );
   });
