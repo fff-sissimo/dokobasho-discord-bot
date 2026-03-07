@@ -20,9 +20,9 @@ const ensureFunctionExport = (module, name, moduleName) => {
 };
 
 const createFairyCoreAdapter = ({ requireImpl = defaultRequireImpl } = {}) => {
-  const firstReplyModule = requireImpl("./fairy-first-reply-ai");
+  const firstReplyModule = requireImpl("@fff-sissimo/fairy-core/first-reply");
   for (const name of REQUIRED_FIRST_REPLY_EXPORTS) {
-    ensureFunctionExport(firstReplyModule, name, "./fairy-first-reply-ai");
+    ensureFunctionExport(firstReplyModule, name, "@fff-sissimo/fairy-core/first-reply");
   }
 
   const slowPathModule = requireImpl("@fff-sissimo/fairy-core/slow-path-payload");
@@ -34,7 +34,10 @@ const createFairyCoreAdapter = ({ requireImpl = defaultRequireImpl } = {}) => {
     typeof slowPathModule.SLOW_PATH_PAYLOAD_SCHEMA_VERSION === "string" &&
     slowPathModule.SLOW_PATH_PAYLOAD_SCHEMA_VERSION.length > 0
       ? slowPathModule.SLOW_PATH_PAYLOAD_SCHEMA_VERSION
-      : "2";
+      : null;
+  if (!schemaVersion) {
+    throw new Error("invalid fairy-core export: @fff-sissimo/fairy-core/slow-path-payload.SLOW_PATH_PAYLOAD_SCHEMA_VERSION");
+  }
   ensureFunctionExport(
     slowPathModule,
     "assertSlowPathJobPayloadContract",
@@ -49,7 +52,7 @@ const createFairyCoreAdapter = ({ requireImpl = defaultRequireImpl } = {}) => {
     SLOW_PATH_PAYLOAD_SCHEMA_VERSION: schemaVersion,
     assertSlowPathJobPayloadContract: slowPathModule.assertSlowPathJobPayloadContract,
     source: {
-      firstReply: "local",
+      firstReply: "package",
       slowPath: "package",
     },
   };

@@ -9,6 +9,8 @@ describe("fairy-core rollout runbook contract", () => {
     expect(readme).toContain("NODE_AUTH_TOKEN");
     expect(readme).toContain("npm ci");
     expect(readme).toContain("@fff-sissimo/fairy-core");
+    expect(readme).toContain("schema v3");
+    expect(readme).toContain("reply_antecedent_entry");
   });
 
   it("README に1 versionロールバック手順を持つ", () => {

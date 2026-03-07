@@ -1,9 +1,15 @@
+const mockAckByRoute = Object.freeze({
+  slash_command: "-# 受け付けたよ。内容を確認して返すね。",
+  mention: "-# 呼んでくれてありがとう。内容を確認して返すね。",
+  reply: "-# 返信ありがとう。内容を確認して返すね。",
+});
+
 jest.mock("../src/fairy-core-adapter", () => ({
   fairyCoreAdapter: {
-    buildFallbackFirstReplyMessage: () => "-# 確認中…",
-    normalizeFirstReplyForDiscord: () => "-# 確認中…",
+    buildFallbackFirstReplyMessage: (_message, route = "slash_command") => mockAckByRoute[route],
+    normalizeFirstReplyForDiscord: (_raw, fallback) => fallback,
     assertSlowPathJobPayloadContract: () => {},
-    SLOW_PATH_PAYLOAD_SCHEMA_VERSION: "2",
+    SLOW_PATH_PAYLOAD_SCHEMA_VERSION: "3",
     SLOW_PATH_TRIGGER_SOURCES: ["slash_command", "mention", "reply"],
   },
 }));
@@ -15,6 +21,8 @@ const {
   collectFastPathContext,
   createFairyInteractionHandler,
   createFairyMessageHandler,
+  normalizeReplyAntecedentContent,
+  normalizeReplyAntecedentEntry,
 } = require("../src/fairy-fast-path");
 
 describe("fairy fast path", () => {
@@ -26,7 +34,12 @@ describe("fairy fast path", () => {
 
   it("builds concise first reply message without progress metadata", () => {
     const message = buildFirstReplyMessage("確認して？");
-    expect(message).toBe("-# 確認中…");
+    expect(message).toBe(mockAckByRoute.slash_command);
+  });
+
+  it("builds route-aware first reply message", () => {
+    expect(buildFirstReplyMessage("確認して？", "mention")).toBe(mockAckByRoute.mention);
+    expect(buildFirstReplyMessage("確認して？", "reply")).toBe(mockAckByRoute.reply);
   });
 
   it("collects context with char cap truncation", () => {
@@ -87,13 +100,13 @@ describe("fairy fast path", () => {
     expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: false });
     expect(interaction.editReply).toHaveBeenCalledWith(
       expect.objectContaining({
-        content: "-# 確認中…",
+        content: mockAckByRoute.slash_command,
       })
     );
     expect(enqueue).toHaveBeenCalledTimes(1);
     expect(enqueue).toHaveBeenCalledWith(
       expect.objectContaining({
-        schema_version: "2",
+        schema_version: "3",
         request_id: "RQ-20260223-000000000-aaaaaaaaaaaa",
         command_name: "fairy",
         trigger_source: "slash_command",
@@ -110,6 +123,7 @@ describe("fairy fast path", () => {
         first_reply_message_id: null,
       })
     );
+    expect(enqueue.mock.calls[0][0].reply_antecedent_entry).toBeUndefined();
   });
 
   it("updates first reply when enqueue fails", async () => {
@@ -172,7 +186,7 @@ describe("fairy fast path", () => {
     expect(result.handled).toBe(true);
     expect(result.firstReplySource).toBe("fallback");
     expect(result.firstReplyError).toBeUndefined();
-    expect(firstContent).toBe("-# 確認中…");
+    expect(firstContent).toBe(mockAckByRoute.slash_command);
   });
 
   it("stores first reply message id in slow-path payload when available", async () => {
@@ -248,12 +262,12 @@ describe("fairy fast path", () => {
     expect(result.firstReplySource).toBe("fallback");
     expect(message.reply).toHaveBeenCalledWith(
       expect.objectContaining({
-        content: "-# 確認中…",
+        content: mockAckByRoute.mention,
       })
     );
     expect(enqueue).toHaveBeenCalledWith(
       expect.objectContaining({
-        schema_version: "2",
+        schema_version: "3",
         request_id: "RQ-20260223-000000000-eeeeeeeeeeee",
         event_id: "msg_001",
         trigger_source: "mention",
@@ -272,6 +286,7 @@ describe("fairy fast path", () => {
         ],
       })
     );
+    expect(enqueue.mock.calls[0][0].reply_antecedent_entry).toBeUndefined();
   });
 
   it("handles reply message trigger source metadata", async () => {
@@ -311,5 +326,140 @@ describe("fairy fast path", () => {
         first_reply_message_id: "msg_reply_002",
       })
     );
+  });
+
+  it("includes reply_antecedent_entry for mention+reply when available", async () => {
+    const enqueue = jest.fn().mockResolvedValue({ status: 200 });
+    const handler = createFairyMessageHandler({
+      slowPathClient: { enqueue },
+      contextSource: async () => ["現在の文脈"],
+      requestIdFactory: () => "RQ-20260223-000000000-111111111111",
+      enqueueAttempts: 1,
+    });
+
+    const message = {
+      id: "msg_mention_reply_001",
+      content: "<@1100870989518213200> これを見て",
+      createdAt: new Date("2026-02-23T12:02:00.000Z"),
+      channelId: "723456789012345678",
+      guildId: "823456789012345678",
+      author: { id: "user_msg_003", bot: false },
+      client: {
+        user: { id: "1100870989518213200" },
+        application: { id: "app_msg_003" },
+      },
+      reply: jest.fn().mockResolvedValue({ id: "msg_reply_003", edit: jest.fn().mockResolvedValue(undefined) }),
+    };
+
+    const result = await handler(message, {
+      messageTriggerSource: "mention",
+      sourceMessageId: "msg_mention_reply_001",
+      replyAntecedentEntry: {
+        message_id: "msg_anchor_001",
+        author_user_id: "user_anchor_001",
+        author_is_bot: false,
+        content: "元メッセージの内容",
+      },
+    });
+
+    expect(result.handled).toBe(true);
+    expect(message.reply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: mockAckByRoute.mention,
+      })
+    );
+    expect(enqueue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        schema_version: "3",
+        trigger_source: "mention",
+        source_message_id: "msg_mention_reply_001",
+        reply_antecedent_entry: {
+          message_id: "msg_anchor_001",
+          author_user_id: "user_anchor_001",
+          author_is_bot: false,
+          content: "元メッセージの内容",
+        },
+      })
+    );
+  });
+
+  it("normalizes reply antecedent content into a single line with cap", () => {
+    const value = normalizeReplyAntecedentContent(`長文\tテスト\n${"a".repeat(7000)}`);
+    expect(value.includes("\n")).toBe(false);
+    expect(value.includes("\t")).toBe(false);
+    expect(value.startsWith("長文 テスト")).toBe(true);
+    expect(value.length).toBe(6000);
+  });
+
+  it("rejects malformed reply antecedent entries before enqueue", async () => {
+    const enqueue = jest.fn().mockResolvedValue({ status: 200 });
+    const edit = jest.fn().mockResolvedValue(undefined);
+    const handler = createFairyMessageHandler({
+      slowPathClient: { enqueue },
+      contextSource: async () => ["現在の文脈"],
+      requestIdFactory: () => "RQ-20260223-000000000-222222222222",
+      enqueueAttempts: 1,
+    });
+
+    const message = {
+      id: "msg_invalid_antecedent_001",
+      content: "<@1100870989518213200> これを見て",
+      createdAt: new Date("2026-02-23T12:03:00.000Z"),
+      channelId: "723456789012345678",
+      guildId: "823456789012345678",
+      author: { id: "user_msg_004", bot: false },
+      client: {
+        user: { id: "1100870989518213200" },
+        application: { id: "app_msg_004" },
+      },
+      reply: jest.fn().mockResolvedValue({ id: "msg_reply_004", edit }),
+    };
+
+    const result = await handler(message, {
+      messageTriggerSource: "mention",
+      sourceMessageId: "msg_invalid_antecedent_001",
+      replyAntecedentEntry: {
+        message_id: "msg_anchor_invalid_001",
+        author_user_id: "",
+        author_is_bot: false,
+        content: "元メッセージの内容",
+      },
+    });
+
+    expect(result.handled).toBe(true);
+    expect(enqueue).not.toHaveBeenCalled();
+    expect(message.reply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining("slow-path payload contract failed"),
+      })
+    );
+    expect(edit).not.toHaveBeenCalled();
+  });
+
+  it("normalizes reply antecedent entries before payload assembly", () => {
+    expect(
+      normalizeReplyAntecedentEntry({
+        message_id: " msg_anchor_002 ",
+        author_user_id: " user_anchor_002 ",
+        author_is_bot: true,
+        content: "  元メッセージ\nの内容  ",
+      })
+    ).toEqual({
+      message_id: "msg_anchor_002",
+      author_user_id: "user_anchor_002",
+      author_is_bot: true,
+      content: "元メッセージ の内容",
+    });
+  });
+
+  it("rejects reply antecedent entries whose author_is_bot is not boolean", () => {
+    expect(() =>
+      normalizeReplyAntecedentEntry({
+        message_id: "msg_anchor_003",
+        author_user_id: "user_anchor_003",
+        author_is_bot: "false",
+        content: "元メッセージの内容",
+      })
+    ).toThrow("author_is_bot");
   });
 });

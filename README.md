@@ -160,6 +160,15 @@ Discord上で動作する多機能ボット。リマインダー機能と `/fair
 - `context_entries` では `author_is_bot=true` の履歴が除外されること。
 - reminder 本文補完は依頼者 (`author_user_id == user_id`) の発言が優先されること。
 
+#### fairy-core v2.0.0 の移行確認項目（schema v3 / reply antecedent）
+
+- slow-path payload の `schema_version` が `3` で送信されること。
+- `/fairy`・メンション・返信の一次回答は package 実装の acknowledgement 文面を使うこと。
+- reply / mention+reply 経路では、replied target semantics を `reply_antecedent_entry` として送信できること。
+- `reply_antecedent_entry` は `message_id`, `author_user_id`, `author_is_bot`, `content` を満たすこと。
+- worker 側が `schema_version=2|3` の dual-accept 期間で動作していることを確認してから切り替えること。
+- package 読み込みに失敗した場合、bot 全体を落とすのではなく fairy 機能だけが disable されることをログで確認すること。
+
 ### fairy-core ロールバック手順
 
 障害時は次の手順でロールバックします。
@@ -168,6 +177,11 @@ Discord上で動作する多機能ボット。リマインダー機能と `/fair
 2. `npm ci --omit=dev` を実行する。
 3. `docker compose up -d --no-deps --force-recreate discord-bot discord-scheduler` で再起動する。
 4. 復旧確認後、障害ログへ「原因・実施時刻・再発防止案」を記録する。
+
+#### fairy-core v2.0.0 からのロールバック補足
+
+- `schema_version=3` を送る bot を戻す前に、worker が `schema_version=2` を受け取れる状態であることを確認する。
+- `reply_antecedent_entry` を使った reminder / mention+reply canary を再実行し、旧系で誤解釈や enqueue failure が出ないことを確認する。
 
 ## 運用上の注意
 

@@ -12,8 +12,7 @@ const {
   createFairyInteractionHandler,
   createFairyMessageHandler,
 } = require("./src/fairy-fast-path");
-const { fairyCoreAdapter } = require("./src/fairy-core-adapter");
-const { createOpenAiFirstReplyComposer } = fairyCoreAdapter;
+const { resolveReplyAntecedentEntry } = require("./src/reply-antecedent");
 const { createPermanentMemorySyncServer } = require("./src/permanent-memory-sync-server");
 const logger = require('./src/logger');
 const { MESSAGES } = require('./src/message-templates');
@@ -93,11 +92,13 @@ let fairyMessageHandler = null;
 let permanentMemorySyncRuntime = null;
 const fairyMessageTriggerEnabled = parseBoolean(process.env.FAIRY_ENABLE_MESSAGE_TRIGGER, true);
 try {
+  const { fairyCoreAdapter } = require("./src/fairy-core-adapter");
   const slowPathClient = createSlowPathWebhookClient({
     n8nBase: process.env.N8N_BASE,
     webhookPath: process.env.N8N_SLOW_PATH_WEBHOOK_PATH,
     timeoutMs: parsePositiveInt(process.env.N8N_SLOW_PATH_TIMEOUT_MS, 8000),
   });
+  const { createOpenAiFirstReplyComposer } = fairyCoreAdapter;
   const firstReplyComposer = process.env.OPENAI_API_KEY
     ? createOpenAiFirstReplyComposer({
         apiKey: process.env.OPENAI_API_KEY,
@@ -213,9 +214,19 @@ client.on("messageCreate", async (message) => {
   if (fairyMessageTriggerEnabled && fairyMessageHandler) {
     try {
       const triggerSource = isReplyToBot ? "reply" : "mention";
+      let replyAntecedentEntry;
+      if (message.reference?.messageId) {
+        try {
+          replyAntecedentEntry = await resolveReplyAntecedentEntry(message);
+        } catch (error) {
+          logger.warn({ err: error, messageId: message.id }, "[fairy] reply antecedent resolution failed");
+          replyAntecedentEntry = undefined;
+        }
+      }
       const result = await fairyMessageHandler(message, {
         messageTriggerSource: triggerSource,
         sourceMessageId: message.id,
+        replyAntecedentEntry,
       });
       if (result.handled) {
         logger.info(

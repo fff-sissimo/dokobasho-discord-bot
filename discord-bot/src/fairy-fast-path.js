@@ -37,6 +37,8 @@ const sanitizeSummaryText = (value) =>
   String(value).replace(/[?？]/g, "").replace(/\s+/g, " ").trim();
 
 const normalizeMessage = (value) => String(value).replace(/\s+/g, " ").trim();
+// Keep antecedent payloads below the slow-path request budget while preserving enough text for disambiguation.
+const MAX_REPLY_ANTECEDENT_CONTENT_LENGTH = 6000;
 
 const normalizeContextEntries = (entries) => {
   if (!Array.isArray(entries)) return [];
@@ -54,6 +56,38 @@ const normalizeContextEntries = (entries) => {
 const normalizeInvocationMessage = (raw) => {
   const normalized = sanitizeSummaryText(raw);
   return normalized || "依頼内容を確認して処理を開始する";
+};
+
+const normalizeReplyAntecedentContent = (content) =>
+  Array.from(normalizeMessage(String(content || "")))
+    .slice(0, MAX_REPLY_ANTECEDENT_CONTENT_LENGTH)
+    .join("")
+    .trim();
+
+const normalizeReplyAntecedentEntry = (entry) => {
+  if (entry == null) return undefined;
+  if (typeof entry !== "object" || Array.isArray(entry)) {
+    throw new Error("reply_antecedent_entry must be an object");
+  }
+  if (typeof entry.author_is_bot !== "boolean") {
+    throw new Error("reply_antecedent_entry requires author_is_bot to be a boolean");
+  }
+
+  const normalized = {
+    message_id: String(entry.message_id || "").trim(),
+    author_user_id: String(entry.author_user_id || "").trim(),
+    author_is_bot: entry.author_is_bot,
+    content: normalizeReplyAntecedentContent(entry.content),
+  };
+
+  if (!normalized.message_id || !normalized.author_user_id) {
+    throw new Error("reply_antecedent_entry requires message_id and author_user_id");
+  }
+  if (!normalized.content) {
+    throw new Error("reply_antecedent_entry requires non-empty content");
+  }
+
+  return normalized;
 };
 
 const readInvocationMessage = (interaction) => {
@@ -89,7 +123,10 @@ const generateRequestId = (date = new Date(), randomSource = randomUUID) => {
   return `RQ-${yyyymmdd}-${hhmmssmmm}-${entropy}`;
 };
 
-const buildFirstReplyMessage = (invocationMessage) => buildFallbackFirstReplyMessage(invocationMessage);
+const buildFirstReplyMessage = (invocationMessage, route = "slash_command") => {
+  const safeRoute = SLOW_PATH_TRIGGER_SOURCES.includes(route) ? route : "slash_command";
+  return buildFallbackFirstReplyMessage(invocationMessage, safeRoute);
+};
 
 const collectFastPathContext = ({ recentMessages, caps, now = Date.now, startedAtMs = now() }) => {
   const source = recentMessages.slice(0, caps.maxMessages);
@@ -209,8 +246,8 @@ const createSlowPathWebhookClient = ({
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-const composeFirstReply = async ({ invocationMessage }) => {
-  const fallbackFirstReply = buildFirstReplyMessage(invocationMessage);
+const composeFirstReply = async ({ invocationMessage, route }) => {
+  const fallbackFirstReply = buildFirstReplyMessage(invocationMessage, route);
   return {
     firstReplyMessage: normalizeFirstReplyForDiscord("", fallbackFirstReply),
     firstReplySource: "fallback",
@@ -289,6 +326,7 @@ const handleFairyInteraction = async (interaction, options) => {
     (options.requestIdFactory && options.requestIdFactory()) || generateRequestId(new Date());
   const { firstReplyMessage, firstReplySource, firstReplyError } = await composeFirstReply({
     invocationMessage,
+    route: triggerSource,
   });
   const firstReplyResult = await interaction.editReply({ content: firstReplyMessage });
   const firstReplyMessageId =
@@ -390,10 +428,23 @@ const handleFairyMessage = async (message, options) => {
     (options.requestIdFactory && options.requestIdFactory()) || generateRequestId(new Date());
   const { firstReplyMessage, firstReplySource, firstReplyError } = await composeFirstReply({
     invocationMessage,
+    route: triggerSource,
   });
 
+  let replyAntecedentEntry;
+  let enqueueError;
+  try {
+    replyAntecedentEntry = normalizeReplyAntecedentEntry(options.replyAntecedentEntry);
+  } catch (error) {
+    enqueueError = buildPayloadContractFailure(error);
+  }
+
+  const initialReplyMessage = enqueueError
+    ? buildEnqueueFailureMessage(firstReplyMessage, enqueueError)
+    : firstReplyMessage;
+
   const firstReplyResult = await message.reply({
-    content: firstReplyMessage,
+    content: initialReplyMessage,
     allowedMentions: { repliedUser: false },
   });
   const firstReplyMessageId =
@@ -419,6 +470,7 @@ const handleFairyMessage = async (message, options) => {
     invocation_message: invocationMessage,
     context_excerpt: context.messages,
     ...(contextEntries.length > 0 ? { context_entries: contextEntries } : {}),
+    ...(replyAntecedentEntry ? { reply_antecedent_entry: replyAntecedentEntry } : {}),
     context_meta: {
       considered_messages: context.consideredMessages,
       used_messages: context.usedMessages,
@@ -436,9 +488,10 @@ const handleFairyMessage = async (message, options) => {
         ? message.createdAt.toISOString()
         : new Date().toISOString(),
   };
-  let enqueueError;
   try {
-    assertSlowPathJobPayloadContract(payload);
+    if (!enqueueError) {
+      assertSlowPathJobPayloadContract(payload);
+    }
   } catch (error) {
     enqueueError = buildPayloadContractFailure(error);
   }
@@ -456,9 +509,9 @@ const handleFairyMessage = async (message, options) => {
   if (enqueueError) {
     const failureMessage = buildEnqueueFailureMessage(firstReplyMessage, enqueueError);
     try {
-      if (firstReplyResult && typeof firstReplyResult.edit === "function") {
+      if (failureMessage !== initialReplyMessage && firstReplyResult && typeof firstReplyResult.edit === "function") {
         await firstReplyResult.edit({ content: failureMessage });
-      } else {
+      } else if (failureMessage !== initialReplyMessage) {
         await message.reply({
           content: failureMessage,
           allowedMentions: { repliedUser: false },
@@ -505,6 +558,8 @@ module.exports = {
   DEFAULT_FAST_PATH_CAPS,
   generateRequestId,
   buildFirstReplyMessage,
+  normalizeReplyAntecedentContent,
+  normalizeReplyAntecedentEntry,
   collectFastPathContext,
   createSlowPathWebhookClient,
   createFairyInteractionHandler,

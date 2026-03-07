@@ -10,6 +10,7 @@ describe("fairy-core migration contract", () => {
     const version = packageJson.dependencies && packageJson.dependencies["@fff-sissimo/fairy-core"];
     expect(typeof version).toBe("string");
     expect(version).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(version).toBe("2.0.0");
     expect(version.startsWith("^")).toBe(false);
     expect(version.startsWith("~")).toBe(false);
     expect(packageJson.optionalDependencies?.["@fff-sissimo/fairy-core"]).toBeUndefined();
