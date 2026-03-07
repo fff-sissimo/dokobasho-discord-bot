@@ -213,6 +213,40 @@ describe("index fairy message trigger integration", () => {
     );
   });
 
+  it("mention metadata が壊れていても raw content に bot mention があれば mention trigger を継続する", async () => {
+    const { handlers, fairyMessageHandler, resolveReplyAntecedentEntry, logger, message } = setup({
+      fetchReferenceAuthorId: "user_anchor_999",
+      repliedUserId: null,
+    });
+    message.reference = null;
+    message.content = "<@bot_001> metadata fallback で起動して";
+    message.mentions.users.has = jest.fn(() => {
+      throw new Error("mentions cache unavailable");
+    });
+
+    await handlers.messageCreate(message);
+
+    expect(resolveReplyAntecedentEntry).not.toHaveBeenCalled();
+    expect(fairyMessageHandler).toHaveBeenCalledWith(
+      message,
+      expect.objectContaining({
+        messageTriggerSource: "mention",
+        sourceMessageId: "msg_001",
+        replyAntecedentEntry: undefined,
+      })
+    );
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        err: expect.any(Error),
+        messageId: "msg_001",
+      }),
+      "[fairy] mention metadata unavailable"
+    );
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.stringContaining("[fairy] trigger-context route=mention reason=raw_content_mention_fallback")
+    );
+  });
+
   it("reply だが antecedent resolver が undefined を返す場合でも処理は継続する", async () => {
     const { handlers, fairyMessageHandler, resolveReplyAntecedentEntry, message } = setup();
     resolveReplyAntecedentEntry.mockResolvedValueOnce(undefined);

@@ -43,6 +43,12 @@ const parseOptionalString = (raw, fallback = "") => {
   return value === "" ? fallback : value;
 };
 
+const contentMentionsBot = (content, botUserId) => {
+  if (!botUserId) return false;
+  const mentionPattern = new RegExp(`<@!?${String(botUserId)}>`);
+  return mentionPattern.test(String(content || ""));
+};
+
 const collectRecentChannelContext = async (
   interaction,
   limit = DEFAULT_FAST_PATH_CAPS.maxMessages
@@ -208,7 +214,18 @@ client.on("messageCreate", async (message) => {
     } catch (error) {    logger.warn("[reply] Failed to fetch referenced message", error); }
   }
 
-  const isMentionToBot = message.mentions.users.has(client.user.id);
+  let isMentionToBot = false;
+  try {
+    isMentionToBot = Boolean(message.mentions?.users?.has(client.user.id));
+  } catch (error) {
+    logger.warn({ err: error, messageId: message.id }, "[fairy] mention metadata unavailable");
+  }
+  if (!isMentionToBot && contentMentionsBot(message.content, client.user.id)) {
+    isMentionToBot = true;
+    logger.info(
+      `[fairy] trigger-context route=mention reason=raw_content_mention_fallback message_id=${message.id} channel_id=${message.channel?.id || message.channelId || ""}`
+    );
+  }
   if (!isMentionToBot && !isReplyToBot) return;
 
   if (fairyMessageTriggerEnabled && fairyMessageHandler) {
