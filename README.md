@@ -148,7 +148,8 @@ Discord上で動作する多機能ボット。リマインダー機能と `/fair
 1. `discord-bot/package.json` の `@fff-sissimo/fairy-core` version を更新する（固定 version）。
 2. Hostinger の環境変数に `NODE_AUTH_TOKEN` が設定されていることを確認する。
 3. `discord-bot` ディレクトリで `npm ci --omit=dev` を実行する。
-4. `docker compose up -d --no-deps --force-recreate discord-bot discord-scheduler` で再起動する。
+4. Hostinger の共有 volume 運用では `discord-bot/scripts/runtime-bootstrap.sh` を使い、`discord-bot` と `discord-scheduler` が同時に `npm ci` しないようにする。
+5. `docker compose up -d --no-deps --force-recreate discord-bot discord-scheduler` で再起動する。
 5. `/fairy` の一次回答と slow-path 連携をスモーク確認する。
 6. reminder の誤登録防止を確認する。
    - `@どこばしょのようせい test` のような曖昧入力で、Bot の一次回答文が履歴候補として採用されないことを確認する。
@@ -175,8 +176,9 @@ Discord上で動作する多機能ボット。リマインダー機能と `/fair
 
 1. `discord-bot/package.json` の `@fff-sissimo/fairy-core` を **1 version** 前に戻す。
 2. `npm ci --omit=dev` を実行する。
-3. `docker compose up -d --no-deps --force-recreate discord-bot discord-scheduler` で再起動する。
-4. 復旧確認後、障害ログへ「原因・実施時刻・再発防止案」を記録する。
+3. Hostinger の共有 volume 運用では `discord-bot/scripts/runtime-bootstrap.sh` を使い、`discord-bot` と `discord-scheduler` が同時に `npm ci` しないようにする。
+4. `docker compose up -d --no-deps --force-recreate discord-bot discord-scheduler` で再起動する。
+5. 復旧確認後、障害ログへ「原因・実施時刻・再発防止案」を記録する。
 
 #### fairy-core v2.0.0 からのロールバック補足
 
