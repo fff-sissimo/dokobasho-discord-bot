@@ -117,6 +117,10 @@ const extractJsonObjectText = (text) => {
 const extractAgentText = (result) => {
   if (result && typeof result === "object" && !Array.isArray(result)) {
     if (VALID_ACTIONS.has(String(result.action || "").trim())) return JSON.stringify(result);
+    if (Array.isArray(result.payloads)) {
+      const payload = result.payloads.find((item) => item && typeof item.text === "string" && item.text.trim());
+      if (payload) return payload.text;
+    }
     for (const key of ["reply", "message", "content", "text", "output", "result"]) {
       if (typeof result[key] === "string") return result[key];
       if (result[key] && typeof result[key] === "object") {

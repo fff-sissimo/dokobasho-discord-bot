@@ -100,6 +100,7 @@ services:
     volumes:
       - ${OPENCLAW_WORKSPACE_HOST_DIR:-../dokobasho-fairy-openclaw}:/opt/dokobasho/openclaw:ro
       - ${OPENCLAW_STATE_HOST_DIR:-./openclaw-state}:/root/.openclaw
+      - ${OPENCLAW_WORKSPACE_HOST_DIR:-../dokobasho-fairy-openclaw}:/root/.openclaw/workspace:ro
 
   discord-bot:
     environment:
