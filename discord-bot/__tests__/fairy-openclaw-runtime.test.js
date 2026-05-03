@@ -10,6 +10,10 @@ const {
 } = require("../src/fairy-openclaw-runtime");
 
 describe("fairy OpenClaw runtime", () => {
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
   it("defaults to n8n runtime mode", () => {
     expect(normalizeRuntimeMode()).toBe("n8n");
     expect(normalizeRuntimeMode("invalid")).toBe("n8n");
@@ -66,6 +70,7 @@ describe("fairy OpenClaw runtime", () => {
   });
 
   it("posts OpenClaw response with empty allowed mentions", async () => {
+    const sendTyping = jest.fn().mockResolvedValue(undefined);
     const openClawClient = {
       execute: jest.fn().mockResolvedValue({
         schema_version: 1,
@@ -89,7 +94,7 @@ describe("fairy OpenClaw runtime", () => {
       createdAt: new Date("2026-05-03T10:00:00.000Z"),
       author: { id: "user_1", bot: false, username: "user" },
       client: { user: { id: "bot_1" } },
-      channel: { id: "1094907178671939654", name: "妖精さんより" },
+      channel: { id: "1094907178671939654", name: "妖精さんより", sendTyping },
       mentions: { everyone: false, roles: { map: () => [] } },
       attachments: [],
       reply: jest.fn().mockResolvedValue({ id: "reply_1" }),
@@ -99,6 +104,8 @@ describe("fairy OpenClaw runtime", () => {
 
     expect(result.handled).toBe(true);
     expect(result.gate).toEqual({ ok: true, reason: "ok" });
+    expect(result.replyMessageId).toBe("reply_1");
+    expect(sendTyping).toHaveBeenCalledTimes(1);
     expect(message.reply).toHaveBeenCalledWith({
       content: "確認しました",
       allowedMentions: SAFE_ALLOWED_MENTIONS,
@@ -128,6 +135,109 @@ describe("fairy OpenClaw runtime", () => {
     expect(result.gate.reason).toBe("channel_not_verified");
     expect(openClawClient.execute).not.toHaveBeenCalled();
     expect(message.reply).not.toHaveBeenCalled();
+  });
+
+  it("keeps typing while waiting for OpenClaw and stops after replying", async () => {
+    jest.useFakeTimers();
+    const sendTyping = jest.fn().mockResolvedValue(undefined);
+    let resolveExecute;
+    const openClawClient = {
+      execute: jest.fn(
+        () =>
+          new Promise((resolve) => {
+            resolveExecute = resolve;
+          })
+      ),
+    };
+    const handler = createOpenClawMessageHandler({
+      openClawClient,
+      allowedChannelIds: ["1094907178671939654"],
+      guildId: "840827137451229205",
+      contextEntriesSource: async () => [],
+      requestIdFactory: () => "req_typing",
+    });
+    const message = {
+      id: "msg_typing",
+      content: "<@bot_1> 待っている間の表示を確認",
+      channelId: "1094907178671939654",
+      guildId: "840827137451229205",
+      createdAt: new Date("2026-05-03T10:00:00.000Z"),
+      author: { id: "user_1", bot: false, username: "user" },
+      client: { user: { id: "bot_1" } },
+      channel: { id: "1094907178671939654", name: "妖精さんより", sendTyping },
+      mentions: { everyone: false, roles: { map: () => [] } },
+      attachments: [],
+      reply: jest.fn().mockResolvedValue({ id: "reply_typing" }),
+    };
+
+    const handled = handler(message, { messageTriggerSource: "mention" });
+    await Promise.resolve();
+    expect(sendTyping).toHaveBeenCalledTimes(1);
+
+    jest.advanceTimersByTime(7500);
+    await Promise.resolve();
+    expect(sendTyping).toHaveBeenCalledTimes(2);
+
+    resolveExecute({
+      schema_version: 1,
+      action: "reply",
+      body: "確認しました",
+      requires_approval: false,
+    });
+    await handled;
+    jest.advanceTimersByTime(15000);
+    await Promise.resolve();
+
+    expect(sendTyping).toHaveBeenCalledTimes(2);
+    expect(message.reply).toHaveBeenCalledWith({
+      content: "確認しました",
+      allowedMentions: SAFE_ALLOWED_MENTIONS,
+    });
+  });
+
+  it("continues OpenClaw reply when typing indicator fails", async () => {
+    const sendTyping = jest.fn().mockRejectedValue(new Error("missing permission"));
+    const logger = { warn: jest.fn() };
+    const openClawClient = {
+      execute: jest.fn().mockResolvedValue({
+        schema_version: 1,
+        action: "reply",
+        body: "入力中表示に失敗しても返答します",
+        requires_approval: false,
+      }),
+    };
+    const handler = createOpenClawMessageHandler({
+      openClawClient,
+      allowedChannelIds: ["1094907178671939654"],
+      guildId: "840827137451229205",
+      contextEntriesSource: async () => [],
+      requestIdFactory: () => "req_typing_failure",
+      logger,
+    });
+    const message = {
+      id: "msg_typing_failure",
+      content: "<@bot_1> 見て",
+      channelId: "1094907178671939654",
+      guildId: "840827137451229205",
+      createdAt: new Date("2026-05-03T10:00:00.000Z"),
+      author: { id: "user_1", bot: false, username: "user" },
+      client: { user: { id: "bot_1" } },
+      channel: { id: "1094907178671939654", name: "妖精さんより", sendTyping },
+      mentions: { everyone: false, roles: { map: () => [] } },
+      attachments: [],
+      reply: jest.fn().mockResolvedValue({ id: "reply_typing_failure" }),
+    };
+
+    const result = await handler(message, { messageTriggerSource: "mention" });
+    await Promise.resolve();
+
+    expect(result.handled).toBe(true);
+    expect(result.replyMessageId).toBe("reply_typing_failure");
+    expect(openClawClient.execute).toHaveBeenCalledTimes(1);
+    expect(message.reply).toHaveBeenCalledWith({
+      content: "入力中表示に失敗しても返答します",
+      allowedMentions: SAFE_ALLOWED_MENTIONS,
+    });
   });
 
   it("blocks mentions, links, approval-required responses, and non-posting actions", () => {
