@@ -12,6 +12,7 @@ const SAFE_ALLOWED_MENTIONS = Object.freeze({
   roles: [],
   repliedUser: false,
 });
+const TYPING_KEEPALIVE_INTERVAL_MS = 7500;
 
 const normalizeRuntimeMode = (raw) => {
   const value = String(raw || "n8n").trim().toLowerCase();
@@ -96,6 +97,35 @@ const createOpenClawClient = ({
       }
       return response.json();
     },
+  };
+};
+
+const startTypingKeepalive = ({ channel, logger, intervalMs = TYPING_KEEPALIVE_INTERVAL_MS }) => {
+  if (!channel || typeof channel.sendTyping !== "function") {
+    return () => {};
+  }
+
+  let stopped = false;
+  let loggedFailure = false;
+  const sendTyping = async () => {
+    try {
+      await channel.sendTyping();
+    } catch (error) {
+      if (!loggedFailure && logger && typeof logger.warn === "function") {
+        loggedFailure = true;
+        logger.warn({ err: error }, "[fairy-openclaw] failed to send typing indicator");
+      }
+    }
+  };
+
+  void sendTyping();
+  const interval = setInterval(() => {
+    if (!stopped) void sendTyping();
+  }, intervalMs);
+
+  return () => {
+    stopped = true;
+    clearInterval(interval);
   };
 };
 
@@ -375,18 +405,34 @@ const createOpenClawMessageHandler = ({
       contextEntries: typeof contextEntriesSource === "function" ? await contextEntriesSource(message) : [],
     });
     payload.request_id = requestIdFactory();
+    const stopTyping = startTypingKeepalive({ channel: message.channel, logger });
     try {
       const response = validateOpenClawResponse(await openClawClient.execute(payload));
       const gate = runOutboundGate({ response, channelId, allowedChannelIds: allowed });
       if (!gate.ok) {
         return { handled: true, requestId: payload.request_id, payload, response, gate };
       }
-      await message.reply({ content: response.body, allowedMentions: SAFE_ALLOWED_MENTIONS });
-      return { handled: true, requestId: payload.request_id, payload, response, gate };
+      const sentMessage = await message.reply({ content: response.body, allowedMentions: SAFE_ALLOWED_MENTIONS });
+      return {
+        handled: true,
+        requestId: payload.request_id,
+        payload,
+        response,
+        gate,
+        replyMessageId: sentMessage && sentMessage.id,
+      };
     } catch (error) {
       if (logger) logger.warn({ err: error, requestId: payload.request_id }, "[fairy-openclaw] message failed");
-      await message.reply({ content: buildSafeFailureMessage(), allowedMentions: SAFE_ALLOWED_MENTIONS });
-      return { handled: true, requestId: payload.request_id, payload, error: String(error) };
+      const sentMessage = await message.reply({ content: buildSafeFailureMessage(), allowedMentions: SAFE_ALLOWED_MENTIONS });
+      return {
+        handled: true,
+        requestId: payload.request_id,
+        payload,
+        error: String(error),
+        replyMessageId: sentMessage && sentMessage.id,
+      };
+    } finally {
+      stopTyping();
     }
   };
 };

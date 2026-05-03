@@ -284,6 +284,7 @@ client.on("messageCreate", async (message) => {
         replyAntecedentEntry,
       });
       if (result.handled) {
+        if (result.replyMessageId) rememberBotMessage(result.replyMessageId);
         logger.info(
           `[fairy] message-trigger request_id=${result.requestId} firstReply=${result.firstReplyLatencyMs}ms source=${result.firstReplySource || "fallback"}`
         );
