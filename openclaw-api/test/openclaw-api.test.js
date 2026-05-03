@@ -119,6 +119,35 @@ test("parses OpenClaw CLI payload text output", () => {
   assert.equal(response.reason, "ok");
 });
 
+test("parses OpenClaw CLI payload when text contains fenced prompt examples", () => {
+  const response = parseAgentResponse(JSON.stringify({
+    payloads: [
+      {
+        text: [
+          "runtime context includes an example",
+          "```json",
+          JSON.stringify({
+            schema_version: 1,
+            source: "discord",
+            event_type: "message_create|message_update|followup_tick|manual_check",
+          }, null, 2),
+          "```",
+          JSON.stringify({
+            schema_version: 1,
+            action: "reply",
+            body: "疎通できています",
+            reason: "ok",
+            confidence: "high",
+          }),
+        ].join("\n"),
+      },
+    ],
+  }));
+  assert.equal(response.action, "reply");
+  assert.equal(response.body, "疎通できています");
+  assert.equal(response.confidence, "high");
+});
+
 test("OpenClaw execution failure becomes safe observe response", async () => {
   await withServer({
     runAgentCommand: async () => {
