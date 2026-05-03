@@ -1,4 +1,5 @@
 const {
+  DEFAULT_CHANNEL_REGISTRY,
   SAFE_ALLOWED_MENTIONS,
   buildOpenClawPayload,
   createOpenClawClient,
@@ -87,6 +88,33 @@ describe("fairy OpenClaw runtime", () => {
     expect(payload.context.active_thread_age_minutes).toBe(15);
     expect(payload.context.has_promised_followup).toBe(false);
     expect(payload.context.matched_followup_ids).toEqual([]);
+  });
+
+  it("uses the v1 channel registry for phase2 chat payloads", () => {
+    const allowedChannelIds = new Set(["1094907178671939654", "840827137451229210"]);
+    const payload = buildOpenClawPayload({
+      eventType: "message_create",
+      guildId: "840827137451229205",
+      channel: { id: "840827137451229210", name: "はじまりの酒場" },
+      message: {
+        id: "msg_chat",
+        author: { id: "user_1", username: "user" },
+        channel: { id: "840827137451229210", name: "はじまりの酒場" },
+        createdAt: new Date("2026-05-04T10:00:00.000Z"),
+        mentions: { everyone: false, roles: { map: () => [] } },
+        attachments: [],
+      },
+      content: "雑談です",
+      allowedChannelIds,
+    });
+
+    expect(DEFAULT_CHANNEL_REGISTRY["840827137451229210"].type).toBe("chat");
+    expect(payload.channel).toEqual({
+      id: "840827137451229210",
+      name: "はじまりの酒場",
+      type: "chat",
+      registered: true,
+    });
   });
 
   it("excludes the current message itself from active thread age calculation", () => {
