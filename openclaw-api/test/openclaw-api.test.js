@@ -102,6 +102,23 @@ test("invalid OpenClaw output becomes observe response", () => {
   assert.equal(response.reason, "unparseable_openclaw_output");
 });
 
+test("parses OpenClaw CLI payload text output", () => {
+  const response = parseAgentResponse(JSON.stringify({
+    payloads: [
+      {
+        text: JSON.stringify({
+          schema_version: 1,
+          action: "observe",
+          body: "",
+          reason: "ok",
+        }),
+      },
+    ],
+  }));
+  assert.equal(response.action, "observe");
+  assert.equal(response.reason, "ok");
+});
+
 test("OpenClaw execution failure becomes safe observe response", async () => {
   await withServer({
     runAgentCommand: async () => {
