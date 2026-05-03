@@ -5,7 +5,7 @@ const { test } = require("node:test");
 
 const { buildOpenClawArgs } = require("../src/openclaw-runner");
 const { createServer } = require("../src/server");
-const { parseAgentResponse } = require("../src/contracts");
+const { buildAgentPrompt, parseAgentResponse } = require("../src/contracts");
 
 const baseConfig = {
   host: "127.0.0.1",
@@ -100,6 +100,19 @@ test("invalid OpenClaw output becomes observe response", () => {
   const response = parseAgentResponse("not json");
   assert.equal(response.action, "observe");
   assert.equal(response.reason, "unparseable_openclaw_output");
+});
+
+test("agent prompt includes phase2 chat restraint rules", () => {
+  const prompt = buildAgentPrompt({
+    workspaceContext: "runtime context",
+    payload: {
+      channel: { id: "840827137451229210", type: "chat" },
+      context: { active_thread_age_minutes: 31 },
+    },
+  });
+
+  assert.match(prompt, /channel\.type が chat/);
+  assert.match(prompt, /active_thread_age_minutes が 30 を超える/);
 });
 
 test("parses OpenClaw CLI payload text output", () => {

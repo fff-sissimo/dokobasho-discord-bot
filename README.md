@@ -56,7 +56,7 @@ Discord上で動作する多機能ボット。リマインダー機能と `/fair
     - `OPENCLAW_API_URL`: (`FAIRY_RUNTIME_MODE=openclaw` で必須) OpenClaw 判断 API の完全 URL。
     - `OPENCLAW_API_KEY`: (`FAIRY_RUNTIME_MODE=openclaw` で必須) OpenClaw 判断 API 用の Bearer token。
     - `OPENCLAW_API_TIMEOUT_MS`: (任意) OpenClaw 判断 API の timeout(ms)。未指定時 `85000`。
-    - `FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS`: (`FAIRY_RUNTIME_MODE=openclaw` で必須) OpenClaw 直接実行を許可する channel ID の comma-separated list。v1 sandbox は `1094907178671939654` のみ。
+    - `FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS`: (`FAIRY_RUNTIME_MODE=openclaw` で必須) OpenClaw 直接実行を許可する channel ID の comma-separated list。Phase1 sandbox は `1094907178671939654`、Phase2 chat は権限確認後に `840827137451229210` を追加。
     - `NOTION_TOKEN`: (推奨) Notion連携トークン。`n8n` と `n8n-runners` の両方に渡します。
     - `NOTION_API_KEY`: (任意) 互換用の別名トークン。`NOTION_TOKEN` を優先します。
     - `NOTION_VERSION`: (任意) Notion-Version ヘッダ。未指定時 `2022-06-28`。
@@ -160,10 +160,12 @@ Discord上で動作する多機能ボット。リマインダー機能と `/fair
    - `@どこばしょのようせい test` のような曖昧入力で、Bot の一次回答文が履歴候補として採用されないことを確認する。
    - 明示的な本文（例: `5分後に「洗濯物を取り込む」`）では従来どおり登録できることを確認する。
 
-### OpenClaw direct runtime v1 sandbox
+### OpenClaw direct runtime v1 rollout
 
 `FAIRY_RUNTIME_MODE=openclaw` では、既存 n8n slow-path を使わず OpenClaw API へ直接判断 payload を送ります。
-初回は `FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS=1094907178671939654` のみで運用してください。
+Phase1 は `FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS=1094907178671939654` のみで運用済みです。
+Phase2 は `はじまりの酒場` の Discord channel overwrite を確認してから `840827137451229210` を追加してください。
+message trigger は mention / Bot への reply に限定され、通常会話の全件 passive observe は行いません。
 
 起動前に必須:
 
@@ -190,10 +192,17 @@ OPENCLAW_API_TIMEOUT_MS=85000
 FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS=1094907178671939654
 ```
 
+Phase2 有効化時の allowlist 例:
+
+```env
+FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS=1094907178671939654,840827137451229210
+```
+
 `openclaw-api` は同じ `discord-bot/.env` から `OPENCLAW_API_KEY` を読みます。Hostinger で `dokobasho-fairy-openclaw` の配置場所が既定と違う場合は、Compose 実行環境に `OPENCLAW_WORKSPACE_HOST_DIR=/path/to/dokobasho-fairy-openclaw` を設定してください。
 既定の `OPENCLAW_AGENT_MODE=local` では、`openclaw-api` container 内の OpenClaw CLI が直接 agent turn を実行します。OpenClaw の state は `OPENCLAW_STATE_HOST_DIR`（未指定時 `./openclaw-state`）から `/root/.openclaw` へマウントされます。
 
 送信直前 gate は、allowlist 外チャンネル、承認必須応答、everyone/here、role mention、添付、外部 URL を自動送信しません。
+payload の `channel.type` は v1 registry から解決し、`840827137451229210` は `chat` として OpenClaw に渡します。
 rollback は `FAIRY_RUNTIME_MODE=n8n` に戻して `discord-bot` service を再作成します。
 
 #### fairy-core v1.1.0 の追加確認項目（speaker-aware context）

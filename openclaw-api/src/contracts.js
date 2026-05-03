@@ -94,6 +94,8 @@ const buildAgentPrompt = ({ payload, workspaceContext }) => [
   "返却 JSON は schema_version, action, body, reason, confidence, memory_candidates, followup_candidates, requires_approval, approval を含めてください。",
   "action は observe, reply, offer, assist, draft, publish_blocked のどれかだけです。",
   "everyone/here、role mention、外部 URL、添付、公開告知、運営判断、承認が必要な内容は requires_approval を true にするか publish_blocked にしてください。",
+  "channel.type が chat の場合、場が自然に流れている通常会話は observe を既定にし、明示 mention、bot への reply、または直接聞かれた時だけ短く返してください。",
+  "chat で active_thread_age_minutes が 30 を超える場合は、明示 mention、reply、約束済み followup がない限り前の会話を勝手に再開しないでください。",
   "",
   "# Runtime files",
   workspaceContext || "(no workspace context loaded)",

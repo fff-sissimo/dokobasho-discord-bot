@@ -13,6 +13,18 @@ const SAFE_ALLOWED_MENTIONS = Object.freeze({
   repliedUser: false,
 });
 const TYPING_KEEPALIVE_INTERVAL_MS = 7500;
+const DEFAULT_CHANNEL_REGISTRY = Object.freeze({
+  "1094907178671939654": Object.freeze({ name: "妖精さんより", type: "sandbox" }),
+  "840827137451229210": Object.freeze({ name: "はじまりの酒場", type: "chat" }),
+  "841686630271418429": Object.freeze({ name: "らくがきちょう", type: "creation" }),
+  "1465296404455882860": Object.freeze({ name: "vostok-vol02-general", type: "project" }),
+  "1465295987236143319": Object.freeze({ name: "vostok-vol02-pd", type: "project" }),
+  "1465296093427531960": Object.freeze({ name: "vostok-vol02-music", type: "project" }),
+  "1465296285341847765": Object.freeze({ name: "vostok-vol02-artwork", type: "project" }),
+  "1466404431217164288": Object.freeze({ name: "vostok-vol02-qa", type: "project" }),
+  "840827137451229208": Object.freeze({ name: "更新・進行状況", type: "ops" }),
+  "852073750294822922": Object.freeze({ name: "管理用", type: "ops" }),
+});
 
 const normalizeRuntimeMode = (raw) => {
   const value = String(raw || "n8n").trim().toLowerCase();
@@ -232,14 +244,16 @@ const hasExplicitFollowupRequest = (content) => {
   return timeCue.test(text) && followupVerb.test(text);
 };
 
-const resolveChannel = ({ channel, channelId, allowedChannelIds }) => {
+const resolveChannel = ({ channel, channelId, allowedChannelIds, channelRegistry = DEFAULT_CHANNEL_REGISTRY }) => {
   const id = String(channelId || (channel && channel.id) || "").trim();
-  const registered = allowedChannelIds.has(id);
+  const registeredChannel = channelRegistry[id] || null;
+  const registered = Boolean(registeredChannel);
+  const verified = allowedChannelIds.has(id);
   return {
     id,
-    name: String((channel && channel.name) || "").trim(),
-    type: registered ? "sandbox" : "unknown",
-    registered,
+    name: String((channel && channel.name) || (registeredChannel && registeredChannel.name) || "").trim(),
+    type: registered && verified ? registeredChannel.type : "unknown",
+    registered: registered && verified,
   };
 };
 
@@ -254,6 +268,7 @@ const buildOpenClawPayload = ({
   isReplyToBot = false,
   mentionsBot = false,
   allowedChannelIds,
+  channelRegistry = DEFAULT_CHANNEL_REGISTRY,
   contextEntries = [],
 }) => {
   const now = isoNow();
@@ -275,6 +290,7 @@ const buildOpenClawPayload = ({
       channel: message && message.channel,
       channelId: channel && channel.id,
       allowedChannelIds,
+      channelRegistry,
     }),
     message: {
       id: messageId,
@@ -517,6 +533,7 @@ const createOpenClawMessageHandler = ({
 };
 
 module.exports = {
+  DEFAULT_CHANNEL_REGISTRY,
   SAFE_ALLOWED_MENTIONS,
   buildOpenClawPayload,
   createOpenClawClient,
