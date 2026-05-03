@@ -104,14 +104,58 @@ const buildAgentPrompt = ({ payload, workspaceContext }) => [
   "```",
 ].join("\n");
 
-const extractJsonObjectText = (text) => {
+const collectJsonObjectTexts = (text) => {
   const source = String(text || "").trim();
-  const fenced = source.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fenced) return fenced[1].trim();
-  const first = source.indexOf("{");
-  const last = source.lastIndexOf("}");
-  if (first >= 0 && last > first) return source.slice(first, last + 1);
-  return source;
+  const candidates = [];
+  if (source.startsWith("{") && source.endsWith("}")) candidates.push(source);
+  for (const match of source.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)) {
+    candidates.push(match[1].trim());
+  }
+
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  let escaped = false;
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+    if (char === "\"") {
+      inString = true;
+    } else if (char === "{") {
+      if (depth === 0) start = index;
+      depth += 1;
+    } else if (char === "}") {
+      depth -= 1;
+      if (depth === 0 && start >= 0) {
+        candidates.push(source.slice(start, index + 1));
+        start = -1;
+      }
+    }
+  }
+
+  return [...new Set(candidates.filter(Boolean))];
+};
+
+const parseJsonObject = (text, { preferLast = false } = {}) => {
+  const candidates = collectJsonObjectTexts(text);
+  const ordered = preferLast ? [...candidates].reverse() : candidates;
+  for (const candidate of ordered) {
+    try {
+      return JSON.parse(candidate);
+    } catch {
+      // Try the next candidate.
+    }
+  }
+  return null;
 };
 
 const extractAgentText = (result) => {
@@ -133,18 +177,13 @@ const extractAgentText = (result) => {
 };
 
 const parseAgentResponse = (stdout) => {
-  try {
-    const parsedStdout = JSON.parse(extractJsonObjectText(stdout));
-    const agentText = extractAgentText(parsedStdout);
-    if (!agentText) return normalizeOpenClawResponse(parsedStdout);
-    try {
-      return normalizeOpenClawResponse(JSON.parse(extractJsonObjectText(agentText)));
-    } catch {
-      return normalizeOpenClawResponse(parsedStdout);
-    }
-  } catch {
-    return buildObserveResponse("unparseable_openclaw_output");
-  }
+  const parsedStdout = parseJsonObject(stdout);
+  if (!parsedStdout) return buildObserveResponse("unparseable_openclaw_output");
+  const agentText = extractAgentText(parsedStdout);
+  if (!agentText) return normalizeOpenClawResponse(parsedStdout);
+  const parsedAgentText = parseJsonObject(agentText, { preferLast: true });
+  if (parsedAgentText) return normalizeOpenClawResponse(parsedAgentText);
+  return normalizeOpenClawResponse(parsedStdout);
 };
 
 module.exports = {
