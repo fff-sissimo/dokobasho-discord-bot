@@ -131,6 +131,19 @@ const startTypingKeepalive = ({ channel, logger, intervalMs = TYPING_KEEPALIVE_I
 
 const normalizeMessageContent = (value) => String(value || "").replace(/\s+/g, " ").trim();
 
+const normalizeIsoTimestamp = (value) => {
+  if (value && typeof value.toISOString === "function") return value.toISOString();
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? "" : date.toISOString();
+  }
+  if (typeof value === "string" && value.trim()) {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? "" : date.toISOString();
+  }
+  return "";
+};
+
 const stripBotMention = (content, botId) => {
   if (!botId) return normalizeMessageContent(content);
   const mentionTokenPattern = new RegExp(`<@!?${botId}>`, "g");
@@ -181,13 +194,42 @@ const normalizeContextEntries = (entries) => {
       author_id: String(entry.author_user_id || entry.author_id || "").trim(),
       author_is_bot: Boolean(entry.author_is_bot),
       content: normalizeMessageContent(entry.content),
+      created_at: normalizeIsoTimestamp(entry.created_at || entry.createdAt || entry.createdTimestamp),
     }))
     .filter((entry) => entry.message_id && entry.author_id && entry.content && entry.author_is_bot === false)
     .map((entry) => ({
       message_id: entry.message_id,
       author_id: entry.author_id,
       content: entry.content,
+      created_at: entry.created_at,
     }));
+};
+
+const calculateActiveThreadAgeMinutes = ({ recentMessages, currentMessageId, currentCreatedAt }) => {
+  const currentMs = Date.parse(currentCreatedAt);
+  if (!Number.isFinite(currentMs)) return null;
+
+  const previousMs = recentMessages.reduce((latestMs, entry) => {
+    if (!entry || entry.message_id === currentMessageId || !entry.created_at) return latestMs;
+    const candidateMs = Date.parse(entry.created_at);
+    if (!Number.isFinite(candidateMs) || candidateMs > currentMs) return latestMs;
+    return latestMs === null || candidateMs > latestMs ? candidateMs : latestMs;
+  }, null);
+  if (previousMs === null) return null;
+
+  const diffMinutes = Math.floor((currentMs - previousMs) / 60000);
+  return diffMinutes >= 0 ? diffMinutes : null;
+};
+
+const hasExplicitFollowupRequest = (content) => {
+  const text = normalizeMessageContent(content);
+  if (!text) return false;
+  const negatedFollowup = /(?:約束|確認予定|予定|リマインド|フォローアップ|followup).{0,16}(?:しない|しなく|不要|いらない)|(?:しない|しなく|不要|いらない).{0,16}(?:約束|確認予定|予定|リマインド|フォローアップ|followup)/i;
+  if (negatedFollowup.test(text)) return false;
+
+  const timeCue = /(?:明日|あした|あす|明後日|今日|今夜|あとで|後で|後ほど|のちほど|来週|来月|\d{1,2}\s*[:：時]\s*\d{0,2}|[０-９]{1,2}\s*[：時]\s*[０-９]{0,2})/i;
+  const followupVerb = /(?:確認して|確認したい|声(?:を)?かけて|思い出(?:したい|させて|して)|リマインド|remind|通知して|教えて|覚えておいて)/i;
+  return timeCue.test(text) && followupVerb.test(text);
 };
 
 const resolveChannel = ({ channel, channelId, allowedChannelIds }) => {
@@ -213,49 +255,61 @@ const buildOpenClawPayload = ({
   mentionsBot = false,
   allowedChannelIds,
   contextEntries = [],
-}) => ({
-  schema_version: 1,
-  source: "discord",
-  event_type: eventType,
-  received_at: isoNow(),
-  guild_id: String(guildId || "").trim(),
-  channel: resolveChannel({
-    channel: message && message.channel,
-    channelId: channel && channel.id,
-    allowedChannelIds,
-  }),
-  message: {
-    id: String((message && message.id) || "").trim(),
-    author_id: String((message && message.author && message.author.id) || "").trim(),
-    author_display_name: String(
-      (message && message.member && message.member.displayName) ||
-      (message && message.author && (message.author.globalName || message.author.username)) ||
-      ""
-    ).trim(),
-    content: normalizeMessageContent(content),
-    created_at:
-      message && message.createdAt && typeof message.createdAt.toISOString === "function"
-        ? message.createdAt.toISOString()
-        : isoNow(),
-    is_reply_to_bot: Boolean(isReplyToBot),
-    mentions_bot: Boolean(mentionsBot),
-    mentions_everyone: Boolean(message && message.mentions && message.mentions.everyone),
-    role_mentions: normalizeRoleMentions(message && message.mentions),
-    attachments: normalizeAttachments(message && message.attachments),
-    links: collectLinks(content),
-  },
-  context: {
-    recent_messages: normalizeContextEntries(contextEntries),
-    active_thread_age_minutes: null,
-    has_promised_followup: false,
-    matched_followup_ids: [],
-  },
-  memory: {
-    member_ids: [],
-    project_ids: [],
-    daily_refs: [],
-  },
-});
+}) => {
+  const now = isoNow();
+  const messageId = String((message && message.id) || "").trim();
+  const normalizedContent = normalizeMessageContent(content);
+  const messageCreatedAt =
+    normalizeIsoTimestamp(message && message.createdAt) ||
+    normalizeIsoTimestamp(message && message.createdTimestamp) ||
+    now;
+  const recentMessages = normalizeContextEntries(contextEntries);
+
+  return {
+    schema_version: 1,
+    source: "discord",
+    event_type: eventType,
+    received_at: now,
+    guild_id: String(guildId || "").trim(),
+    channel: resolveChannel({
+      channel: message && message.channel,
+      channelId: channel && channel.id,
+      allowedChannelIds,
+    }),
+    message: {
+      id: messageId,
+      author_id: String((message && message.author && message.author.id) || "").trim(),
+      author_display_name: String(
+        (message && message.member && message.member.displayName) ||
+        (message && message.author && (message.author.globalName || message.author.username)) ||
+        ""
+      ).trim(),
+      content: normalizedContent,
+      created_at: messageCreatedAt,
+      is_reply_to_bot: Boolean(isReplyToBot),
+      mentions_bot: Boolean(mentionsBot),
+      mentions_everyone: Boolean(message && message.mentions && message.mentions.everyone),
+      role_mentions: normalizeRoleMentions(message && message.mentions),
+      attachments: normalizeAttachments(message && message.attachments),
+      links: collectLinks(content),
+    },
+    context: {
+      recent_messages: recentMessages,
+      active_thread_age_minutes: calculateActiveThreadAgeMinutes({
+        recentMessages,
+        currentMessageId: messageId,
+        currentCreatedAt: messageCreatedAt,
+      }),
+      has_promised_followup: hasExplicitFollowupRequest(normalizedContent),
+      matched_followup_ids: [],
+    },
+    memory: {
+      member_ids: [],
+      project_ids: [],
+      daily_refs: [],
+    },
+  };
+};
 
 const validateOpenClawResponse = (response) => {
   if (!response || typeof response !== "object" || Array.isArray(response)) {
@@ -309,6 +363,17 @@ const runOutboundGate = ({ response, channelId, allowedChannelIds }) => {
 
 const buildSafeFailureMessage = () => "-# OpenClaw 直接実行に失敗しました。時間をおいてもう一度試してください。";
 const buildGateBlockedMessage = () => "-# 今回は自動送信せず止めました。";
+const MESSAGE_VISIBLE_GATE_REASONS = new Set([
+  "blocked_mention",
+  "external_link",
+  "requires_approval",
+  "approval_side_effect",
+  "draft",
+  "non_posting_action:draft",
+  "publish_blocked",
+  "non_posting_action:publish_blocked",
+]);
+const shouldReplyWithGateBlockedMessage = (reason) => MESSAGE_VISIBLE_GATE_REASONS.has(String(reason || ""));
 
 const createOpenClawInteractionHandler = ({
   openClawClient,
@@ -410,6 +475,20 @@ const createOpenClawMessageHandler = ({
       const response = validateOpenClawResponse(await openClawClient.execute(payload));
       const gate = runOutboundGate({ response, channelId, allowedChannelIds: allowed });
       if (!gate.ok) {
+        if (shouldReplyWithGateBlockedMessage(gate.reason)) {
+          const sentMessage = await message.reply({
+            content: buildGateBlockedMessage(),
+            allowedMentions: SAFE_ALLOWED_MENTIONS,
+          });
+          return {
+            handled: true,
+            requestId: payload.request_id,
+            payload,
+            response,
+            gate,
+            replyMessageId: sentMessage && sentMessage.id,
+          };
+        }
         return { handled: true, requestId: payload.request_id, payload, response, gate };
       }
       const sentMessage = await message.reply({ content: response.body, allowedMentions: SAFE_ALLOWED_MENTIONS });
