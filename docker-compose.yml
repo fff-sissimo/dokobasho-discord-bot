@@ -79,6 +79,28 @@ services:
       - NOTION_VERSION=${NOTION_VERSION:-2022-06-28}
       - NOTION_API_BASE_URL=${NOTION_API_BASE_URL:-https://api.notion.com/v1}
 
+  openclaw-api:
+    profiles:
+      - openclaw
+    image: dokobasho-openclaw-api:${OPENCLAW_API_IMAGE_TAG:-local}
+    build: ./openclaw-api
+    restart: always
+    env_file:
+      - ./discord-bot/.env
+    environment:
+      - OPENCLAW_API_HOST=0.0.0.0
+      - OPENCLAW_API_PORT=8788
+      - OPENCLAW_WORKSPACE_DIR=/opt/dokobasho/openclaw
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:8788/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    volumes:
+      - ${OPENCLAW_WORKSPACE_HOST_DIR:-../dokobasho-fairy-openclaw}:/opt/dokobasho/openclaw:ro
+      - ${OPENCLAW_STATE_HOST_DIR:-./openclaw-state}:/root/.openclaw
+
   discord-bot:
     environment:
       - NODE_AUTH_TOKEN=${NODE_AUTH_TOKEN}

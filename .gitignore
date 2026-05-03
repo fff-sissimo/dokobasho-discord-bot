@@ -9,6 +9,7 @@ discord-bot/google-service-key.json
 # =====================
 .n8n/
 node_modules/
+openclaw-state/
 
 # =====================
 # Docker
@@ -18,6 +19,7 @@ docker-compose.yml.bak*
 
 # discord-bot の Dockerfile だけは管理する
 !discord-bot/Dockerfile
+!openclaw-api/Dockerfile
 
 # =====================
 # Logs / OS
@@ -29,3 +31,4 @@ docker-compose.yml.bak*
 # Coverage
 # =====================
 discord-bot/coverage/
+openclaw-api/coverage/
