@@ -13,4 +13,4 @@ ENV NODE_ENV=production
 ENV OPENCLAW_API_HOST=0.0.0.0
 ENV OPENCLAW_API_PORT=8788
 
-CMD ["node", "src/server.js"]
+CMD ["sh", "-lc", "rm -rf /root/.openclaw/workspace && mkdir -p /root/.openclaw/workspace && cp -a /opt/dokobasho/openclaw/. /root/.openclaw/workspace/ && node src/server.js"]
