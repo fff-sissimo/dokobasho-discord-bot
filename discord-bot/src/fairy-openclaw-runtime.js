@@ -2,7 +2,7 @@
 
 const { randomUUID } = require("node:crypto");
 
-const DEFAULT_OPENCLAW_TIMEOUT_MS = 10000;
+const DEFAULT_OPENCLAW_TIMEOUT_MS = 85000;
 const VALID_RUNTIME_MODES = new Set(["n8n", "openclaw"]);
 const POSTABLE_ACTIONS = new Set(["reply", "offer", "assist"]);
 const NON_POSTING_ACTIONS = new Set(["observe", "draft", "publish_blocked"]);
