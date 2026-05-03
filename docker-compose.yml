@@ -80,6 +80,8 @@ services:
       - NOTION_API_BASE_URL=${NOTION_API_BASE_URL:-https://api.notion.com/v1}
 
   discord-bot:
+    environment:
+      - NODE_AUTH_TOKEN=${NODE_AUTH_TOKEN}
     image: dokobasho-discord-bot:${DISCORD_BOT_IMAGE_TAG:-local}
     build: ./discord-bot
     restart: always
@@ -92,6 +94,8 @@ services:
       - ${PERMANENT_MEMORY_HOST_DIR:-./discord-bot/permanent-memory}:/app/permanent-memory
 
   discord-scheduler:
+    environment:
+      - NODE_AUTH_TOKEN=${NODE_AUTH_TOKEN}
     image: dokobasho-discord-bot:${DISCORD_BOT_IMAGE_TAG:-local}
     restart: always
     env_file:
