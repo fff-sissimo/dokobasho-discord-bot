@@ -13,6 +13,13 @@ const {
   createFairyMessageHandler,
 } = require("./src/fairy-fast-path");
 const { resolveReplyAntecedentEntry } = require("./src/reply-antecedent");
+const {
+  createOpenClawClient,
+  createOpenClawInteractionHandler,
+  createOpenClawMessageHandler,
+  createOpenClawRuntimeConfig,
+  normalizeRuntimeMode,
+} = require("./src/fairy-openclaw-runtime");
 const { createPermanentMemorySyncServer } = require("./src/permanent-memory-sync-server");
 const logger = require('./src/logger');
 const { MESSAGES } = require('./src/message-templates');
@@ -97,35 +104,66 @@ let fairyInteractionHandler = null;
 let fairyMessageHandler = null;
 let permanentMemorySyncRuntime = null;
 const fairyMessageTriggerEnabled = parseBoolean(process.env.FAIRY_ENABLE_MESSAGE_TRIGGER, true);
+let fairyRuntimeConfig = { mode: "n8n" };
 try {
-  const { fairyCoreAdapter } = require("./src/fairy-core-adapter");
-  const slowPathClient = createSlowPathWebhookClient({
-    n8nBase: process.env.N8N_BASE,
-    webhookPath: process.env.N8N_SLOW_PATH_WEBHOOK_PATH,
-    timeoutMs: parsePositiveInt(process.env.N8N_SLOW_PATH_TIMEOUT_MS, 8000),
-  });
-  const { createOpenAiFirstReplyComposer } = fairyCoreAdapter;
-  const firstReplyComposer = process.env.OPENAI_API_KEY
-    ? createOpenAiFirstReplyComposer({
-        apiKey: process.env.OPENAI_API_KEY,
-        model: process.env.FIRST_REPLY_AI_MODEL || "o4-mini",
-        timeoutMs: parsePositiveInt(process.env.FIRST_REPLY_AI_TIMEOUT_MS, 5000),
-        apiBase: process.env.OPENAI_BASE_URL || "https://api.openai.com",
-      })
-    : undefined;
-  fairyInteractionHandler = createFairyInteractionHandler({
-    slowPathClient,
-    contextSource: (interaction) => collectRecentChannelContext(interaction),
-    contextEntriesSource: (interaction) => collectRecentChannelContextEntries(interaction),
-    firstReplyComposer,
-  });
-  fairyMessageHandler = createFairyMessageHandler({
-    slowPathClient,
-    contextSource: (message) => collectRecentChannelContext(message),
-    contextEntriesSource: (message) => collectRecentChannelContextEntries(message),
-    firstReplyComposer,
-  });
+  fairyRuntimeConfig = createOpenClawRuntimeConfig(process.env);
+  if (fairyRuntimeConfig.mode === "openclaw") {
+    const openClawClient = createOpenClawClient({
+      apiUrl: fairyRuntimeConfig.apiUrl,
+      apiKey: fairyRuntimeConfig.apiKey,
+      timeoutMs: fairyRuntimeConfig.timeoutMs,
+    });
+    fairyInteractionHandler = createOpenClawInteractionHandler({
+      openClawClient,
+      allowedChannelIds: fairyRuntimeConfig.allowedChannelIds,
+      guildId: fairyRuntimeConfig.guildId,
+      contextEntriesSource: (interaction) => collectRecentChannelContextEntries(interaction),
+      logger,
+    });
+    fairyMessageHandler = createOpenClawMessageHandler({
+      openClawClient,
+      allowedChannelIds: fairyRuntimeConfig.allowedChannelIds,
+      guildId: fairyRuntimeConfig.guildId,
+      contextEntriesSource: (message) => collectRecentChannelContextEntries(message),
+      logger,
+    });
+    logger.info(
+      `[fairy] OpenClaw runtime enabled for ${fairyRuntimeConfig.allowedChannelIds.length} verified channel(s)`
+    );
+  } else {
+    const { fairyCoreAdapter } = require("./src/fairy-core-adapter");
+    const { createOpenAiFirstReplyComposer } = fairyCoreAdapter;
+    const slowPathClient = createSlowPathWebhookClient({
+      n8nBase: process.env.N8N_BASE,
+      webhookPath: process.env.N8N_SLOW_PATH_WEBHOOK_PATH,
+      timeoutMs: parsePositiveInt(process.env.N8N_SLOW_PATH_TIMEOUT_MS, 8000),
+    });
+    const firstReplyComposer = process.env.OPENAI_API_KEY
+      ? createOpenAiFirstReplyComposer({
+          apiKey: process.env.OPENAI_API_KEY,
+          model: process.env.FIRST_REPLY_AI_MODEL || "o4-mini",
+          timeoutMs: parsePositiveInt(process.env.FIRST_REPLY_AI_TIMEOUT_MS, 5000),
+          apiBase: process.env.OPENAI_BASE_URL || "https://api.openai.com",
+        })
+      : undefined;
+    fairyInteractionHandler = createFairyInteractionHandler({
+      slowPathClient,
+      contextSource: (interaction) => collectRecentChannelContext(interaction),
+      contextEntriesSource: (interaction) => collectRecentChannelContextEntries(interaction),
+      firstReplyComposer,
+    });
+    fairyMessageHandler = createFairyMessageHandler({
+      slowPathClient,
+      contextSource: (message) => collectRecentChannelContext(message),
+      contextEntriesSource: (message) => collectRecentChannelContextEntries(message),
+      firstReplyComposer,
+    });
+  }
 } catch (error) {
+  if (fairyRuntimeConfig.mode === "openclaw" || normalizeRuntimeMode(process.env.FAIRY_RUNTIME_MODE) === "openclaw") {
+    logger.error({ err: error }, "[fairy] OpenClaw runtime configuration failed");
+    process.exit(1);
+  }
   logger.warn({ err: error }, "[fairy] disabled due to invalid configuration");
 }
 
@@ -268,6 +306,8 @@ client.on("messageCreate", async (message) => {
       return;
     }
   }
+
+  if (fairyRuntimeConfig.mode === "openclaw") return;
 
   if (!webhookUrl) return;
   if (!webhookRequest.shouldSend()) return;

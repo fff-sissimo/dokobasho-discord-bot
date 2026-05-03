@@ -52,6 +52,11 @@ Discord上で動作する多機能ボット。リマインダー機能と `/fair
     - `FIRST_REPLY_AI_MODEL`: (任意) 一次回答用モデル。未指定時 `o4-mini`。
     - `FIRST_REPLY_AI_TIMEOUT_MS`: (任意) 一次回答生成タイムアウト(ms)。未指定時 `5000`。
     - `OPENAI_BASE_URL`: (任意) OpenAI API base URL。未指定時 `https://api.openai.com`。
+    - `FAIRY_RUNTIME_MODE`: (任意) `/fairy` とメンション/返信の実行経路。未指定時 `n8n`。`openclaw` で OpenClaw 直接実行。
+    - `OPENCLAW_API_URL`: (`FAIRY_RUNTIME_MODE=openclaw` で必須) OpenClaw 判断 API の完全 URL。
+    - `OPENCLAW_API_KEY`: (`FAIRY_RUNTIME_MODE=openclaw` で必須) OpenClaw 判断 API 用の Bearer token。
+    - `OPENCLAW_API_TIMEOUT_MS`: (任意) OpenClaw 判断 API の timeout(ms)。未指定時 `10000`。
+    - `FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS`: (`FAIRY_RUNTIME_MODE=openclaw` で必須) OpenClaw 直接実行を許可する channel ID の comma-separated list。v1 sandbox は `1094907178671939654` のみ。
     - `NOTION_TOKEN`: (推奨) Notion連携トークン。`n8n` と `n8n-runners` の両方に渡します。
     - `NOTION_API_KEY`: (任意) 互換用の別名トークン。`NOTION_TOKEN` を優先します。
     - `NOTION_VERSION`: (任意) Notion-Version ヘッダ。未指定時 `2022-06-28`。
@@ -154,6 +159,22 @@ Discord上で動作する多機能ボット。リマインダー機能と `/fair
 6. reminder の誤登録防止を確認する。
    - `@どこばしょのようせい test` のような曖昧入力で、Bot の一次回答文が履歴候補として採用されないことを確認する。
    - 明示的な本文（例: `5分後に「洗濯物を取り込む」`）では従来どおり登録できることを確認する。
+
+### OpenClaw direct runtime v1 sandbox
+
+`FAIRY_RUNTIME_MODE=openclaw` では、既存 n8n slow-path を使わず OpenClaw API へ直接判断 payload を送ります。
+初回は `FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS=1094907178671939654` のみで運用してください。
+
+起動前に必須:
+
+- `BOT_TOKEN` または `DISCORD_BOT_TOKEN`
+- `GUILD_ID`
+- `OPENCLAW_API_URL`
+- `OPENCLAW_API_KEY`
+- `FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS`
+
+送信直前 gate は、allowlist 外チャンネル、承認必須応答、everyone/here、role mention、添付、外部 URL を自動送信しません。
+rollback は `FAIRY_RUNTIME_MODE=n8n` に戻して `discord-bot` service を再作成します。
 
 #### fairy-core v1.1.0 の追加確認項目（speaker-aware context）
 
