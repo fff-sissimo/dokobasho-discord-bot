@@ -172,6 +172,26 @@ Discord上で動作する多機能ボット。リマインダー機能と `/fair
 - `OPENCLAW_API_KEY`
 - `FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS`
 
+Hostinger では `openclaw-api` service を Docker 内部だけで起動します。Traefik label と host port は付けません。
+
+```bash
+docker compose --profile openclaw up -d --build openclaw-api
+docker compose --profile openclaw up -d --no-deps --force-recreate discord-bot
+```
+
+`discord-bot/.env` の OpenClaw 設定例:
+
+```env
+FAIRY_RUNTIME_MODE=openclaw
+OPENCLAW_API_URL=http://openclaw-api:8788/discord/respond
+OPENCLAW_API_KEY=<openssl rand -base64 32 で生成した共有シークレット>
+OPENCLAW_API_TIMEOUT_MS=10000
+FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS=1094907178671939654
+```
+
+`openclaw-api` は同じ `discord-bot/.env` から `OPENCLAW_API_KEY` を読みます。Hostinger で `dokobasho-fairy-openclaw` の配置場所が既定と違う場合は、Compose 実行環境に `OPENCLAW_WORKSPACE_HOST_DIR=/path/to/dokobasho-fairy-openclaw` を設定してください。
+既定の `OPENCLAW_AGENT_MODE=local` では、`openclaw-api` container 内の OpenClaw CLI が直接 agent turn を実行します。OpenClaw の state は `OPENCLAW_STATE_HOST_DIR`（未指定時 `./openclaw-state`）から `/root/.openclaw` へマウントされます。
+
 送信直前 gate は、allowlist 外チャンネル、承認必須応答、everyone/here、role mention、添付、外部 URL を自動送信しません。
 rollback は `FAIRY_RUNTIME_MODE=n8n` に戻して `discord-bot` service を再作成します。
 
