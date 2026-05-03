@@ -55,7 +55,7 @@ Discord上で動作する多機能ボット。リマインダー機能と `/fair
     - `FAIRY_RUNTIME_MODE`: (任意) `/fairy` とメンション/返信の実行経路。未指定時 `n8n`。`openclaw` で OpenClaw 直接実行。
     - `OPENCLAW_API_URL`: (`FAIRY_RUNTIME_MODE=openclaw` で必須) OpenClaw 判断 API の完全 URL。
     - `OPENCLAW_API_KEY`: (`FAIRY_RUNTIME_MODE=openclaw` で必須) OpenClaw 判断 API 用の Bearer token。
-    - `OPENCLAW_API_TIMEOUT_MS`: (任意) OpenClaw 判断 API の timeout(ms)。未指定時 `10000`。
+    - `OPENCLAW_API_TIMEOUT_MS`: (任意) OpenClaw 判断 API の timeout(ms)。未指定時 `85000`。
     - `FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS`: (`FAIRY_RUNTIME_MODE=openclaw` で必須) OpenClaw 直接実行を許可する channel ID の comma-separated list。v1 sandbox は `1094907178671939654` のみ。
     - `NOTION_TOKEN`: (推奨) Notion連携トークン。`n8n` と `n8n-runners` の両方に渡します。
     - `NOTION_API_KEY`: (任意) 互換用の別名トークン。`NOTION_TOKEN` を優先します。
@@ -185,7 +185,7 @@ docker compose --profile openclaw up -d --no-deps --force-recreate discord-bot
 FAIRY_RUNTIME_MODE=openclaw
 OPENCLAW_API_URL=http://openclaw-api:8788/discord/respond
 OPENCLAW_API_KEY=<openssl rand -base64 32 で生成した共有シークレット>
-OPENCLAW_API_TIMEOUT_MS=10000
+OPENCLAW_API_TIMEOUT_MS=85000
 FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS=1094907178671939654
 ```
 
