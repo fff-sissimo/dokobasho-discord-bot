@@ -82,6 +82,12 @@ const collectRecentChannelContextEntries = async (
             : "",
         author_is_bot: Boolean(message && message.author && message.author.bot),
         content: typeof message.content === "string" ? message.content.trim() : "",
+        created_at:
+          message && message.createdAt && typeof message.createdAt.toISOString === "function"
+            ? message.createdAt.toISOString()
+            : Number.isFinite(message && message.createdTimestamp)
+              ? new Date(message.createdTimestamp).toISOString()
+              : "",
       }))
       .filter(
         (entry) =>
