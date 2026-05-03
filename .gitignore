@@ -12,6 +12,18 @@ node_modules/
 openclaw-state/
 
 # =====================
+# Local agent workspaces
+# =====================
+.openclaw/
+.serena/
+/AGENTS.md
+/HEARTBEAT.md
+/IDENTITY.md
+/SOUL.md
+/TOOLS.md
+/USER.md
+
+# =====================
 # Docker
 # =====================
 Dockerfile
