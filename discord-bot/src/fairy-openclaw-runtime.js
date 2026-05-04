@@ -1,8 +1,14 @@
 "use strict";
 
 const { randomUUID } = require("node:crypto");
+const fs = require("node:fs/promises");
+const path = require("node:path");
 
 const DEFAULT_OPENCLAW_TIMEOUT_MS = 85000;
+const DEFAULT_OPENCLAW_STATE_DIR = "/var/lib/dokobasho/fairy-openclaw-state";
+const DISCORD_BOT_REPO_ROOT = path.resolve(__dirname, "..");
+const WORKSPACE_REPO_ROOT = path.resolve(__dirname, "../..");
+const FAIRY_OPENCLAW_MEMORY_DIR = path.resolve(WORKSPACE_REPO_ROOT, "..", "dokobasho-fairy-openclaw", "memory");
 const VALID_RUNTIME_MODES = new Set(["n8n", "openclaw"]);
 const POSTABLE_ACTIONS = new Set(["reply", "offer", "assist"]);
 const NON_POSTING_ACTIONS = new Set(["observe", "draft", "publish_blocked"]);
@@ -14,17 +20,21 @@ const SAFE_ALLOWED_MENTIONS = Object.freeze({
 });
 const TYPING_KEEPALIVE_INTERVAL_MS = 7500;
 const DEFAULT_CHANNEL_REGISTRY = Object.freeze({
-  "1094907178671939654": Object.freeze({ name: "妖精さんより", type: "sandbox" }),
-  "840827137451229210": Object.freeze({ name: "はじまりの酒場", type: "chat" }),
-  "841686630271418429": Object.freeze({ name: "らくがきちょう", type: "creation" }),
-  "1465296404455882860": Object.freeze({ name: "vostok-vol02-general", type: "project" }),
-  "1465295987236143319": Object.freeze({ name: "vostok-vol02-pd", type: "project" }),
-  "1465296093427531960": Object.freeze({ name: "vostok-vol02-music", type: "project" }),
-  "1465296285341847765": Object.freeze({ name: "vostok-vol02-artwork", type: "project" }),
-  "1466404431217164288": Object.freeze({ name: "vostok-vol02-qa", type: "project" }),
-  "840827137451229208": Object.freeze({ name: "更新・進行状況", type: "ops" }),
-  "852073750294822922": Object.freeze({ name: "管理用", type: "ops" }),
+  "1094907178671939654": Object.freeze({ name: "妖精さんより", type: "sandbox", status: "verified" }),
+  "840827137451229210": Object.freeze({ name: "はじまりの酒場", type: "chat", status: "verified" }),
+  "841686630271418429": Object.freeze({ name: "らくがきちょう", type: "creation", status: "known" }),
+  "1311647968113332275": Object.freeze({ name: "アイデアボード", type: "board", status: "pending" }),
+  "1465296404455882860": Object.freeze({ name: "vostok-vol02-general", type: "project", status: "pending" }),
+  "1465295987236143319": Object.freeze({ name: "vostok-vol02-pd", type: "project", status: "pending" }),
+  "1465296093427531960": Object.freeze({ name: "vostok-vol02-music", type: "project", status: "pending" }),
+  "1465296285341847765": Object.freeze({ name: "vostok-vol02-artwork", type: "project", status: "pending" }),
+  "1466404431217164288": Object.freeze({ name: "vostok-vol02-qa", type: "project", status: "pending" }),
+  "840827137451229208": Object.freeze({ name: "更新・進行状況", type: "ops", status: "known" }),
+  "852073750294822922": Object.freeze({ name: "管理用", type: "ops", status: "known" }),
 });
+const CHANNEL_REGISTRY_STATUSES = new Set(["verified", "pending", "known"]);
+const FOLLOWUP_STATUSES = new Set(["open", "checked", "closed"]);
+const FOLLOWUP_TEXT_MAX_LENGTH = 200;
 
 const normalizeRuntimeMode = (raw) => {
   const value = String(raw || "n8n").trim().toLowerCase();
@@ -42,6 +52,116 @@ const parseAllowedChannelIds = (raw) =>
     .split(",")
     .map((value) => value.trim())
     .filter(Boolean);
+
+const isPathInsideOrSame = (basePath, targetPath) => {
+  const relativePath = path.relative(path.resolve(basePath), path.resolve(targetPath));
+  return relativePath === "" || (relativePath && !relativePath.startsWith("..") && !path.isAbsolute(relativePath));
+};
+
+const assertSafeOpenClawStateDir = (stateDir) => {
+  const unsafeRoots = [
+    WORKSPACE_REPO_ROOT,
+    DISCORD_BOT_REPO_ROOT,
+    FAIRY_OPENCLAW_MEMORY_DIR,
+  ];
+  const unsafeRoot = unsafeRoots.find((root) => isPathInsideOrSame(root, stateDir));
+  if (unsafeRoot) {
+    throw new Error(`invalid FAIRY_OPENCLAW_STATE_DIR: must be outside git-tracked runtime paths (${unsafeRoot})`);
+  }
+};
+
+const resolveOpenClawStateDir = (env = process.env) => {
+  const hasOverride = env && Object.prototype.hasOwnProperty.call(env, "FAIRY_OPENCLAW_STATE_DIR");
+  const rawStateDir = hasOverride ? env.FAIRY_OPENCLAW_STATE_DIR : DEFAULT_OPENCLAW_STATE_DIR;
+  const trimmedStateDir = String(rawStateDir || "").trim();
+  if (!trimmedStateDir) {
+    throw new Error("invalid FAIRY_OPENCLAW_STATE_DIR: absolute path required");
+  }
+  if (!path.isAbsolute(trimmedStateDir)) {
+    throw new Error("invalid FAIRY_OPENCLAW_STATE_DIR: absolute path required");
+  }
+  const stateDir = path.resolve(trimmedStateDir);
+  assertSafeOpenClawStateDir(stateDir);
+  return stateDir;
+};
+
+const normalizeChannelRegistryEntry = (id, entry) => {
+  if (!/^\d+$/.test(id)) {
+    throw new Error(`invalid OpenClaw channel registry id: ${id || "empty"}`);
+  }
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+    throw new Error(`invalid OpenClaw channel registry entry: ${id}`);
+  }
+  const name = String(entry.name || "").trim();
+  const type = String(entry.type || "").trim();
+  const status = String(
+    entry.status || (entry.verified === true ? "verified" : entry.verified === false ? "pending" : "")
+  ).trim();
+  if (!name) throw new Error(`invalid OpenClaw channel registry name: ${id}`);
+  if (!type) throw new Error(`invalid OpenClaw channel registry type: ${id}`);
+  if (!CHANNEL_REGISTRY_STATUSES.has(status)) {
+    throw new Error(`invalid OpenClaw channel registry status: ${id}`);
+  }
+  return Object.freeze({ name, type, status });
+};
+
+const validateOpenClawChannelRegistry = (registry) => {
+  if (!registry || typeof registry !== "object" || Array.isArray(registry)) {
+    throw new Error("invalid OpenClaw channel registry: object required");
+  }
+  return Object.freeze(
+    Object.fromEntries(
+      Object.entries(registry).map(([rawId, entry]) => {
+        const id = String(rawId || "").trim();
+        return [id, normalizeChannelRegistryEntry(id, entry)];
+      })
+    )
+  );
+};
+
+const parseChannelRegistrySource = (raw) => {
+  if (!raw) return {};
+  let parsed;
+  try {
+    parsed = JSON.parse(String(raw));
+  } catch (error) {
+    throw new Error("invalid OpenClaw channel registry JSON");
+  }
+  if (Array.isArray(parsed)) {
+    return Object.fromEntries(
+      parsed.map((entry) => {
+        const id = String(entry && entry.id ? entry.id : "").trim();
+        return [id, entry];
+      })
+    );
+  }
+  return parsed;
+};
+
+const loadOpenClawChannelRegistry = (source = {}) => {
+  const registrySource =
+    typeof source === "string"
+      ? parseChannelRegistrySource(source)
+      : source && source.FAIRY_OPENCLAW_CHANNEL_REGISTRY_JSON
+        ? parseChannelRegistrySource(source.FAIRY_OPENCLAW_CHANNEL_REGISTRY_JSON)
+        : source && source.channelRegistry
+          ? source.channelRegistry
+          : {};
+  return validateOpenClawChannelRegistry({
+    ...DEFAULT_CHANNEL_REGISTRY,
+    ...registrySource,
+  });
+};
+
+const assertAllowlistIsVerified = ({ allowedChannelIds, channelRegistry }) => {
+  const unknownOrUnverified = allowedChannelIds.filter((id) => {
+    const entry = channelRegistry[id];
+    return !entry || entry.status !== "verified";
+  });
+  if (unknownOrUnverified.length > 0) {
+    throw new Error(`invalid OpenClaw channel allowlist: unverified channel ids: ${unknownOrUnverified.join(", ")}`);
+  }
+};
 
 const createOpenClawRuntimeConfig = (env = process.env) => {
   const mode = normalizeRuntimeMode(env.FAIRY_RUNTIME_MODE);
@@ -61,6 +181,8 @@ const createOpenClawRuntimeConfig = (env = process.env) => {
   if (missing.length > 0) {
     throw new Error(`missing OpenClaw runtime config: ${missing.join(", ")}`);
   }
+  const channelRegistry = loadOpenClawChannelRegistry(env);
+  assertAllowlistIsVerified({ allowedChannelIds, channelRegistry });
 
   return {
     mode,
@@ -68,7 +190,228 @@ const createOpenClawRuntimeConfig = (env = process.env) => {
     apiKey,
     guildId,
     allowedChannelIds,
+    channelRegistry,
+    stateDir: resolveOpenClawStateDir(env),
     timeoutMs: parsePositiveInt(env.OPENCLAW_API_TIMEOUT_MS, DEFAULT_OPENCLAW_TIMEOUT_MS),
+  };
+};
+
+const createEmptyFollowupState = () => ({ schema_version: 1, followups: [] });
+
+const readJsonFile = async (filePath, fallbackFactory) => {
+  try {
+    return JSON.parse(await fs.readFile(filePath, "utf8"));
+  } catch (error) {
+    if (error && error.code === "ENOENT") return fallbackFactory();
+    throw error;
+  }
+};
+
+const writeJsonFile = async (filePath, value) => {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+};
+
+const isUnsafeFollowupText = (value) => {
+  const text = normalizeMessageContent(value);
+  if (!text) return false;
+  if (text.length > FOLLOWUP_TEXT_MAX_LENGTH) return true;
+  if (/https?:\/\/\S+/i.test(text)) return true;
+  if (/(?:api[_-]?key|token|secret|password|passwd|key)\s*[:=]\s*[^\s]+/i.test(text)) return true;
+  if (/(?:bearer|basic)\s+[a-z0-9._~+/=-]{12,}/i.test(text)) return true;
+  return false;
+};
+
+const normalizeSafeFollowupText = (value) => {
+  const text = normalizeMessageContent(value);
+  return text && !isUnsafeFollowupText(text) ? text : "";
+};
+
+const normalizeNullableIsoTimestamp = (value) => normalizeIsoTimestamp(value) || null;
+
+const normalizeFollowupCandidates = (candidates) => {
+  if (!Array.isArray(candidates)) return [];
+  return candidates
+    .filter((candidate) => candidate && typeof candidate === "object" && !Array.isArray(candidate))
+    .map((candidate) => ({
+      summary: normalizeSafeFollowupText(candidate.summary || candidate.title || candidate.label),
+      due_at: normalizeIsoTimestamp(candidate.due_at || candidate.dueAt || candidate.datetime || candidate.when),
+      notes: normalizeSafeFollowupText(candidate.notes || candidate.note),
+    }))
+    .filter((candidate) => candidate.summary && candidate.due_at);
+};
+
+const normalizeFollowupIdList = (ids) =>
+  (Array.isArray(ids) ? ids : [ids])
+    .map((id) => String(id || "").trim())
+    .filter(Boolean);
+
+const normalizePersistedFollowup = (followup) => {
+  if (!followup || typeof followup !== "object" || Array.isArray(followup)) return null;
+  const status = String(followup.status || "").trim();
+  if (!FOLLOWUP_STATUSES.has(status)) return null;
+  return {
+    id: String(followup.id || "").trim(),
+    status,
+    channel_id: String(followup.channel_id || "").trim(),
+    channel_type: String(followup.channel_type || "").trim(),
+    source_message_id: String(followup.source_message_id || "").trim(),
+    requested_by_member_id: String(followup.requested_by_member_id || "").trim(),
+    summary: normalizeSafeFollowupText(followup.summary),
+    due_at: normalizeNullableIsoTimestamp(followup.due_at),
+    created_at: normalizeNullableIsoTimestamp(followup.created_at),
+    last_checked_at: normalizeNullableIsoTimestamp(followup.last_checked_at),
+    closed_at: normalizeNullableIsoTimestamp(followup.closed_at),
+    notes: normalizeSafeFollowupText(followup.notes),
+  };
+};
+
+const normalizeFollowupMetadata = (metadata = {}) => ({
+  channel_id: String(metadata.channel_id || "").trim(),
+  channel_type: String(metadata.channel_type || "").trim(),
+  source_message_id: String(metadata.source_message_id || "").trim(),
+  requested_by_member_id: String(metadata.requested_by_member_id || "").trim(),
+  has_promised_followup: Boolean(metadata.has_promised_followup),
+});
+
+const normalizeHeartbeatState = (patch = {}) => {
+  const sourceLastChecks = patch && typeof patch.lastChecks === "object" && !Array.isArray(patch.lastChecks)
+    ? patch.lastChecks
+    : {};
+  return {
+    schema_version: 1,
+    lastChecks: {
+      server_flow: normalizeNullableIsoTimestamp(sourceLastChecks.server_flow),
+      memory_maintenance: normalizeNullableIsoTimestamp(sourceLastChecks.memory_maintenance),
+      followups: normalizeNullableIsoTimestamp(sourceLastChecks.followups),
+    },
+  };
+};
+
+const createOpenClawStateStore = ({
+  stateDir = DEFAULT_OPENCLAW_STATE_DIR,
+  idFactory = randomUUID,
+  now = isoNow,
+} = {}) => {
+  const rootDir = String(stateDir || DEFAULT_OPENCLAW_STATE_DIR).trim() || DEFAULT_OPENCLAW_STATE_DIR;
+  const followupsPath = path.join(rootDir, "followups.json");
+  const heartbeatPath = path.join(rootDir, "heartbeat-state.json");
+
+  const readFollowupState = async () => {
+    const state = await readJsonFile(followupsPath, createEmptyFollowupState);
+    return {
+      schema_version: 1,
+      followups: Array.isArray(state.followups) ? state.followups : [],
+    };
+  };
+
+  const writeFollowupState = async (state) => {
+    const nextState = {
+      schema_version: 1,
+      followups: (Array.isArray(state && state.followups) ? state.followups : [])
+        .map(normalizePersistedFollowup)
+        .filter(Boolean),
+    };
+    await writeJsonFile(followupsPath, nextState);
+    return nextState;
+  };
+
+  const addFollowupCandidates = async ({ metadata, candidates }) => {
+    const normalizedCandidates = normalizeFollowupCandidates(candidates);
+    const normalizedMetadata = normalizeFollowupMetadata(metadata);
+    if (!normalizedMetadata.has_promised_followup || normalizedCandidates.length === 0) {
+      return [];
+    }
+    const createdAt = now();
+    const state = await readFollowupState();
+    const additions = normalizedCandidates.map((candidate) => ({
+      id: idFactory(),
+      channel_id: normalizedMetadata.channel_id,
+      channel_type: normalizedMetadata.channel_type,
+      source_message_id: normalizedMetadata.source_message_id,
+      requested_by_member_id: normalizedMetadata.requested_by_member_id,
+      summary: candidate.summary,
+      due_at: candidate.due_at,
+      created_at: createdAt,
+      status: "open",
+      last_checked_at: null,
+      closed_at: null,
+      notes: candidate.notes,
+    }));
+    const nextState = await writeFollowupState({ ...state, followups: [...state.followups, ...additions] });
+    return nextState.followups.slice(-additions.length);
+  };
+
+  const listDueOpenFollowups = async ({ channelId, now: nowValue = now() } = {}) => {
+    const state = await readFollowupState();
+    const dueMs = Date.parse(nowValue);
+    if (!Number.isFinite(dueMs)) return [];
+    const normalizedChannelId = String(channelId || "").trim();
+    return state.followups.filter((followup) => {
+      if (!followup || followup.status !== "open") return false;
+      if (normalizedChannelId && String(followup.channel_id || "") !== normalizedChannelId) return false;
+      const followupDueMs = Date.parse(followup.due_at);
+      return Number.isFinite(followupDueMs) && followupDueMs <= dueMs;
+    });
+  };
+
+  const markFollowupsChecked = async (ids, { checkedAt = now(), notes = "" } = {}) => {
+    const targetIds = new Set(normalizeFollowupIdList(ids));
+    if (targetIds.size === 0) return [];
+    const state = await readFollowupState();
+    const updated = [];
+    const followups = state.followups.map((followup) => {
+      if (!followup || !targetIds.has(String(followup.id || "")) || followup.status !== "open") return followup;
+      const next = {
+        ...followup,
+        status: "checked",
+        last_checked_at: normalizeIsoTimestamp(checkedAt) || now(),
+        notes: normalizeSafeFollowupText(notes) || followup.notes || "",
+      };
+      updated.push(next);
+      return next;
+    });
+    await writeFollowupState({ ...state, followups });
+    return updated;
+  };
+
+  const closeFollowups = async (ids, { closedAt = now(), notes = "" } = {}) => {
+    const targetIds = new Set(normalizeFollowupIdList(ids));
+    if (targetIds.size === 0) return [];
+    const state = await readFollowupState();
+    const updated = [];
+    const followups = state.followups.map((followup) => {
+      if (!followup || !targetIds.has(String(followup.id || "")) || followup.status === "closed") return followup;
+      const next = {
+        ...followup,
+        status: "closed",
+        closed_at: normalizeIsoTimestamp(closedAt) || now(),
+        notes: normalizeSafeFollowupText(notes) || followup.notes || "",
+      };
+      updated.push(next);
+      return next;
+    });
+    await writeFollowupState({ ...state, followups });
+    return updated;
+  };
+
+  const writeHeartbeatState = async (patch = {}) => {
+    const state = normalizeHeartbeatState(patch);
+    await writeJsonFile(heartbeatPath, state);
+    return state;
+  };
+
+  return {
+    stateDir: rootDir,
+    followupsPath,
+    heartbeatPath,
+    readFollowupState,
+    writeFollowupState,
+    addFollowupCandidates,
+    listDueOpenFollowups,
+    markFollowupsChecked,
+    closeFollowups,
+    writeHeartbeatState,
   };
 };
 
@@ -244,16 +587,61 @@ const hasExplicitFollowupRequest = (content) => {
   return timeCue.test(text) && followupVerb.test(text);
 };
 
+const readSnowflake = (...values) => {
+  for (const value of values) {
+    const normalized = String(value || "").trim();
+    if (normalized) return normalized;
+  }
+  return "";
+};
+
+const resolveChannelMetadata = (channel) => {
+  const isThread = Boolean(
+    channel &&
+      (channel.isThread === true ||
+        channel.isThread === "true" ||
+        typeof channel.isThread === "function" && channel.isThread())
+  );
+  const parentChannel = channel && channel.parent ? channel.parent : null;
+  const category = parentChannel && parentChannel.parent ? parentChannel.parent : null;
+  return {
+    thread_id: isThread ? readSnowflake(channel && channel.id) : "",
+    parent_channel_id: isThread ? readSnowflake(channel && channel.parentId, parentChannel && parentChannel.id) : "",
+    category_id: readSnowflake(
+      channel && channel.parentId && !isThread ? channel.parentId : "",
+      channel && channel.parent && channel.parentId && isThread ? channel.parent.parentId : "",
+      parentChannel && parentChannel.parentId,
+      category && category.id
+    ),
+  };
+};
+
+const isThreadChannel = (channel) =>
+  Boolean(
+    channel &&
+      (channel.isThread === true ||
+        channel.isThread === "true" ||
+        (typeof channel.isThread === "function" && channel.isThread()))
+  );
+
+const resolveOperationChannelId = (channel, fallbackChannelId) => {
+  if (isThreadChannel(channel)) {
+    return readSnowflake(channel && channel.parentId, channel && channel.parent && channel.parent.id, fallbackChannelId);
+  }
+  return readSnowflake(fallbackChannelId, channel && channel.id);
+};
+
 const resolveChannel = ({ channel, channelId, allowedChannelIds, channelRegistry = DEFAULT_CHANNEL_REGISTRY }) => {
   const id = String(channelId || (channel && channel.id) || "").trim();
   const registeredChannel = channelRegistry[id] || null;
   const registered = Boolean(registeredChannel);
-  const verified = allowedChannelIds.has(id);
+  const verified = registered && registeredChannel.status === "verified" && allowedChannelIds.has(id);
   return {
     id,
     name: String((channel && channel.name) || (registeredChannel && registeredChannel.name) || "").trim(),
-    type: registered && verified ? registeredChannel.type : "unknown",
-    registered: registered && verified,
+    type: verified ? registeredChannel.type : "unknown",
+    registered: verified,
+    ...resolveChannelMetadata(channel),
   };
 };
 
@@ -327,6 +715,73 @@ const buildOpenClawPayload = ({
   };
 };
 
+const applyRuntimeStateToPayload = async ({ payload, stateStore, logger }) => {
+  if (!payload || !stateStore) return payload;
+  try {
+    if (typeof stateStore.listDueOpenFollowups === "function") {
+      const dueFollowups = await stateStore.listDueOpenFollowups({
+        channelId: payload.channel && payload.channel.id,
+        now: payload.received_at,
+      });
+      payload.context.matched_followup_ids = dueFollowups
+        .map((followup) => String(followup && followup.id || "").trim())
+        .filter(Boolean)
+        .slice(0, 20);
+    }
+    if (typeof stateStore.writeHeartbeatState === "function") {
+      await stateStore.writeHeartbeatState({
+        lastChecks: {
+          followups: payload.received_at,
+        },
+      });
+    }
+  } catch (error) {
+    if (logger && typeof logger.warn === "function") {
+      logger.warn({ err: error, requestId: payload.request_id }, "[fairy-openclaw] failed to load runtime state");
+    }
+  }
+  return payload;
+};
+
+const saveResponseFollowupCandidates = async ({ payload, response, stateStore, logger }) => {
+  if (!payload || !response || !stateStore || typeof stateStore.addFollowupCandidates !== "function") return [];
+  try {
+    return await stateStore.addFollowupCandidates({
+      metadata: {
+        channel_id: payload.channel && payload.channel.id,
+        channel_type: payload.channel && payload.channel.type,
+        source_message_id: payload.message && payload.message.id,
+        requested_by_member_id: payload.message && payload.message.author_id,
+        has_promised_followup: payload.context && payload.context.has_promised_followup,
+      },
+      candidates: response.followup_candidates,
+    });
+  } catch (error) {
+    if (logger && typeof logger.warn === "function") {
+      logger.warn({ err: error, requestId: payload.request_id }, "[fairy-openclaw] failed to save followup candidates");
+    }
+    return [];
+  }
+};
+
+const applyResponseFollowupTransitions = async ({ payload, response, stateStore, logger }) => {
+  if (!payload || !response || !stateStore) return { checked: [], closed: [] };
+  try {
+    const checked =
+      typeof stateStore.markFollowupsChecked === "function"
+        ? await stateStore.markFollowupsChecked(response.checked_followup_ids)
+        : [];
+    const closed =
+      typeof stateStore.closeFollowups === "function" ? await stateStore.closeFollowups(response.closed_followup_ids) : [];
+    return { checked, closed };
+  } catch (error) {
+    if (logger && typeof logger.warn === "function") {
+      logger.warn({ err: error, requestId: payload.request_id }, "[fairy-openclaw] failed to update followup state");
+    }
+    return { checked: [], closed: [] };
+  }
+};
+
 const validateOpenClawResponse = (response) => {
   if (!response || typeof response !== "object" || Array.isArray(response)) {
     throw new Error("invalid OpenClaw response: object required");
@@ -341,6 +796,9 @@ const validateOpenClawResponse = (response) => {
     body: normalizeMessageContent(response.body),
     requires_approval: Boolean(response.requires_approval),
     approval: response.approval && typeof response.approval === "object" ? response.approval : {},
+    followup_candidates: normalizeFollowupCandidates(response.followup_candidates),
+    checked_followup_ids: normalizeFollowupIdList(response.checked_followup_ids),
+    closed_followup_ids: normalizeFollowupIdList(response.closed_followup_ids),
   };
 };
 
@@ -395,6 +853,8 @@ const createOpenClawInteractionHandler = ({
   openClawClient,
   allowedChannelIds,
   guildId,
+  channelRegistry = DEFAULT_CHANNEL_REGISTRY,
+  stateStore,
   contextEntriesSource,
   requestIdFactory = randomUUID,
   logger,
@@ -409,7 +869,8 @@ const createOpenClawInteractionHandler = ({
       await interaction.reply({ content: buildGateBlockedMessage(), ephemeral: true, allowedMentions: SAFE_ALLOWED_MENTIONS });
       return { handled: true, gate };
     }
-    if (!allowed.has(String(interaction.channelId || ""))) {
+    const operationChannelId = resolveOperationChannelId(interaction.channel, interaction.channelId);
+    if (!allowed.has(operationChannelId)) {
       const gate = { ok: false, reason: "channel_not_verified" };
       await interaction.reply({ content: buildGateBlockedMessage(), ephemeral: true, allowedMentions: SAFE_ALLOWED_MENTIONS });
       return { handled: true, gate };
@@ -422,7 +883,7 @@ const createOpenClawInteractionHandler = ({
     const payload = buildOpenClawPayload({
       eventType: "message_create",
       guildId: interaction.guildId,
-      channel: { id: interaction.channelId, name: interaction.channel && interaction.channel.name },
+      channel: { id: operationChannelId, name: interaction.channel && interaction.channel.name },
       message: {
         id: interaction.id,
         author: interaction.user,
@@ -433,12 +894,16 @@ const createOpenClawInteractionHandler = ({
       content,
       mentionsBot: true,
       allowedChannelIds: allowed,
+      channelRegistry,
       contextEntries: typeof contextEntriesSource === "function" ? await contextEntriesSource(interaction) : [],
     });
     payload.request_id = requestIdFactory();
+    await applyRuntimeStateToPayload({ payload, stateStore, logger });
     try {
       const response = validateOpenClawResponse(await openClawClient.execute(payload));
-      const gate = runOutboundGate({ response, channelId: interaction.channelId, allowedChannelIds: allowed });
+      await applyResponseFollowupTransitions({ payload, response, stateStore, logger });
+      await saveResponseFollowupCandidates({ payload, response, stateStore, logger });
+      const gate = runOutboundGate({ response, channelId: operationChannelId, allowedChannelIds: allowed });
       if (!gate.ok) {
         await interaction.editReply({ content: buildGateBlockedMessage(), allowedMentions: SAFE_ALLOWED_MENTIONS });
         return { handled: true, requestId: payload.request_id, payload, response, gate };
@@ -457,6 +922,8 @@ const createOpenClawMessageHandler = ({
   openClawClient,
   allowedChannelIds,
   guildId,
+  channelRegistry = DEFAULT_CHANNEL_REGISTRY,
+  stateStore,
   contextEntriesSource,
   requestIdFactory = randomUUID,
   logger,
@@ -467,29 +934,34 @@ const createOpenClawMessageHandler = ({
       return { handled: false };
     }
     const channelId = String(message.channelId || (message.channel && message.channel.id) || "");
+    const operationChannelId = resolveOperationChannelId(message.channel, channelId);
     if (String(message.guildId || "") !== String(guildId)) {
       return { handled: false, gate: { ok: false, reason: "guild_mismatch" } };
     }
-    if (!allowed.has(channelId)) {
+    if (!allowed.has(operationChannelId)) {
       return { handled: false, gate: { ok: false, reason: "channel_not_verified" } };
     }
     const content = stripBotMention(message.content, message.client && message.client.user && message.client.user.id);
     const payload = buildOpenClawPayload({
       eventType: "message_create",
       guildId: message.guildId,
-      channel: { id: channelId, name: message.channel && message.channel.name },
+      channel: { id: operationChannelId, name: message.channel && message.channel.name },
       message,
       content,
       isReplyToBot: runtimeOptions.messageTriggerSource === "reply",
       mentionsBot: runtimeOptions.messageTriggerSource !== "reply",
       allowedChannelIds: allowed,
+      channelRegistry,
       contextEntries: typeof contextEntriesSource === "function" ? await contextEntriesSource(message) : [],
     });
     payload.request_id = requestIdFactory();
     const stopTyping = startTypingKeepalive({ channel: message.channel, logger });
+    await applyRuntimeStateToPayload({ payload, stateStore, logger });
     try {
       const response = validateOpenClawResponse(await openClawClient.execute(payload));
-      const gate = runOutboundGate({ response, channelId, allowedChannelIds: allowed });
+      await applyResponseFollowupTransitions({ payload, response, stateStore, logger });
+      await saveResponseFollowupCandidates({ payload, response, stateStore, logger });
+      const gate = runOutboundGate({ response, channelId: operationChannelId, allowedChannelIds: allowed });
       if (!gate.ok) {
         if (shouldReplyWithGateBlockedMessage(gate.reason)) {
           const sentMessage = await message.reply({
@@ -534,14 +1006,20 @@ const createOpenClawMessageHandler = ({
 
 module.exports = {
   DEFAULT_CHANNEL_REGISTRY,
+  DEFAULT_OPENCLAW_STATE_DIR,
   SAFE_ALLOWED_MENTIONS,
   buildOpenClawPayload,
   createOpenClawClient,
   createOpenClawInteractionHandler,
   createOpenClawMessageHandler,
   createOpenClawRuntimeConfig,
+  createOpenClawStateStore,
+  loadOpenClawChannelRegistry,
+  normalizeFollowupCandidates,
   normalizeRuntimeMode,
   parseAllowedChannelIds,
+  resolveOpenClawStateDir,
   runOutboundGate,
+  validateOpenClawChannelRegistry,
   validateOpenClawResponse,
 };

@@ -19,6 +19,7 @@ const {
   createOpenClawInteractionHandler,
   createOpenClawMessageHandler,
   createOpenClawRuntimeConfig,
+  createOpenClawStateStore,
   normalizeRuntimeMode,
 } = require("./src/fairy-openclaw-runtime");
 const { createPermanentMemorySyncServer } = require("./src/permanent-memory-sync-server");
@@ -114,10 +115,15 @@ try {
       apiKey: fairyRuntimeConfig.apiKey,
       timeoutMs: fairyRuntimeConfig.timeoutMs,
     });
+    const openClawStateStore = createOpenClawStateStore({
+      stateDir: fairyRuntimeConfig.stateDir,
+    });
     fairyInteractionHandler = createOpenClawInteractionHandler({
       openClawClient,
       allowedChannelIds: fairyRuntimeConfig.allowedChannelIds,
       guildId: fairyRuntimeConfig.guildId,
+      channelRegistry: fairyRuntimeConfig.channelRegistry,
+      stateStore: openClawStateStore,
       contextEntriesSource: (interaction) => collectRecentChannelContextEntries(interaction),
       logger,
     });
@@ -125,6 +131,8 @@ try {
       openClawClient,
       allowedChannelIds: fairyRuntimeConfig.allowedChannelIds,
       guildId: fairyRuntimeConfig.guildId,
+      channelRegistry: fairyRuntimeConfig.channelRegistry,
+      stateStore: openClawStateStore,
       contextEntriesSource: (message) => collectRecentChannelContextEntries(message),
       logger,
     });

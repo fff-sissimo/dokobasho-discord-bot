@@ -5,7 +5,7 @@ const { test } = require("node:test");
 
 const { buildOpenClawArgs } = require("../src/openclaw-runner");
 const { createServer } = require("../src/server");
-const { buildAgentPrompt, parseAgentResponse } = require("../src/contracts");
+const { buildAgentPrompt, buildObserveResponse, normalizeOpenClawResponse, parseAgentResponse } = require("../src/contracts");
 
 const baseConfig = {
   host: "127.0.0.1",
@@ -70,7 +70,12 @@ test("discord respond returns normalized OpenClaw response", async () => {
           action: "reply",
           body: "確認しました",
           confidence: "high",
+          checked_followup_ids: ["followup_1"],
+          closed_followup_ids: ["followup_2"],
           requires_approval: false,
+          approval: {
+            mentions: ["@everyone", "<@&123>"],
+          },
         }),
       });
     },
@@ -92,8 +97,57 @@ test("discord respond returns normalized OpenClaw response", async () => {
     assert.equal(body.action, "reply");
     assert.equal(body.body, "確認しました");
     assert.equal(body.confidence, "high");
+    assert.deepEqual(body.checked_followup_ids, ["followup_1"]);
+    assert.deepEqual(body.closed_followup_ids, ["followup_2"]);
+    assert.deepEqual(body.approval.mentions, []);
     assert.deepEqual(body.approval.links, []);
   });
+});
+
+test("normalizes approval mentions to an empty array", () => {
+  const response = normalizeOpenClawResponse({
+    schema_version: 1,
+    action: "reply",
+    body: "ok",
+    approval: {
+      mentions: ["@everyone", "<@&123>"],
+    },
+  });
+
+  assert.deepEqual(response.approval.mentions, []);
+});
+
+test("normalizes followup state fields as arrays", () => {
+  assert.deepEqual(
+    normalizeOpenClawResponse({
+      schema_version: 1,
+      action: "observe",
+      checked_followup_ids: ["due_1"],
+      closed_followup_ids: "due_2",
+    }),
+    {
+      schema_version: 1,
+      action: "observe",
+      body: "",
+      reason: "",
+      confidence: "medium",
+      memory_candidates: [],
+      followup_candidates: [],
+      checked_followup_ids: ["due_1"],
+      closed_followup_ids: [],
+      requires_approval: false,
+      approval: {
+        target_channel_id: "",
+        body: "",
+        mentions: [],
+        attachments: [],
+        links: [],
+      },
+    }
+  );
+
+  assert.deepEqual(buildObserveResponse("ok").checked_followup_ids, []);
+  assert.deepEqual(buildObserveResponse("ok").closed_followup_ids, []);
 });
 
 test("invalid OpenClaw output becomes observe response", () => {
@@ -113,6 +167,49 @@ test("agent prompt includes phase2 chat restraint rules", () => {
 
   assert.match(prompt, /channel\.type が chat/);
   assert.match(prompt, /active_thread_age_minutes が 30 を超える/);
+  assert.match(prompt, /checked_followup_ids/);
+  assert.match(prompt, /closed_followup_ids/);
+  assert.match(prompt, /due followup を一度確認したら/);
+  assert.match(prompt, /ID だけを入れ、raw 本文は入れない/);
+});
+
+test("agent prompt includes channel active thread and output policies", () => {
+  const prompt = buildAgentPrompt({
+    workspaceContext: "runtime context",
+    payload: {
+      channel: { id: "840827137451229210", type: "board" },
+      context: { active_thread_age_minutes: 31 },
+    },
+  });
+
+  assert.match(prompt, /board: current request only/);
+  assert.match(prompt, /proactive な再開/);
+  assert.match(prompt, /未採用アイデア.*stable memory/);
+  assert.match(prompt, /project 昇格の確認/);
+  assert.match(prompt, /project: active thread は 24h/);
+  assert.match(prompt, /proactive window は 6h/);
+  assert.match(prompt, /active_thread_age_minutes が 1440/);
+  assert.match(prompt, /active_thread_age_minutes が 360/);
+  assert.match(prompt, /creation: 本人が求めた相談/);
+  assert.match(prompt, /自発会話を始めることは基本しない/);
+  assert.match(prompt, /ops: 原則として送信しない/);
+  assert.match(prompt, /告知、公開、運営判断/);
+  assert.match(prompt, /draft、publish_blocked、または requires_approval: true/);
+});
+
+test("agent prompt keeps URL, mention, and raw Discord body safety rules", () => {
+  const prompt = buildAgentPrompt({
+    workspaceContext: "runtime context",
+    payload: {
+      channel: { id: "840827137451229210", type: "board" },
+      content: "https://example.com",
+    },
+  });
+
+  assert.match(prompt, /approval\.mentions は常に空配列/);
+  assert.match(prompt, /許可された mention はありません/);
+  assert.match(prompt, /URL 本文やリンク先内容を自動取得・要約・記憶しない/);
+  assert.match(prompt, /raw Discord 本文、秘密値、未加工の会話ログは保存・出力しない/);
 });
 
 test("parses OpenClaw CLI payload text output", () => {
