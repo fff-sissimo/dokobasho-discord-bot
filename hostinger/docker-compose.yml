@@ -1,0 +1,244 @@
+services:
+  traefik:
+    image: "traefik"
+    restart: always
+    command:
+      - "--api=true"
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.web.http.redirections.entryPoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entryPoint.scheme=https"
+      - "--entrypoints.websecure.address=:443"
+      - "--certificatesresolvers.mytlschallenge.acme.tlschallenge=true"
+      - "--certificatesresolvers.mytlschallenge.acme.email=${SSL_EMAIL}"
+      - "--certificatesresolvers.mytlschallenge.acme.storage=/letsencrypt/acme.json"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - traefik_data:/letsencrypt
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    restart: always
+    ports:
+      - "127.0.0.1:5678:5678"
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.n8n.rule=Host(`${SUBDOMAIN}.${DOMAIN_NAME}`)
+      - traefik.http.routers.n8n.tls=true
+      - traefik.http.routers.n8n.entrypoints=web,websecure
+      - traefik.http.routers.n8n.tls.certresolver=mytlschallenge
+      - traefik.http.middlewares.n8n.headers.SSLRedirect=true
+      - traefik.http.middlewares.n8n.headers.STSSeconds=315360000
+      - traefik.http.middlewares.n8n.headers.browserXSSFilter=true
+      - traefik.http.middlewares.n8n.headers.contentTypeNosniff=true
+      - traefik.http.middlewares.n8n.headers.forceSTSHeader=true
+      - traefik.http.middlewares.n8n.headers.SSLHost=${DOMAIN_NAME}
+      - traefik.http.middlewares.n8n.headers.STSIncludeSubdomains=true
+      - traefik.http.middlewares.n8n.headers.STSPreload=true
+      - traefik.http.routers.n8n.middlewares=n8n@docker
+    environment:
+      - NODES_EXCLUDE=[]
+      - N8N_HOST=${SUBDOMAIN}.${DOMAIN_NAME}
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=https
+      - NODE_ENV=production
+      - WEBHOOK_URL=https://${SUBDOMAIN}.${DOMAIN_NAME}/
+      - GENERIC_TIMEZONE=${GENERIC_TIMEZONE}
+      - N8N_PROXY_HOPS=1
+      - N8N_EXECUTIONS_PROCESS=main
+      - N8N_ENABLE_NODE_EXECUTIONS=true
+      - N8N_RUNNERS_ENABLED=true
+      - N8N_RUNNERS_MODE=external
+      - N8N_RUNNERS_AUTH_TOKEN=${N8N_RUNNERS_AUTH_TOKEN}
+      - N8N_RUNNERS_BROKER_LISTEN_ADDRESS=0.0.0.0
+      - N8N_BLOCK_ENV_ACCESS_IN_NODE=${N8N_BLOCK_ENV_ACCESS_IN_NODE:-false}
+      - NOTION_TOKEN=${NOTION_TOKEN}
+      - NOTION_VERSION=${NOTION_VERSION}
+      - NOTION_API_BASE_URL=${NOTION_API_BASE_URL}
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - /local-files:/files
+      - /data/n8n-video:/data/n8n-video
+
+  n8n-runners:
+    image: n8nio/runners:latest
+    restart: always
+    depends_on:
+      - n8n
+    environment:
+      - N8N_RUNNERS_TASK_BROKER_URI=http://n8n:5679
+      - N8N_RUNNERS_AUTH_TOKEN=${N8N_RUNNERS_AUTH_TOKEN}
+      - N8N_RUNNERS_AUTO_SHUTDOWN_TIMEOUT=15
+      - N8N_BLOCK_ENV_ACCESS_IN_NODE=${N8N_BLOCK_ENV_ACCESS_IN_NODE:-false}
+      - NOTION_TOKEN=${NOTION_TOKEN}
+      - NOTION_VERSION=${NOTION_VERSION}
+      - NOTION_API_BASE_URL=${NOTION_API_BASE_URL}
+
+  openclaw-api:
+    image: node:22-alpine
+    restart: always
+    environment:
+      - APP_REPO=${APP_REPO}
+      - APP_BRANCH=${APP_BRANCH}
+      - OPENCLAW_API_KEY=${OPENCLAW_API_KEY}
+      - OPENCLAW_API_HOST=0.0.0.0
+      - OPENCLAW_API_PORT=8788
+      - OPENCLAW_WORKSPACE_DIR=/opt/dokobasho/openclaw
+      - OPENCLAW_AGENT_MODE=${OPENCLAW_AGENT_MODE:-local}
+      - OPENCLAW_AGENT_ID=${OPENCLAW_AGENT_ID:-}
+      - OPENCLAW_AGENT_SESSION_ID=${OPENCLAW_AGENT_SESSION_ID:-dokobasho-fairy-discord-v1}
+      - OPENCLAW_AGENT_THINKING=${OPENCLAW_AGENT_THINKING:-low}
+      - OPENCLAW_AGENT_TIMEOUT_SECONDS=${OPENCLAW_AGENT_TIMEOUT_SECONDS:-60}
+      - OPENCLAW_REQUEST_TIMEOUT_MS=${OPENCLAW_REQUEST_TIMEOUT_MS:-70000}
+    command:
+      - sh
+      - -lc
+      - >-
+        set -e;
+        apk add --no-cache git >/dev/null;
+        npm install -g openclaw@2026.5.2 >/dev/null;
+        lockdir=/opt/dokobasho/.git-sync.lock;
+        while ! mkdir "$$lockdir" 2>/dev/null; do sleep 1; done;
+        cleanup(){ rmdir "$$lockdir" 2>/dev/null || true; };
+        trap cleanup EXIT;
+        if [ ! -d /opt/dokobasho/.git ]; then
+          git clone --depth 1 --branch "$APP_BRANCH" "$APP_REPO" /opt/dokobasho;
+        else
+          cd /opt/dokobasho && git fetch --depth 1 origin "$APP_BRANCH" && git reset --hard "origin/$APP_BRANCH";
+        fi;
+        cd /opt/dokobasho && echo "[git-sync] HEAD=$(git rev-parse --short HEAD) branch=$APP_BRANCH";
+        trap - EXIT;
+        cleanup;
+        rm -rf /root/.openclaw/workspace; mkdir -p /root/.openclaw/workspace; cp -a /opt/dokobasho/openclaw/. /root/.openclaw/workspace/; cd /opt/dokobasho/openclaw-api && node src/server.js
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:8788/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    volumes:
+      - /docker/n8n/discord-bot-runtime:/opt/dokobasho
+      - /docker/n8n/dokobasho-fairy-openclaw:/opt/dokobasho/openclaw:ro
+      - /docker/n8n/openclaw-state:/root/.openclaw
+
+  discord-bot:
+    image: node:20-alpine
+    restart: always
+    depends_on:
+      - n8n
+    environment:
+      - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}
+      - BOT_TOKEN=${DISCORD_BOT_TOKEN}
+      - CLIENT_ID=${CLIENT_ID}
+      - GUILD_ID=${GUILD_ID}
+      - SHEET_ID=${SHEET_ID}
+      - GOOGLE_SA_KEY_PATH=${GOOGLE_SA_KEY_PATH}
+      - DEFAULT_TZ=${DEFAULT_TZ}
+      - N8N_WEBHOOK_URL=${N8N_WEBHOOK_URL}
+      - N8N_WEBHOOK_SECRET=${N8N_WEBHOOK_SECRET}
+      - N8N_WEBHOOK_DEBUG=${N8N_WEBHOOK_DEBUG}
+      - N8N_BASE=${N8N_BASE}
+      - N8N_SLOW_PATH_WEBHOOK_PATH=${N8N_SLOW_PATH_WEBHOOK_PATH}
+      - N8N_SLOW_PATH_TIMEOUT_MS=${N8N_SLOW_PATH_TIMEOUT_MS}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - FIRST_REPLY_AI_MODEL=${FIRST_REPLY_AI_MODEL}
+      - FIRST_REPLY_AI_TIMEOUT_MS=${FIRST_REPLY_AI_TIMEOUT_MS}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL}
+      - APP_REPO=${APP_REPO}
+      - APP_BRANCH=${APP_BRANCH}
+      - NODE_AUTH_TOKEN=${NODE_AUTH_TOKEN}
+      - NOTION_TOKEN=${NOTION_TOKEN}
+      - FAIRY_RUNTIME_MODE=${FAIRY_RUNTIME_MODE:-n8n}
+      - OPENCLAW_API_URL=${OPENCLAW_API_URL}
+      - OPENCLAW_API_KEY=${OPENCLAW_API_KEY}
+      - OPENCLAW_API_TIMEOUT_MS=${OPENCLAW_API_TIMEOUT_MS:-10000}
+      - FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS=${FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS}
+      - FAIRY_OPENCLAW_CHANNEL_REGISTRY_JSON=${FAIRY_OPENCLAW_CHANNEL_REGISTRY_JSON}
+      - FAIRY_OPENCLAW_STATE_DIR=${FAIRY_OPENCLAW_STATE_DIR:-/opt/dokobasho/fairy-openclaw-state}
+    command:
+      - sh
+      - -lc
+      - >-
+        set -e;
+        apk add --no-cache git >/dev/null;
+        lockdir=/opt/dokobasho/.git-sync.lock;
+        while ! mkdir "$$lockdir" 2>/dev/null; do sleep 1; done;
+        cleanup(){ rmdir "$$lockdir" 2>/dev/null || true; };
+        trap cleanup EXIT;
+        if [ ! -d /opt/dokobasho/.git ]; then
+          git clone --depth 1 --branch "$APP_BRANCH" "$APP_REPO" /opt/dokobasho;
+        else
+          cd /opt/dokobasho && git fetch --depth 1 origin "$APP_BRANCH" && git reset --hard "origin/$APP_BRANCH";
+        fi;
+        cd /opt/dokobasho && echo "[git-sync] HEAD=$(git rev-parse --short HEAD) branch=$APP_BRANCH";
+        trap - EXIT;
+        cleanup;
+        cd /opt/dokobasho/discord-bot && sh scripts/runtime-bootstrap.sh index.js
+    volumes:
+      - /docker/n8n/discord-bot-runtime:/opt/dokobasho
+      - ${GOOGLE_SA_KEY_FILE}:/app/keys/google-service-key.json:ro
+
+  discord-scheduler:
+    image: node:20-alpine
+    restart: always
+    environment:
+      - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}
+      - BOT_TOKEN=${DISCORD_BOT_TOKEN}
+      - CLIENT_ID=${CLIENT_ID}
+      - GUILD_ID=${GUILD_ID}
+      - SHEET_ID=${SHEET_ID}
+      - GOOGLE_SA_KEY_PATH=${GOOGLE_SA_KEY_PATH}
+      - DEFAULT_TZ=${DEFAULT_TZ}
+      - N8N_WEBHOOK_URL=${N8N_WEBHOOK_URL}
+      - N8N_WEBHOOK_SECRET=${N8N_WEBHOOK_SECRET}
+      - N8N_WEBHOOK_DEBUG=${N8N_WEBHOOK_DEBUG}
+      - N8N_BASE=${N8N_BASE}
+      - N8N_SLOW_PATH_WEBHOOK_PATH=${N8N_SLOW_PATH_WEBHOOK_PATH}
+      - N8N_SLOW_PATH_TIMEOUT_MS=${N8N_SLOW_PATH_TIMEOUT_MS}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - FIRST_REPLY_AI_MODEL=${FIRST_REPLY_AI_MODEL}
+      - FIRST_REPLY_AI_TIMEOUT_MS=${FIRST_REPLY_AI_TIMEOUT_MS}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL}
+      - APP_REPO=${APP_REPO}
+      - APP_BRANCH=${APP_BRANCH}
+      - NODE_AUTH_TOKEN=${NODE_AUTH_TOKEN}
+      - NOTION_TOKEN=${NOTION_TOKEN}
+    command:
+      - sh
+      - -lc
+      - >-
+        set -e;
+        apk add --no-cache git >/dev/null;
+        lockdir=/opt/dokobasho/.git-sync.lock;
+        while ! mkdir "$$lockdir" 2>/dev/null; do sleep 1; done;
+        cleanup(){ rmdir "$$lockdir" 2>/dev/null || true; };
+        trap cleanup EXIT;
+        if [ ! -d /opt/dokobasho/.git ]; then
+          git clone --depth 1 --branch "$APP_BRANCH" "$APP_REPO" /opt/dokobasho;
+        else
+          cd /opt/dokobasho && git fetch --depth 1 origin "$APP_BRANCH" && git reset --hard "origin/$APP_BRANCH";
+        fi;
+        cd /opt/dokobasho && echo "[git-sync] HEAD=$(git rev-parse --short HEAD) branch=$APP_BRANCH";
+        trap - EXIT;
+        cleanup;
+        cd /opt/dokobasho/discord-bot && sh scripts/runtime-bootstrap.sh scheduler.js
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"const fs=require('fs');const p=process.env.SCHEDULER_HEARTBEAT_PATH||'/tmp/discord-scheduler-heartbeat';const maxAgeMs=120000;const s=fs.statSync(p);if(Date.now()-s.mtimeMs>maxAgeMs) process.exit(1);\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    volumes:
+      - /docker/n8n/discord-bot-runtime:/opt/dokobasho
+      - ${GOOGLE_SA_KEY_FILE}:/app/keys/google-service-key.json:ro
+
+volumes:
+  traefik_data:
+    external: true
+  n8n_data:
+    external: true
