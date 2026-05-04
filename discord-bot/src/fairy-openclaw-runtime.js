@@ -5,7 +5,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 
 const DEFAULT_OPENCLAW_TIMEOUT_MS = 85000;
-const DEFAULT_OPENCLAW_STATE_DIR = "/opt/dokobasho/fairy-openclaw-state";
+const DEFAULT_OPENCLAW_STATE_DIR = "/var/lib/dokobasho/fairy-openclaw-state";
 const DISCORD_BOT_REPO_ROOT = path.resolve(__dirname, "..");
 const WORKSPACE_REPO_ROOT = path.resolve(__dirname, "../..");
 const FAIRY_OPENCLAW_MEMORY_DIR = path.resolve(WORKSPACE_REPO_ROOT, "..", "dokobasho-fairy-openclaw", "memory");

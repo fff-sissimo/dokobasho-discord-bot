@@ -159,7 +159,7 @@ services:
       - OPENCLAW_API_TIMEOUT_MS=${OPENCLAW_API_TIMEOUT_MS:-10000}
       - FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS=${FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS}
       - FAIRY_OPENCLAW_CHANNEL_REGISTRY_JSON=${FAIRY_OPENCLAW_CHANNEL_REGISTRY_JSON}
-      - FAIRY_OPENCLAW_STATE_DIR=${FAIRY_OPENCLAW_STATE_DIR:-/opt/dokobasho/fairy-openclaw-state}
+      - FAIRY_OPENCLAW_STATE_DIR=${FAIRY_OPENCLAW_STATE_DIR:-/var/lib/dokobasho/fairy-openclaw-state}
     command:
       - sh
       - -lc
@@ -181,6 +181,7 @@ services:
         cd /opt/dokobasho/discord-bot && sh scripts/runtime-bootstrap.sh index.js
     volumes:
       - /docker/n8n/discord-bot-runtime:/opt/dokobasho
+      - /docker/n8n/fairy-openclaw-state:/var/lib/dokobasho/fairy-openclaw-state
       - ${GOOGLE_SA_KEY_FILE}:/app/keys/google-service-key.json:ro
 
   discord-scheduler:

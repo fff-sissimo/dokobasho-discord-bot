@@ -57,7 +57,7 @@ Discord上で動作する多機能ボット。リマインダー機能と `/fair
     - `OPENCLAW_API_KEY`: (`FAIRY_RUNTIME_MODE=openclaw` で必須) OpenClaw 判断 API 用の Bearer token。
     - `OPENCLAW_API_TIMEOUT_MS`: (任意) OpenClaw 判断 API の timeout(ms)。未指定時 `85000`。
     - `FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS`: (`FAIRY_RUNTIME_MODE=openclaw` で必須) OpenClaw 直接実行を許可する channel ID の comma-separated list。Phase1 sandbox は `1094907178671939654`、Phase2 chat は権限確認後に `840827137451229210` を追加。
-    - `FAIRY_OPENCLAW_STATE_DIR`: (任意) OpenClaw runtime の followup / heartbeat state 保存先。未指定時 `/opt/dokobasho/fairy-openclaw-state`。指定する場合は repo 外の絶対パスにしてください。
+    - `FAIRY_OPENCLAW_STATE_DIR`: (任意) OpenClaw runtime の followup / heartbeat state 保存先。未指定時 `/var/lib/dokobasho/fairy-openclaw-state`。指定する場合は repo 外の絶対パスにしてください。
     - `NOTION_TOKEN`: (推奨) Notion連携トークン。`n8n` と `n8n-runners` の両方に渡します。
     - `NOTION_API_KEY`: (任意) 互換用の別名トークン。`NOTION_TOKEN` を優先します。
     - `NOTION_VERSION`: (任意) Notion-Version ヘッダ。未指定時 `2022-06-28`。
@@ -178,7 +178,7 @@ message trigger は mention / Bot への reply に限定され、通常会話の
 - `FAIRY_OPENCLAW_CHANNEL_REGISTRY_JSON` は任意。未指定時は組み込み registry を使います。
 
 Hostinger では `openclaw-api` service を Docker 内部だけで起動します。Traefik label と host port は付けません。
-Hostinger の現行構成では `/docker/n8n/discord-bot-runtime` をコンテナ内 `/opt/dokobasho` へマウントしているため、既定の `FAIRY_OPENCLAW_STATE_DIR=/opt/dokobasho/fairy-openclaw-state` は VPS 側に永続化されます。live state はこの配下の `followups.json` と `heartbeat-state.json` に保存し、git-tracked な runtime root や `memory/followups.json` へは保存しません。
+Hostinger の現行構成では `/docker/n8n/fairy-openclaw-state` をコンテナ内 `/var/lib/dokobasho/fairy-openclaw-state` へマウントしているため、既定の `FAIRY_OPENCLAW_STATE_DIR=/var/lib/dokobasho/fairy-openclaw-state` は VPS 側に永続化されます。live state はこの配下の `followups.json` と `heartbeat-state.json` に保存し、git-tracked な runtime root や `memory/followups.json` へは保存しません。
 
 ```bash
 docker compose --profile openclaw up -d --build openclaw-api
@@ -193,7 +193,7 @@ OPENCLAW_API_URL=http://openclaw-api:8788/discord/respond
 OPENCLAW_API_KEY=<openssl rand -base64 32 で生成した共有シークレット>
 OPENCLAW_API_TIMEOUT_MS=85000
 FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS=1094907178671939654
-FAIRY_OPENCLAW_STATE_DIR=/opt/dokobasho/fairy-openclaw-state
+FAIRY_OPENCLAW_STATE_DIR=/var/lib/dokobasho/fairy-openclaw-state
 ```
 
 Phase2 有効化時の allowlist 例:
