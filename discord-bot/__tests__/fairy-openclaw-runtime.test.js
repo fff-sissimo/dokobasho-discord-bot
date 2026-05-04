@@ -1,18 +1,35 @@
+const fs = require("node:fs/promises");
+const os = require("node:os");
+const path = require("node:path");
+
 const {
   DEFAULT_CHANNEL_REGISTRY,
+  DEFAULT_OPENCLAW_STATE_DIR,
   SAFE_ALLOWED_MENTIONS,
   buildOpenClawPayload,
   createOpenClawClient,
   createOpenClawMessageHandler,
   createOpenClawRuntimeConfig,
+  createOpenClawStateStore,
+  loadOpenClawChannelRegistry,
+  normalizeFollowupCandidates,
   normalizeRuntimeMode,
+  resolveOpenClawStateDir,
   runOutboundGate,
   validateOpenClawResponse,
 } = require("../src/fairy-openclaw-runtime");
 
 describe("fairy OpenClaw runtime", () => {
-  afterEach(() => {
+  const tmpDirs = [];
+  const createTmpStateDir = async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "fairy-openclaw-state-"));
+    tmpDirs.push(dir);
+    return dir;
+  };
+
+  afterEach(async () => {
     jest.useRealTimers();
+    await Promise.all(tmpDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })));
   });
 
   it("defaults to n8n runtime mode", () => {
@@ -31,6 +48,67 @@ describe("fairy OpenClaw runtime", () => {
         GUILD_ID: "guild_1",
       })
     ).toThrow("FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS");
+  });
+
+  it("uses runtime volume state dir by default and allows absolute FAIRY_OPENCLAW_STATE_DIR override", () => {
+    expect(
+      createOpenClawRuntimeConfig({
+        FAIRY_RUNTIME_MODE: "openclaw",
+        OPENCLAW_API_URL: "https://openclaw.example/run",
+        OPENCLAW_API_KEY: "key",
+        GUILD_ID: "guild_1",
+        FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS: "1094907178671939654",
+      }).stateDir
+    ).toBe(DEFAULT_OPENCLAW_STATE_DIR);
+
+    expect(
+      createOpenClawRuntimeConfig({
+        FAIRY_RUNTIME_MODE: "openclaw",
+        OPENCLAW_API_URL: "https://openclaw.example/run",
+        OPENCLAW_API_KEY: "key",
+        GUILD_ID: "guild_1",
+        FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS: "1094907178671939654",
+        FAIRY_OPENCLAW_STATE_DIR: "/tmp/fairy-state-test",
+      }).stateDir
+    ).toBe("/tmp/fairy-state-test");
+  });
+
+  it("rejects dangerous FAIRY_OPENCLAW_STATE_DIR paths", () => {
+    const repoRoot = path.resolve(__dirname, "../..");
+    const discordBotRepo = path.resolve(__dirname, "..");
+    const fairyMemoryDir = path.resolve(repoRoot, "..", "dokobasho-fairy-openclaw", "memory");
+    const baseOpenClawEnv = {
+      FAIRY_RUNTIME_MODE: "openclaw",
+      OPENCLAW_API_URL: "https://openclaw.example/run",
+      OPENCLAW_API_KEY: "key",
+      GUILD_ID: "guild_1",
+      FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS: "1094907178671939654",
+    };
+
+    expect(() => resolveOpenClawStateDir({ FAIRY_OPENCLAW_STATE_DIR: "relative/state" })).toThrow(
+      "absolute path required"
+    );
+    expect(() =>
+      createOpenClawRuntimeConfig({ ...baseOpenClawEnv, FAIRY_OPENCLAW_STATE_DIR: "relative/state" })
+    ).toThrow("absolute path required");
+    expect(() => resolveOpenClawStateDir({ FAIRY_OPENCLAW_STATE_DIR: "   " })).toThrow("absolute path required");
+    expect(() => resolveOpenClawStateDir({ FAIRY_OPENCLAW_STATE_DIR: path.join(repoRoot, "runtime-state") })).toThrow(
+      "outside git-tracked runtime paths"
+    );
+    expect(() =>
+      resolveOpenClawStateDir({ FAIRY_OPENCLAW_STATE_DIR: path.join(discordBotRepo, "runtime-state") })
+    ).toThrow("outside git-tracked runtime paths");
+    expect(() => resolveOpenClawStateDir({ FAIRY_OPENCLAW_STATE_DIR: path.join(fairyMemoryDir, "state") })).toThrow(
+      "outside git-tracked runtime paths"
+    );
+  });
+
+  it("allows default and absolute tmp OpenClaw state dirs", () => {
+    const tmpStateDir = path.join(os.tmpdir(), "fairy-openclaw-state-allowed");
+
+    expect(resolveOpenClawStateDir({})).toBe(DEFAULT_OPENCLAW_STATE_DIR);
+    expect(resolveOpenClawStateDir({ FAIRY_OPENCLAW_STATE_DIR: `${tmpStateDir}/../fairy-openclaw-state-allowed` }))
+      .toBe(tmpStateDir);
   });
 
   it("builds minimal OpenClaw payload for verified sandbox channel", () => {
@@ -75,6 +153,9 @@ describe("fairy OpenClaw runtime", () => {
       name: "妖精さんより",
       type: "sandbox",
       registered: true,
+      thread_id: "",
+      parent_channel_id: "",
+      category_id: "",
     });
     expect(payload.message.content).toBe("相談したいです");
     expect(payload.context.recent_messages).toEqual([
@@ -114,7 +195,210 @@ describe("fairy OpenClaw runtime", () => {
       name: "はじまりの酒場",
       type: "chat",
       registered: true,
+      thread_id: "",
+      parent_channel_id: "",
+      category_id: "",
     });
+  });
+
+  it("rejects allowlisted channels unless they are verified registry entries", () => {
+    const baseEnv = {
+      FAIRY_RUNTIME_MODE: "openclaw",
+      OPENCLAW_API_URL: "https://openclaw.example/run",
+      OPENCLAW_API_KEY: "key",
+      GUILD_ID: "guild_1",
+    };
+
+    expect(() =>
+      createOpenClawRuntimeConfig({
+        ...baseEnv,
+        FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS: "999999999999999999",
+      })
+    ).toThrow("999999999999999999");
+
+    expect(() =>
+      createOpenClawRuntimeConfig({
+        ...baseEnv,
+        FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS: "1311647968113332275",
+      })
+    ).toThrow("1311647968113332275");
+
+    expect(() =>
+      createOpenClawRuntimeConfig({
+        ...baseEnv,
+        FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS: "841686630271418429",
+      })
+    ).toThrow("841686630271418429");
+  });
+
+  it("rejects default project and ops allowlist entries until explicitly verified", () => {
+    const baseEnv = {
+      FAIRY_RUNTIME_MODE: "openclaw",
+      OPENCLAW_API_URL: "https://openclaw.example/run",
+      OPENCLAW_API_KEY: "key",
+      GUILD_ID: "guild_1",
+    };
+
+    expect(DEFAULT_CHANNEL_REGISTRY["1465296404455882860"].status).toBe("pending");
+    expect(DEFAULT_CHANNEL_REGISTRY["840827137451229208"].status).toBe("known");
+
+    expect(() =>
+      createOpenClawRuntimeConfig({
+        ...baseEnv,
+        FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS: "1094907178671939654,1465296404455882860",
+      })
+    ).toThrow("1465296404455882860");
+
+    expect(() =>
+      createOpenClawRuntimeConfig({
+        ...baseEnv,
+        FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS: "1094907178671939654,840827137451229208",
+      })
+    ).toThrow("840827137451229208");
+
+    expect(
+      createOpenClawRuntimeConfig({
+        ...baseEnv,
+        FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS: "1094907178671939654,1465296404455882860",
+        FAIRY_OPENCLAW_CHANNEL_REGISTRY_JSON:
+          '{"1465296404455882860":{"name":"vostok-vol02-general","type":"project","status":"verified"}}',
+      }).channelRegistry["1465296404455882860"].status
+    ).toBe("verified");
+  });
+
+  it("keeps idea board known but unregistered until verified", () => {
+    const allowedChannelIds = new Set(["1311647968113332275"]);
+    const payload = buildOpenClawPayload({
+      eventType: "message_create",
+      guildId: "840827137451229205",
+      channel: { id: "1311647968113332275", name: "アイデアボード" },
+      message: {
+        id: "msg_board_pending",
+        author: { id: "user_1", username: "user" },
+        channel: { id: "1311647968113332275", name: "アイデアボード" },
+        createdAt: new Date("2026-05-04T10:00:00.000Z"),
+        mentions: { everyone: false, roles: { map: () => [] } },
+        attachments: [],
+      },
+      content: "ボード投稿です",
+      allowedChannelIds,
+    });
+
+    expect(DEFAULT_CHANNEL_REGISTRY["1311647968113332275"]).toEqual({
+      name: "アイデアボード",
+      type: "board",
+      status: "pending",
+    });
+    expect(payload.channel).toEqual({
+      id: "1311647968113332275",
+      name: "アイデアボード",
+      type: "unknown",
+      registered: false,
+      thread_id: "",
+      parent_channel_id: "",
+      category_id: "",
+    });
+  });
+
+  it("sends verified idea board payloads as board type", () => {
+    const channelRegistry = loadOpenClawChannelRegistry({
+      channelRegistry: {
+        "1311647968113332275": { name: "アイデアボード", type: "board", status: "verified" },
+      },
+    });
+    const allowedChannelIds = new Set(["1311647968113332275"]);
+    const payload = buildOpenClawPayload({
+      eventType: "message_create",
+      guildId: "840827137451229205",
+      channel: { id: "1311647968113332275", name: "アイデアボード" },
+      message: {
+        id: "msg_board_verified",
+        author: { id: "user_1", username: "user" },
+        channel: { id: "1311647968113332275", name: "アイデアボード" },
+        createdAt: new Date("2026-05-04T10:00:00.000Z"),
+        mentions: { everyone: false, roles: { map: () => [] } },
+        attachments: [],
+      },
+      content: "ボード投稿です",
+      allowedChannelIds,
+      channelRegistry,
+    });
+
+    expect(payload.channel).toEqual({
+      id: "1311647968113332275",
+      name: "アイデアボード",
+      type: "board",
+      registered: true,
+      thread_id: "",
+      parent_channel_id: "",
+      category_id: "",
+    });
+  });
+
+  it("adds thread, parent channel, and category metadata to thread payloads", () => {
+    const allowedChannelIds = new Set(["1094907178671939654"]);
+    const parentChannel = { id: "1094907178671939654", name: "妖精さんより", parentId: "840827137451229205" };
+    const threadChannel = {
+      id: "123456789012345678",
+      name: "相談スレッド",
+      isThread: () => true,
+      parentId: "1094907178671939654",
+      parent: parentChannel,
+    };
+    const payload = buildOpenClawPayload({
+      eventType: "message_create",
+      guildId: "840827137451229205",
+      channel: { id: "1094907178671939654", name: "妖精さんより" },
+      message: {
+        id: "msg_thread",
+        author: { id: "user_1", username: "user" },
+        channel: threadChannel,
+        createdAt: new Date("2026-05-04T10:00:00.000Z"),
+        mentions: { everyone: false, roles: { map: () => [] } },
+        attachments: [],
+      },
+      content: "スレッドからです",
+      allowedChannelIds,
+    });
+
+    expect(payload.channel).toEqual({
+      id: "1094907178671939654",
+      name: "相談スレッド",
+      type: "sandbox",
+      registered: true,
+      thread_id: "123456789012345678",
+      parent_channel_id: "1094907178671939654",
+      category_id: "840827137451229205",
+    });
+  });
+
+  it("keeps creation type resolvable only through custom verified registry", () => {
+    const channelRegistry = loadOpenClawChannelRegistry({
+      channelRegistry: {
+        "841686630271418429": { name: "らくがきちょう", type: "creation", status: "verified" },
+      },
+    });
+    const allowedChannelIds = new Set(["841686630271418429"]);
+    const payload = buildOpenClawPayload({
+      eventType: "message_create",
+      guildId: "840827137451229205",
+      channel: { id: "841686630271418429", name: "らくがきちょう" },
+      message: {
+        id: "msg_creation",
+        author: { id: "user_1", username: "user" },
+        channel: { id: "841686630271418429", name: "らくがきちょう" },
+        createdAt: new Date("2026-05-04T10:00:00.000Z"),
+        mentions: { everyone: false, roles: { map: () => [] } },
+        attachments: [],
+      },
+      content: "作成メモです",
+      allowedChannelIds,
+      channelRegistry,
+    });
+
+    expect(DEFAULT_CHANNEL_REGISTRY["841686630271418429"].status).toBe("known");
+    expect(payload.channel.type).toBe("creation");
+    expect(payload.channel.registered).toBe(true);
   });
 
   it("excludes the current message itself from active thread age calculation", () => {
@@ -176,6 +460,472 @@ describe("fairy OpenClaw runtime", () => {
     expect(build("明日10:00にこの確認の続きを思い出したいです")).toBe(true);
     expect(build("あとで声かけてください")).toBe(true);
     expect(build("明日という単語を含む雑談です。約束や確認予定にはしないで、短く返してください。")).toBe(false);
+  });
+
+  it("validates OpenClaw followup candidates without keeping raw response noise", () => {
+    const response = validateOpenClawResponse({
+      schema_version: 1,
+      action: "reply",
+      body: "承知しました",
+      followup_candidates: [
+        { summary: "進捗確認", due_at: "2026-05-05T10:00:00.000Z", notes: "軽く確認" },
+        { summary: "日時なし" },
+        "invalid",
+      ],
+    });
+
+    expect(response.followup_candidates).toEqual([
+      { summary: "進捗確認", due_at: "2026-05-05T10:00:00.000Z", notes: "軽く確認" },
+    ]);
+    expect(response.checked_followup_ids).toEqual([]);
+    expect(response.closed_followup_ids).toEqual([]);
+    expect(normalizeFollowupCandidates(null)).toEqual([]);
+  });
+
+  it("does not persist unsafe followup summary or notes", async () => {
+    const stateDir = await createTmpStateDir();
+    const stateStore = createOpenClawStateStore({
+      stateDir,
+      idFactory: () => "followup_safe",
+      now: () => "2026-05-04T10:00:00.000Z",
+    });
+
+    const additions = await stateStore.addFollowupCandidates({
+      metadata: {
+        channel_id: "1094907178671939654",
+        channel_type: "sandbox",
+        source_message_id: "source_1",
+        requested_by_member_id: "user_1",
+        has_promised_followup: true,
+      },
+      candidates: [
+        { summary: "確認 https://example.com/raw", due_at: "2026-05-05T10:00:00.000Z" },
+        { summary: "安全な確認", due_at: "2026-05-05T11:00:00.000Z", notes: "token=abc123secret" },
+        { summary: "長".repeat(201), due_at: "2026-05-05T12:00:00.000Z" },
+      ],
+    });
+
+    const state = JSON.parse(await fs.readFile(path.join(stateDir, "followups.json"), "utf8"));
+    expect(additions).toHaveLength(1);
+    expect(state.followups).toEqual([
+      expect.objectContaining({
+        summary: "安全な確認",
+        notes: "",
+      }),
+    ]);
+    expect(JSON.stringify(state)).not.toContain("https://example.com/raw");
+    expect(JSON.stringify(state)).not.toContain("token=abc123secret");
+    expect(JSON.stringify(state)).not.toContain("長".repeat(201));
+  });
+
+  it("normalizes followup state to the persisted whitelist schema", async () => {
+    const stateDir = await createTmpStateDir();
+    const stateStore = createOpenClawStateStore({ stateDir });
+
+    await stateStore.writeFollowupState({
+      followups: [
+        {
+          id: "followup_whitelist",
+          status: "open",
+          channel_id: "1094907178671939654",
+          channel_type: "sandbox",
+          source_message_id: "source_1",
+          requested_by_member_id: "user_1",
+          summary: "確認する",
+          due_at: "2026-05-05T10:00:00.000Z",
+          created_at: "",
+          last_checked_at: undefined,
+          closed_at: null,
+          notes: "短いメモ",
+          content: "raw Discord content should be dropped",
+          arbitrary_key: "drop me",
+        },
+      ],
+    });
+
+    const state = JSON.parse(await fs.readFile(path.join(stateDir, "followups.json"), "utf8"));
+    expect(Object.keys(state.followups[0])).toEqual([
+      "id",
+      "status",
+      "channel_id",
+      "channel_type",
+      "source_message_id",
+      "requested_by_member_id",
+      "summary",
+      "due_at",
+      "created_at",
+      "last_checked_at",
+      "closed_at",
+      "notes",
+    ]);
+    expect(state.followups[0]).toEqual({
+      id: "followup_whitelist",
+      status: "open",
+      channel_id: "1094907178671939654",
+      channel_type: "sandbox",
+      source_message_id: "source_1",
+      requested_by_member_id: "user_1",
+      summary: "確認する",
+      due_at: "2026-05-05T10:00:00.000Z",
+      created_at: null,
+      last_checked_at: null,
+      closed_at: null,
+      notes: "短いメモ",
+    });
+    expect(JSON.stringify(state)).not.toContain("raw Discord content should be dropped");
+    expect(JSON.stringify(state)).not.toContain("arbitrary_key");
+  });
+
+  it("writes heartbeat state with the docs runtime schema only", async () => {
+    const stateDir = await createTmpStateDir();
+    const stateStore = createOpenClawStateStore({ stateDir });
+
+    await stateStore.writeHeartbeatState({
+      last_payload_at: "2026-05-04T10:00:00.000Z",
+      last_request_id: "req_raw",
+      updated_at: "2026-05-04T10:00:01.000Z",
+      lastChecks: {
+        server_flow: "",
+        memory_maintenance: null,
+        followups: "2026-05-04T10:00:00.000Z",
+      },
+    });
+
+    const state = JSON.parse(await fs.readFile(path.join(stateDir, "heartbeat-state.json"), "utf8"));
+    expect(state).toEqual({
+      schema_version: 1,
+      lastChecks: {
+        server_flow: null,
+        memory_maintenance: null,
+        followups: "2026-05-04T10:00:00.000Z",
+      },
+    });
+    expect(JSON.stringify(state)).not.toContain("last_payload_at");
+    expect(JSON.stringify(state)).not.toContain("last_request_id");
+    expect(JSON.stringify(state)).not.toContain("updated_at");
+  });
+
+  it("saves response followup candidates only for explicit followup context", async () => {
+    const stateDir = await createTmpStateDir();
+    const stateStore = createOpenClawStateStore({
+      stateDir,
+      idFactory: () => "followup_1",
+      now: () => "2026-05-04T10:00:00.000Z",
+    });
+    const addFollowupCandidatesSpy = jest.spyOn(stateStore, "addFollowupCandidates");
+    const openClawClient = {
+      execute: jest.fn().mockResolvedValue({
+        schema_version: 1,
+        action: "reply",
+        body: "明日確認します",
+        requires_approval: false,
+        followup_candidates: [
+          { summary: "進捗を確認", due_at: "2026-05-05T10:00:00.000Z", notes: "短く聞く" },
+        ],
+      }),
+    };
+    const handler = createOpenClawMessageHandler({
+      openClawClient,
+      allowedChannelIds: ["1094907178671939654"],
+      guildId: "840827137451229205",
+      stateStore,
+      contextEntriesSource: async () => [],
+      requestIdFactory: () => "req_followup_save",
+    });
+    const message = {
+      id: "msg_followup_save",
+      content: "<@bot_1> 明日10:00に進捗確認して",
+      channelId: "1094907178671939654",
+      guildId: "840827137451229205",
+      createdAt: new Date("2026-05-04T09:00:00.000Z"),
+      author: { id: "user_1", bot: false, username: "user" },
+      client: { user: { id: "bot_1" } },
+      channel: { id: "1094907178671939654", name: "妖精さんより", sendTyping: jest.fn().mockResolvedValue(undefined) },
+      mentions: { everyone: false, roles: { map: () => [] } },
+      attachments: [],
+      reply: jest.fn().mockResolvedValue({ id: "reply_followup_save" }),
+    };
+
+    await handler(message, { messageTriggerSource: "mention" });
+
+    expect(addFollowupCandidatesSpy).toHaveBeenCalledWith({
+      metadata: {
+        channel_id: "1094907178671939654",
+        channel_type: "sandbox",
+        source_message_id: "msg_followup_save",
+        requested_by_member_id: "user_1",
+        has_promised_followup: true,
+      },
+      candidates: [{ summary: "進捗を確認", due_at: "2026-05-05T10:00:00.000Z", notes: "短く聞く" }],
+    });
+    expect(JSON.stringify(addFollowupCandidatesSpy.mock.calls[0][0])).not.toContain("明日10:00に進捗確認して");
+    const state = JSON.parse(await fs.readFile(path.join(stateDir, "followups.json"), "utf8"));
+    expect(state.followups).toEqual([
+      expect.objectContaining({
+        id: "followup_1",
+        channel_id: "1094907178671939654",
+        channel_type: "sandbox",
+        source_message_id: "msg_followup_save",
+        requested_by_member_id: "user_1",
+        summary: "進捗を確認",
+        due_at: "2026-05-05T10:00:00.000Z",
+        status: "open",
+        notes: "短く聞く",
+      }),
+    ]);
+    expect(JSON.stringify(state)).not.toContain("明日10:00に進捗確認して");
+    expect(JSON.parse(await fs.readFile(path.join(stateDir, "heartbeat-state.json"), "utf8"))).toEqual({
+      schema_version: 1,
+      lastChecks: {
+        server_flow: null,
+        memory_maintenance: null,
+        followups: expect.any(String),
+      },
+    });
+    await expect(fs.access(path.join(__dirname, "..", "memory", "followups.json"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("does not save followup candidates for casual tomorrow talk", async () => {
+    const stateDir = await createTmpStateDir();
+    const stateStore = createOpenClawStateStore({
+      stateDir,
+      idFactory: () => "followup_casual",
+      now: () => "2026-05-04T10:00:00.000Z",
+    });
+    const openClawClient = {
+      execute: jest.fn().mockResolvedValue({
+        schema_version: 1,
+        action: "reply",
+        body: "そうですね",
+        requires_approval: false,
+        followup_candidates: [{ summary: "雑談候補", due_at: "2026-05-05T10:00:00.000Z" }],
+      }),
+    };
+    const handler = createOpenClawMessageHandler({
+      openClawClient,
+      allowedChannelIds: ["1094907178671939654"],
+      guildId: "840827137451229205",
+      stateStore,
+      contextEntriesSource: async () => [],
+      requestIdFactory: () => "req_followup_casual",
+    });
+    const message = {
+      id: "msg_followup_casual",
+      content: "<@bot_1> 明日は晴れるかな",
+      channelId: "1094907178671939654",
+      guildId: "840827137451229205",
+      createdAt: new Date("2026-05-04T09:00:00.000Z"),
+      author: { id: "user_1", bot: false, username: "user" },
+      client: { user: { id: "bot_1" } },
+      channel: { id: "1094907178671939654", name: "妖精さんより", sendTyping: jest.fn().mockResolvedValue(undefined) },
+      mentions: { everyone: false, roles: { map: () => [] } },
+      attachments: [],
+      reply: jest.fn().mockResolvedValue({ id: "reply_followup_casual" }),
+    };
+
+    await handler(message, { messageTriggerSource: "mention" });
+
+    await expect(fs.access(path.join(stateDir, "followups.json"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("adds due open followup ids to the next OpenClaw payload", async () => {
+    const stateDir = await createTmpStateDir();
+    const stateStore = createOpenClawStateStore({
+      stateDir,
+      now: () => "2026-05-05T10:30:00.000Z",
+    });
+    await stateStore.writeFollowupState({
+      followups: [
+        {
+          id: "due_1",
+          channel_id: "1094907178671939654",
+          channel_type: "sandbox",
+          source_message_id: "source_1",
+          requested_by_member_id: "user_1",
+          summary: "進捗を確認",
+          due_at: "2026-05-03T10:00:00.000Z",
+          created_at: "2026-05-04T10:00:00.000Z",
+          status: "open",
+          last_checked_at: null,
+          closed_at: null,
+          notes: "",
+        },
+      ],
+    });
+    const openClawClient = {
+      execute: jest.fn().mockResolvedValue({
+        schema_version: 1,
+        action: "observe",
+        body: "",
+        requires_approval: false,
+      }),
+    };
+    const handler = createOpenClawMessageHandler({
+      openClawClient,
+      allowedChannelIds: ["1094907178671939654"],
+      guildId: "840827137451229205",
+      stateStore,
+      contextEntriesSource: async () => [],
+      requestIdFactory: () => "req_due_payload",
+    });
+    const message = {
+      id: "msg_due_payload",
+      content: "<@bot_1> 確認ある？",
+      channelId: "1094907178671939654",
+      guildId: "840827137451229205",
+      createdAt: new Date("2026-05-05T10:30:00.000Z"),
+      author: { id: "user_1", bot: false, username: "user" },
+      client: { user: { id: "bot_1" } },
+      channel: { id: "1094907178671939654", name: "妖精さんより", sendTyping: jest.fn().mockResolvedValue(undefined) },
+      mentions: { everyone: false, roles: { map: () => [] } },
+      attachments: [],
+      reply: jest.fn(),
+    };
+
+    const result = await handler(message, { messageTriggerSource: "mention" });
+
+    expect(result.payload.context.matched_followup_ids).toEqual(["due_1"]);
+    expect(openClawClient.execute.mock.calls[0][0].context.matched_followup_ids).toEqual(["due_1"]);
+  });
+
+  it("updates checked and closed followups without storing raw Discord content", async () => {
+    const stateDir = await createTmpStateDir();
+    const stateStore = createOpenClawStateStore({
+      stateDir,
+      now: () => "2026-05-05T10:30:00.000Z",
+    });
+    await stateStore.writeFollowupState({
+      followups: [
+        {
+          id: "due_1",
+          channel_id: "1094907178671939654",
+          channel_type: "sandbox",
+          source_message_id: "source_1",
+          requested_by_member_id: "user_1",
+          summary: "進捗を確認",
+          due_at: "2026-05-05T10:00:00.000Z",
+          created_at: "2026-05-04T10:00:00.000Z",
+          status: "open",
+          last_checked_at: null,
+          closed_at: null,
+          notes: "",
+        },
+      ],
+    });
+
+    const checked = await stateStore.markFollowupsChecked("due_1", {
+      checkedAt: "2026-05-05T10:31:00.000Z",
+      notes: "確認済み",
+    });
+    const closed = await stateStore.closeFollowups("due_1", {
+      closedAt: "2026-05-05T10:40:00.000Z",
+      notes: "不要になった",
+    });
+
+    const state = await stateStore.readFollowupState();
+    expect(checked[0]).toEqual(expect.objectContaining({ status: "checked" }));
+    expect(closed[0]).toEqual(expect.objectContaining({ status: "closed" }));
+    expect(state.followups[0]).toEqual(
+      expect.objectContaining({
+        status: "closed",
+        last_checked_at: "2026-05-05T10:31:00.000Z",
+        closed_at: "2026-05-05T10:40:00.000Z",
+        notes: "不要になった",
+      })
+    );
+    expect(JSON.stringify(state)).not.toContain("Discord raw");
+  });
+
+  it("applies checked and closed followup ids from OpenClaw response", async () => {
+    const stateDir = await createTmpStateDir();
+    const stateStore = createOpenClawStateStore({
+      stateDir,
+      now: () => "2026-05-05T10:30:00.000Z",
+    });
+    await stateStore.writeFollowupState({
+      followups: [
+        {
+          id: "checked_1",
+          channel_id: "1094907178671939654",
+          channel_type: "sandbox",
+          source_message_id: "source_checked",
+          requested_by_member_id: "user_1",
+          summary: "確認する",
+          due_at: "2026-05-05T10:00:00.000Z",
+          created_at: "2026-05-04T10:00:00.000Z",
+          status: "open",
+          last_checked_at: null,
+          closed_at: null,
+          notes: "",
+        },
+        {
+          id: "closed_1",
+          channel_id: "1094907178671939654",
+          channel_type: "sandbox",
+          source_message_id: "source_closed",
+          requested_by_member_id: "user_1",
+          summary: "閉じる",
+          due_at: "2026-05-05T10:00:00.000Z",
+          created_at: "2026-05-04T10:00:00.000Z",
+          status: "open",
+          last_checked_at: null,
+          closed_at: null,
+          notes: "",
+        },
+      ],
+    });
+    const openClawClient = {
+      execute: jest.fn().mockResolvedValue({
+        schema_version: 1,
+        action: "observe",
+        body: "",
+        requires_approval: false,
+        checked_followup_ids: ["checked_1"],
+        closed_followup_ids: ["closed_1"],
+      }),
+    };
+    const handler = createOpenClawMessageHandler({
+      openClawClient,
+      allowedChannelIds: ["1094907178671939654"],
+      guildId: "840827137451229205",
+      stateStore,
+      contextEntriesSource: async () => [],
+      requestIdFactory: () => "req_followup_transition",
+    });
+    const message = {
+      id: "msg_followup_transition",
+      content: "<@bot_1> 確認したよ",
+      channelId: "1094907178671939654",
+      guildId: "840827137451229205",
+      createdAt: new Date("2026-05-05T10:30:00.000Z"),
+      author: { id: "user_1", bot: false, username: "user" },
+      client: { user: { id: "bot_1" } },
+      channel: { id: "1094907178671939654", name: "妖精さんより", sendTyping: jest.fn().mockResolvedValue(undefined) },
+      mentions: { everyone: false, roles: { map: () => [] } },
+      attachments: [],
+      reply: jest.fn(),
+    };
+
+    await handler(message, { messageTriggerSource: "mention" });
+
+    const state = await stateStore.readFollowupState();
+    expect(state.followups).toEqual([
+      expect.objectContaining({
+        id: "checked_1",
+        status: "checked",
+        last_checked_at: "2026-05-05T10:30:00.000Z",
+        closed_at: null,
+      }),
+      expect.objectContaining({
+        id: "closed_1",
+        status: "closed",
+        last_checked_at: null,
+        closed_at: "2026-05-05T10:30:00.000Z",
+      }),
+    ]);
+    expect(message.reply).not.toHaveBeenCalled();
   });
 
   it("posts OpenClaw response with empty allowed mentions", async () => {
