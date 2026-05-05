@@ -10,7 +10,7 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 APP_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 LOCK_DIR="${RUNTIME_INSTALL_LOCK_DIR:-$APP_DIR/.runtime-install.lock}"
 STAMP_FILE="${RUNTIME_INSTALL_STAMP_FILE:-$APP_DIR/.runtime-install.stamp}"
-LOCK_STALE_MINUTES="${RUNTIME_INSTALL_LOCK_STALE_MINUTES:-10}"
+LOCK_STALE_MINUTES="${RUNTIME_INSTALL_LOCK_STALE_MINUTES:-2}"
 
 cleanup() {
   rmdir "$LOCK_DIR" 2>/dev/null || true
