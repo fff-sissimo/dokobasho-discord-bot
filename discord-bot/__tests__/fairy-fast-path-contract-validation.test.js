@@ -1,6 +1,6 @@
 const {
   assertSlowPathJobPayloadContract: assertRealSlowPathPayloadContract,
-} = require("@fff-sissimo/fairy-core/slow-path-payload");
+} = require("../src/slow-path-payload-contract");
 
 const loadFastPathWithAdapter = (assertImpl) => {
   jest.resetModules();

@@ -3,20 +3,21 @@ const path = require("node:path");
 
 const readmePath = path.resolve(__dirname, "..", "..", "README.md");
 
-describe("fairy-core rollout runbook contract", () => {
-  it("README に NODE_AUTH_TOKEN 設定と反映手順を持つ", () => {
+describe("fairy runtime rollout runbook contract", () => {
+  it("README に private package 非依存と反映手順を持つ", () => {
     const readme = fs.readFileSync(readmePath, "utf8");
     expect(readme).toContain("NODE_AUTH_TOKEN");
+    expect(readme).toContain("runtime 起動には不要");
     expect(readme).toContain("npm ci");
-    expect(readme).toContain("@fff-sissimo/fairy-core");
+    expect(readme).toContain("local slow-path contract");
     expect(readme).toContain("schema v3");
     expect(readme).toContain("reply_antecedent_entry");
   });
 
-  it("README に1 versionロールバック手順を持つ", () => {
+  it("README に verified commit ロールバック手順を持つ", () => {
     const readme = fs.readFileSync(readmePath, "utf8");
     expect(readme).toContain("ロールバック");
-    expect(readme).toContain("1 version");
+    expect(readme).toContain("直前の verified commit");
     expect(readme).toContain("再起動");
   });
 });

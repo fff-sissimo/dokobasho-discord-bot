@@ -13,7 +13,6 @@
     "test": "jest --coverage"
   },
   "dependencies": {
-    "@fff-sissimo/fairy-core": "2.0.0",
     "chrono-node": "^2.9.0",
     "date-fns": "^4.1.0",
     "discord.js": "^14.14.1",

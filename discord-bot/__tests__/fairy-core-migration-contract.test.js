@@ -2,25 +2,20 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const packageJsonPath = path.resolve(__dirname, "..", "package.json");
-const npmrcPath = path.resolve(__dirname, "..", ".npmrc");
+const localSlowPathContractPath = path.resolve(__dirname, "..", "src", "slow-path-payload-contract.js");
 
 describe("fairy-core migration contract", () => {
-  it("@fff-sissimo/fairy-core を固定versionで通常依存する", () => {
+  it("runtime は private fairy-core package install に依存しない", () => {
     const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
-    const version = packageJson.dependencies && packageJson.dependencies["@fff-sissimo/fairy-core"];
-    expect(typeof version).toBe("string");
-    expect(version).toMatch(/^\d+\.\d+\.\d+$/);
-    expect(version).toBe("2.0.0");
-    expect(version.startsWith("^")).toBe(false);
-    expect(version.startsWith("~")).toBe(false);
+    expect(packageJson.dependencies?.["@fff-sissimo/fairy-core"]).toBeUndefined();
     expect(packageJson.optionalDependencies?.["@fff-sissimo/fairy-core"]).toBeUndefined();
   });
 
-  it(".npmrc が NODE_AUTH_TOKEN を環境変数参照する", () => {
-    expect(fs.existsSync(npmrcPath)).toBe(true);
-    const npmrc = fs.readFileSync(npmrcPath, "utf8");
-    expect(npmrc).toContain("@fff-sissimo:registry=https://npm.pkg.github.com");
-    expect(npmrc).toContain("//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}");
-    expect(npmrc).not.toMatch(/_authToken=(?!\$\{NODE_AUTH_TOKEN\})\S+/);
+  it("local slow-path contract が schema v3 を正本として提供する", () => {
+    expect(fs.existsSync(localSlowPathContractPath)).toBe(true);
+    const contract = require(localSlowPathContractPath);
+    expect(contract.SLOW_PATH_PAYLOAD_SCHEMA_VERSION).toBe("3");
+    expect(contract.SLOW_PATH_TRIGGER_SOURCES).toEqual(["slash_command", "mention", "reply"]);
+    expect(typeof contract.assertSlowPathJobPayloadContract).toBe("function");
   });
 });

@@ -8,7 +8,7 @@ Discord上で動作する多機能ボット。リマインダー機能と `/fair
 - **Fast Path 機能**: `/fairy` コマンド、Botへのメンション、Botへの返信で一次回答を返し、n8n slow-path に処理を引き継ぎます。
   - 一次回答は、これからどう進めるかを口語で簡潔に伝えます。
   - slow-path payload には `first_reply_message_id` を含めるため、n8n 側で最終回答時に一次回答を削除する運用が可能です。
-  - 一次回答生成と slow-path payload 生成は `@fff-sissimo/fairy-core` 実装を利用します（ローカルフォールバックなし）。
+  - 一次回答生成と slow-path payload contract は repo 内の local 実装を利用します。Hostinger runtime は private package install に依存しません。
 - **n8n連携**: メンションや返信に反応して、指定したn8nのWebhookに情報を送信します（`FAIRY_ENABLE_MESSAGE_TRIGGER=false` の場合）。
 
 ## 開発環境のセットアップ
@@ -23,9 +23,7 @@ Discord上で動作する多機能ボット。リマインダー機能と `/fair
     ```bash
     npm install
     ```
-    `@fff-sissimo/fairy-core` は GitHub Packages から取得するため、インストール前に `NODE_AUTH_TOKEN` を環境変数へ設定してください。
-    `discord-bot/.npmrc` は `//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}` を参照します。トークンの平文を `.npmrc` へ直接書かないでください。
-    `NODE_AUTH_TOKEN` が未設定または無効で package を取得できない場合、bot は起動できません。先に認証情報を設定してください。
+    private package は runtime dependency ではありません。`NODE_AUTH_TOKEN` が未設定または無効でも bot は起動できます。
 
 3.  **環境変数を設定:**
     `discord-bot` ディレクトリにある `.env_example` をコピーして `.env` ファイルを作成します。
@@ -48,7 +46,7 @@ Discord上で動作する多機能ボット。リマインダー機能と `/fair
     - `N8N_SLOW_PATH_WEBHOOK_PATH`: (任意) slow-path Webhook path。未指定時 `/webhook/fairy-slow-path`。
     - `N8N_SLOW_PATH_TIMEOUT_MS`: (任意) slow-path Webhook timeout(ms)。未指定時 `8000`。
     - `OPENAI_API_KEY`: (任意) `/fairy` 一次回答を AI 生成するための API キー。未設定時はフォールバック文を返します。
-    - `NODE_AUTH_TOKEN`: GitHub Packages から `@fff-sissimo/fairy-core` を取得するための token（Hostinger 環境変数で設定）。
+    - `NODE_AUTH_TOKEN`: (任意) GitHub Packages を使う開発・検証時だけ設定します。通常 runtime 起動には不要です。
     - `FIRST_REPLY_AI_MODEL`: (任意) 一次回答用モデル。未指定時 `o4-mini`。
     - `FIRST_REPLY_AI_TIMEOUT_MS`: (任意) 一次回答生成タイムアウト(ms)。未指定時 `5000`。
     - `OPENAI_BASE_URL`: (任意) OpenAI API base URL。未指定時 `https://api.openai.com`。
@@ -148,17 +146,15 @@ Discord上で動作する多機能ボット。リマインダー機能と `/fair
     親AI などの読取側は `http://discord-bot:${PERMANENT_MEMORY_SYNC_PORT}${PERMANENT_MEMORY_READ_PATH}?tail_chars=4000`
     を `GET` し、必要に応じて同じ `x-permanent-sync-token` ヘッダーを付与してください。
 
-### fairy-core 本番反映手順
+### fairy runtime 本番反映手順
 
-`@fff-sissimo/fairy-core` を更新して反映する場合は、以下の順で実施します。
+`/fairy` と OpenClaw runtime を更新して反映する場合は、以下の順で実施します。
 
-1. `discord-bot/package.json` の `@fff-sissimo/fairy-core` version を更新する（固定 version）。
-2. Hostinger の環境変数に `NODE_AUTH_TOKEN` が設定されていることを確認する。
-3. `discord-bot` ディレクトリで `npm ci --omit=dev` を実行する。
-4. Hostinger の共有 volume 運用では `discord-bot/scripts/runtime-bootstrap.sh` を使い、`discord-bot` と `discord-scheduler` が同時に `npm ci` しないようにする。
-5. `docker compose up -d --no-deps --force-recreate discord-bot discord-scheduler` で再起動する。
-5. `/fairy` の一次回答と slow-path 連携をスモーク確認する。
-6. reminder の誤登録防止を確認する。
+1. `discord-bot` ディレクトリで `npm ci --omit=dev` を実行できることを確認する。
+2. Hostinger の共有 volume 運用では `discord-bot/scripts/runtime-bootstrap.sh` を使い、`discord-bot` と `discord-scheduler` が同時に `npm ci` しないようにする。
+3. `docker compose up -d --no-deps --force-recreate discord-bot discord-scheduler` で再起動する。
+4. `/fairy` の一次回答と slow-path 連携をスモーク確認する。
+5. reminder の誤登録防止を確認する。
    - `@どこばしょのようせい test` のような曖昧入力で、Bot の一次回答文が履歴候補として採用されないことを確認する。
    - 明示的な本文（例: `5分後に「洗濯物を取り込む」`）では従来どおり登録できることを確認する。
 
@@ -228,29 +224,23 @@ OpenClaw response の `followup_candidates` は、入力側 context が明示 fo
 - `context_entries` では `author_is_bot=true` の履歴が除外されること。
 - reminder 本文補完は依頼者 (`author_user_id == user_id`) の発言が優先されること。
 
-#### fairy-core v2.0.0 の移行確認項目（schema v3 / reply antecedent）
+#### local slow-path contract schema v3 の確認項目
 
 - slow-path payload の `schema_version` が `3` で送信されること。
-- `/fairy`・メンション・返信の一次回答は package 実装の acknowledgement 文面を使うこと。
+- `/fairy`・メンション・返信の一次回答は local 実装の acknowledgement 文面を使うこと。
 - reply / mention+reply 経路では、replied target semantics を `reply_antecedent_entry` として送信できること。
 - `reply_antecedent_entry` は `message_id`, `author_user_id`, `author_is_bot`, `content` を満たすこと。
 - worker 側が `schema_version=2|3` の dual-accept 期間で動作していることを確認してから切り替えること。
-- package 読み込みに失敗した場合、bot 全体を落とすのではなく fairy 機能だけが disable されることをログで確認すること。
 
-### fairy-core ロールバック手順
+### fairy runtime ロールバック手順
 
 障害時は次の手順でロールバックします。
 
-1. `discord-bot/package.json` の `@fff-sissimo/fairy-core` を **1 version** 前に戻す。
+1. 対象 branch を直前の verified commit へ戻す、または hotfix commit を revert する。
 2. `npm ci --omit=dev` を実行する。
 3. Hostinger の共有 volume 運用では `discord-bot/scripts/runtime-bootstrap.sh` を使い、`discord-bot` と `discord-scheduler` が同時に `npm ci` しないようにする。
 4. `docker compose up -d --no-deps --force-recreate discord-bot discord-scheduler` で再起動する。
 5. 復旧確認後、障害ログへ「原因・実施時刻・再発防止案」を記録する。
-
-#### fairy-core v2.0.0 からのロールバック補足
-
-- `schema_version=3` を送る bot を戻す前に、worker が `schema_version=2` を受け取れる状態であることを確認する。
-- `reply_antecedent_entry` を使った reminder / mention+reply canary を再実行し、旧系で誤解釈や enqueue failure が出ないことを確認する。
 
 ## 運用上の注意
 

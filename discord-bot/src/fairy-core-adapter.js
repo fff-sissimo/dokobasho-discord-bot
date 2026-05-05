@@ -6,11 +6,6 @@ const REQUIRED_FIRST_REPLY_EXPORTS = [
   "createOpenAiFirstReplyComposer",
 ];
 
-const REQUIRED_SLOW_PATH_EXPORTS = [
-  "SLOW_PATH_TRIGGER_SOURCES",
-  "assertSlowPathJobPayloadContract",
-];
-
 const defaultRequireImpl = (moduleName) => require(moduleName);
 
 const ensureFunctionExport = (module, name, moduleName) => {
@@ -20,14 +15,14 @@ const ensureFunctionExport = (module, name, moduleName) => {
 };
 
 const createFairyCoreAdapter = ({ requireImpl = defaultRequireImpl } = {}) => {
-  const firstReplyModule = requireImpl("@fff-sissimo/fairy-core/first-reply");
+  const firstReplyModule = requireImpl("./fairy-first-reply-ai");
   for (const name of REQUIRED_FIRST_REPLY_EXPORTS) {
-    ensureFunctionExport(firstReplyModule, name, "@fff-sissimo/fairy-core/first-reply");
+    ensureFunctionExport(firstReplyModule, name, "./fairy-first-reply-ai");
   }
 
-  const slowPathModule = requireImpl("@fff-sissimo/fairy-core/slow-path-payload");
+  const slowPathModule = requireImpl("./slow-path-payload-contract");
   if (!Array.isArray(slowPathModule && slowPathModule.SLOW_PATH_TRIGGER_SOURCES)) {
-    throw new Error("invalid fairy-core export: @fff-sissimo/fairy-core/slow-path-payload.SLOW_PATH_TRIGGER_SOURCES");
+    throw new Error("invalid fairy-core export: ./slow-path-payload-contract.SLOW_PATH_TRIGGER_SOURCES");
   }
   const schemaVersion =
     slowPathModule &&
@@ -36,12 +31,12 @@ const createFairyCoreAdapter = ({ requireImpl = defaultRequireImpl } = {}) => {
       ? slowPathModule.SLOW_PATH_PAYLOAD_SCHEMA_VERSION
       : null;
   if (!schemaVersion) {
-    throw new Error("invalid fairy-core export: @fff-sissimo/fairy-core/slow-path-payload.SLOW_PATH_PAYLOAD_SCHEMA_VERSION");
+    throw new Error("invalid fairy-core export: ./slow-path-payload-contract.SLOW_PATH_PAYLOAD_SCHEMA_VERSION");
   }
   ensureFunctionExport(
     slowPathModule,
     "assertSlowPathJobPayloadContract",
-    "@fff-sissimo/fairy-core/slow-path-payload"
+    "./slow-path-payload-contract"
   );
 
   return {
@@ -52,8 +47,8 @@ const createFairyCoreAdapter = ({ requireImpl = defaultRequireImpl } = {}) => {
     SLOW_PATH_PAYLOAD_SCHEMA_VERSION: schemaVersion,
     assertSlowPathJobPayloadContract: slowPathModule.assertSlowPathJobPayloadContract,
     source: {
-      firstReply: "package",
-      slowPath: "package",
+      firstReply: "local",
+      slowPath: "local",
     },
   };
 };
