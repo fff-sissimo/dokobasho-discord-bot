@@ -29,6 +29,10 @@ openclaw-state/
 Dockerfile
 docker-compose.yml.bak*
 
+# Hostinger server-local compose; keep the sanitized example tracked.
+hostinger/docker-compose.yml
+!hostinger/docker-compose.example.yml
+
 # discord-bot の Dockerfile だけは管理する
 !discord-bot/Dockerfile
 !openclaw-api/Dockerfile

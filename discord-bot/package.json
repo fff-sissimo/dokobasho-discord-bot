@@ -7,6 +7,9 @@
     "start": "node index.js",
     "deploy-commands": "node deploy-commands.js",
     "start-scheduler": "node scheduler.js",
+    "deploy:preflight": "node scripts/deploy-preflight.js",
+    "runtime:audit": "node scripts/runtime-audit.js",
+    "rollback:drill": "node scripts/rollback-drill.js",
     "test": "jest --coverage"
   },
   "dependencies": {

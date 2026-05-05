@@ -23,7 +23,7 @@ const DEFAULT_CHANNEL_REGISTRY = Object.freeze({
   "1094907178671939654": Object.freeze({ name: "妖精さんより", type: "sandbox", status: "verified" }),
   "840827137451229210": Object.freeze({ name: "はじまりの酒場", type: "chat", status: "verified" }),
   "841686630271418429": Object.freeze({ name: "らくがきちょう", type: "creation", status: "known" }),
-  "1311647968113332275": Object.freeze({ name: "アイデアボード", type: "board", status: "pending" }),
+  "1311647968113332275": Object.freeze({ name: "アイデアボード", type: "board", status: "verified" }),
   "1465296404455882860": Object.freeze({ name: "vostok-vol02-general", type: "project", status: "pending" }),
   "1465295987236143319": Object.freeze({ name: "vostok-vol02-pd", type: "project", status: "pending" }),
   "1465296093427531960": Object.freeze({ name: "vostok-vol02-music", type: "project", status: "pending" }),
@@ -32,9 +32,17 @@ const DEFAULT_CHANNEL_REGISTRY = Object.freeze({
   "840827137451229208": Object.freeze({ name: "更新・進行状況", type: "ops", status: "known" }),
   "852073750294822922": Object.freeze({ name: "管理用", type: "ops", status: "known" }),
 });
-const CHANNEL_REGISTRY_STATUSES = new Set(["verified", "pending", "known"]);
+const CHANNEL_REGISTRY_STATUSES = new Set(["verified", "pending", "known", "not-connected"]);
 const FOLLOWUP_STATUSES = new Set(["open", "checked", "closed"]);
 const FOLLOWUP_TEXT_MAX_LENGTH = 200;
+const FOLLOWUP_KINDS = new Set([
+  "explicit_request",
+  "agreed_todo",
+  "formal_quest",
+  "creation_continuation",
+  "test_only",
+]);
+const FOLLOWUP_BASES = new Set(["explicit_user_request", "agreed_in_thread", "due_followup", "unknown"]);
 
 const normalizeRuntimeMode = (raw) => {
   const value = String(raw || "n8n").trim().toLowerCase();
@@ -95,7 +103,9 @@ const normalizeChannelRegistryEntry = (id, entry) => {
   const name = String(entry.name || "").trim();
   const type = String(entry.type || "").trim();
   const status = String(
-    entry.status || (entry.verified === true ? "verified" : entry.verified === false ? "pending" : "")
+    entry.status ||
+      entry.registry_status ||
+      (entry.verified === true ? "verified" : entry.verified === false ? "pending" : "")
   ).trim();
   if (!name) throw new Error(`invalid OpenClaw channel registry name: ${id}`);
   if (!type) throw new Error(`invalid OpenClaw channel registry type: ${id}`);
@@ -127,12 +137,24 @@ const parseChannelRegistrySource = (raw) => {
   } catch (error) {
     throw new Error("invalid OpenClaw channel registry JSON");
   }
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && Array.isArray(parsed.channels)) {
+    return Object.fromEntries(
+      parsed.channels
+        .map((entry) => {
+          const id = String(entry && (entry.id || entry.channel_id) ? entry.id || entry.channel_id : "").trim();
+          return [id, entry];
+        })
+        .filter(([id]) => /^\d+$/.test(id))
+    );
+  }
   if (Array.isArray(parsed)) {
     return Object.fromEntries(
-      parsed.map((entry) => {
-        const id = String(entry && entry.id ? entry.id : "").trim();
-        return [id, entry];
-      })
+      parsed
+        .map((entry) => {
+          const id = String(entry && (entry.id || entry.channel_id) ? entry.id || entry.channel_id : "").trim();
+          return [id, entry];
+        })
+        .filter(([id]) => /^\d+$/.test(id))
     );
   }
   return parsed;
@@ -163,18 +185,27 @@ const assertAllowlistIsVerified = ({ allowedChannelIds, channelRegistry }) => {
   }
 };
 
+const resolveOpenClawApiUrl = (env = process.env) => {
+  const baseUrl = String(env.OPENCLAW_API_BASE_URL || "").trim();
+  const legacyUrl = String(env.OPENCLAW_API_URL || "").trim();
+  if (baseUrl && legacyUrl && baseUrl !== legacyUrl) {
+    throw new Error("conflicting OpenClaw API config: OPENCLAW_API_BASE_URL and OPENCLAW_API_URL differ");
+  }
+  return baseUrl || legacyUrl;
+};
+
 const createOpenClawRuntimeConfig = (env = process.env) => {
   const mode = normalizeRuntimeMode(env.FAIRY_RUNTIME_MODE);
   if (mode !== "openclaw") {
     return { mode };
   }
 
-  const apiUrl = String(env.OPENCLAW_API_URL || "").trim();
+  const apiUrl = resolveOpenClawApiUrl(env);
   const apiKey = String(env.OPENCLAW_API_KEY || "").trim();
   const guildId = String(env.GUILD_ID || env.DISCORD_GUILD_ID || "").trim();
   const allowedChannelIds = parseAllowedChannelIds(env.FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS);
   const missing = [];
-  if (!apiUrl) missing.push("OPENCLAW_API_URL");
+  if (!apiUrl) missing.push("OPENCLAW_API_BASE_URL");
   if (!apiKey) missing.push("OPENCLAW_API_KEY");
   if (!guildId) missing.push("GUILD_ID");
   if (allowedChannelIds.length === 0) missing.push("FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS");
@@ -228,16 +259,49 @@ const normalizeSafeFollowupText = (value) => {
 };
 
 const normalizeNullableIsoTimestamp = (value) => normalizeIsoTimestamp(value) || null;
+const hasOwn = (source, key) => Boolean(source && Object.prototype.hasOwnProperty.call(source, key));
+const pickOwn = (primary, key, fallback, fallbackKey = key) =>
+  hasOwn(primary, key) ? primary[key] : fallback && fallback[fallbackKey];
+const pickMetadataIdentifier = (metadata, snakeKey, candidate, camelKey) =>
+  hasOwn(metadata, snakeKey)
+    ? metadata[snakeKey]
+    : hasOwn(candidate, snakeKey)
+      ? candidate[snakeKey]
+      : candidate && candidate[camelKey];
+const normalizeSafeIdentifier = (value) => {
+  const text = String(value || "").trim();
+  if (!text || text.length > 80) return "";
+  if (!/^[A-Za-z0-9_.:-]+$/.test(text)) return "";
+  if (/https?:\/\//i.test(text)) return "";
+  if (/(?:api[_-]?key|token|secret|password|passwd|key)\s*[:=]/i.test(text)) return "";
+  if (/(?:bearer|basic)[_.:-]?[a-z0-9._~+/=-]{8,}/i.test(text)) return "";
+  return text;
+};
 
 const normalizeFollowupCandidates = (candidates) => {
   if (!Array.isArray(candidates)) return [];
   return candidates
     .filter((candidate) => candidate && typeof candidate === "object" && !Array.isArray(candidate))
-    .map((candidate) => ({
-      summary: normalizeSafeFollowupText(candidate.summary || candidate.title || candidate.label),
-      due_at: normalizeIsoTimestamp(candidate.due_at || candidate.dueAt || candidate.datetime || candidate.when),
-      notes: normalizeSafeFollowupText(candidate.notes || candidate.note),
-    }))
+    .map((candidate) => {
+      const metadata = candidate.metadata && typeof candidate.metadata === "object" && !Array.isArray(candidate.metadata)
+        ? candidate.metadata
+        : {};
+      const kind = String(pickOwn(metadata, "kind", candidate) || "").trim();
+      const basis = String(pickOwn(metadata, "basis", candidate) || "").trim();
+      return {
+        summary: normalizeSafeFollowupText(candidate.summary || candidate.title || candidate.label),
+        due_at: normalizeIsoTimestamp(candidate.due_at || candidate.dueAt || candidate.datetime || candidate.when),
+        notes: normalizeSafeFollowupText(candidate.notes || candidate.note),
+        kind: FOLLOWUP_KINDS.has(kind) ? kind : "explicit_request",
+        basis: FOLLOWUP_BASES.has(basis) ? basis : "unknown",
+        assignee_member_id: normalizeSafeIdentifier(
+          pickMetadataIdentifier(metadata, "assignee_member_id", candidate, "assigneeMemberId")
+        ),
+        source_followup_id: normalizeSafeIdentifier(
+          pickMetadataIdentifier(metadata, "source_followup_id", candidate, "sourceFollowupId")
+        ),
+      };
+    })
     .filter((candidate) => candidate.summary && candidate.due_at);
 };
 
@@ -259,6 +323,10 @@ const normalizePersistedFollowup = (followup) => {
     requested_by_member_id: String(followup.requested_by_member_id || "").trim(),
     summary: normalizeSafeFollowupText(followup.summary),
     due_at: normalizeNullableIsoTimestamp(followup.due_at),
+    kind: FOLLOWUP_KINDS.has(String(followup.kind || "").trim()) ? String(followup.kind).trim() : "explicit_request",
+    basis: FOLLOWUP_BASES.has(String(followup.basis || "").trim()) ? String(followup.basis).trim() : "unknown",
+    assignee_member_id: normalizeSafeIdentifier(followup.assignee_member_id),
+    source_followup_id: normalizeSafeIdentifier(followup.source_followup_id),
     created_at: normalizeNullableIsoTimestamp(followup.created_at),
     last_checked_at: normalizeNullableIsoTimestamp(followup.last_checked_at),
     closed_at: normalizeNullableIsoTimestamp(followup.closed_at),
@@ -273,6 +341,43 @@ const normalizeFollowupMetadata = (metadata = {}) => ({
   requested_by_member_id: String(metadata.requested_by_member_id || "").trim(),
   has_promised_followup: Boolean(metadata.has_promised_followup),
 });
+
+const evaluateFollowupCandidateGate = ({ metadata, candidate }) => {
+  const channelType = String(metadata && metadata.channel_type || "unknown").trim() || "unknown";
+  if (!candidate || !candidate.summary || !candidate.due_at) {
+    return { ok: false, reason: "invalid_candidate" };
+  }
+  if (channelType === "ops" || channelType === "unknown") {
+    return { ok: false, reason: `channel_type_denied:${channelType}` };
+  }
+  if (channelType === "sandbox") {
+    return candidate.kind === "test_only" || Boolean(metadata.has_promised_followup)
+      ? { ok: true, reason: "ok" }
+      : { ok: false, reason: "sandbox_requires_test_or_explicit_request" };
+  }
+  if (channelType === "chat") {
+    return candidate.kind === "explicit_request" && candidate.basis === "explicit_user_request"
+      ? { ok: true, reason: "ok" }
+      : { ok: false, reason: "chat_requires_explicit_request" };
+  }
+  if (channelType === "board") {
+    return candidate.kind === "formal_quest" ||
+      (candidate.kind === "explicit_request" && candidate.basis === "agreed_in_thread")
+      ? { ok: true, reason: "ok" }
+      : { ok: false, reason: "board_requires_formal_quest_or_continuation" };
+  }
+  if (channelType === "project") {
+    return candidate.kind === "agreed_todo" && candidate.basis === "agreed_in_thread" && Boolean(candidate.due_at)
+      ? { ok: true, reason: "ok" }
+      : { ok: false, reason: "project_requires_agreed_todo" };
+  }
+  if (channelType === "creation") {
+    return candidate.kind === "creation_continuation" && candidate.basis === "explicit_user_request"
+      ? { ok: true, reason: "ok" }
+      : { ok: false, reason: "creation_requires_explicit_continuation" };
+  }
+  return { ok: false, reason: `channel_type_denied:${channelType}` };
+};
 
 const normalizeHeartbeatState = (patch = {}) => {
   const sourceLastChecks = patch && typeof patch.lastChecks === "object" && !Array.isArray(patch.lastChecks)
@@ -319,12 +424,18 @@ const createOpenClawStateStore = ({
   const addFollowupCandidates = async ({ metadata, candidates }) => {
     const normalizedCandidates = normalizeFollowupCandidates(candidates);
     const normalizedMetadata = normalizeFollowupMetadata(metadata);
-    if (!normalizedMetadata.has_promised_followup || normalizedCandidates.length === 0) {
+    if (normalizedCandidates.length === 0) {
+      return [];
+    }
+    const allowedCandidates = normalizedCandidates.filter((candidate) =>
+      evaluateFollowupCandidateGate({ metadata: normalizedMetadata, candidate }).ok
+    );
+    if (allowedCandidates.length === 0) {
       return [];
     }
     const createdAt = now();
     const state = await readFollowupState();
-    const additions = normalizedCandidates.map((candidate) => ({
+    const additions = allowedCandidates.map((candidate) => ({
       id: idFactory(),
       channel_id: normalizedMetadata.channel_id,
       channel_type: normalizedMetadata.channel_type,
@@ -332,6 +443,10 @@ const createOpenClawStateStore = ({
       requested_by_member_id: normalizedMetadata.requested_by_member_id,
       summary: candidate.summary,
       due_at: candidate.due_at,
+      kind: candidate.kind,
+      basis: candidate.basis,
+      assignee_member_id: candidate.assignee_member_id,
+      source_followup_id: candidate.source_followup_id,
       created_at: createdAt,
       status: "open",
       last_checked_at: null,
@@ -745,15 +860,30 @@ const applyRuntimeStateToPayload = async ({ payload, stateStore, logger }) => {
 
 const saveResponseFollowupCandidates = async ({ payload, response, stateStore, logger }) => {
   if (!payload || !response || !stateStore || typeof stateStore.addFollowupCandidates !== "function") return [];
+  const metadata = {
+    channel_id: payload.channel && payload.channel.id,
+    channel_type: payload.channel && payload.channel.type,
+    source_message_id: payload.message && payload.message.id,
+    requested_by_member_id: payload.message && payload.message.author_id,
+    has_promised_followup: payload.context && payload.context.has_promised_followup,
+  };
+  if (logger && typeof logger.info === "function") {
+    for (const candidate of response.followup_candidates || []) {
+      const gate = evaluateFollowupCandidateGate({ metadata, candidate });
+      if (!gate.ok) {
+        logger.info({
+          channel_id: metadata.channel_id,
+          channel_type: metadata.channel_type,
+          candidate_id: candidate.source_followup_id || "",
+          gate_result: "deny",
+          deny_reason: gate.reason,
+        }, "[fairy-openclaw] followup candidate denied");
+      }
+    }
+  }
   try {
     return await stateStore.addFollowupCandidates({
-      metadata: {
-        channel_id: payload.channel && payload.channel.id,
-        channel_type: payload.channel && payload.channel.type,
-        source_message_id: payload.message && payload.message.id,
-        requested_by_member_id: payload.message && payload.message.author_id,
-        has_promised_followup: payload.context && payload.context.has_promised_followup,
-      },
+      metadata,
       candidates: response.followup_candidates,
     });
   } catch (error) {
@@ -804,10 +934,37 @@ const validateOpenClawResponse = (response) => {
 
 const containsBlockedMention = (body) => /@everyone|@here|<@&\d+>/i.test(String(body || ""));
 const containsExternalLink = (body) => /https?:\/\/\S+/i.test(String(body || ""));
+const payloadHasInputRisk = (payload) => {
+  const message = payload && payload.message ? payload.message : {};
+  const content = String(message.content || "");
+  if (/@everyone|@here/i.test(content)) return "input_everyone_or_here";
+  if (/<@&\d+>/i.test(content)) return "input_role_mention";
+  if (message.mentions_everyone) return "input_everyone_or_here";
+  if (Array.isArray(message.role_mentions) && message.role_mentions.length > 0) return "input_role_mention";
+  if (Array.isArray(message.attachments) && message.attachments.length > 0) return "input_attachment";
+  if (Array.isArray(message.links) && message.links.length > 0) return "input_external_link";
+  return "";
+};
+const runInputRiskGate = (payload) => {
+  const reason = payloadHasInputRisk(payload);
+  return reason ? { ok: false, reason } : { ok: true, reason: "ok" };
+};
 
-const runOutboundGate = ({ response, channelId, allowedChannelIds }) => {
+const runOutboundGate = ({ response, channelId, allowedChannelIds, payload, channelMetadata }) => {
   if (!allowedChannelIds.has(String(channelId || ""))) {
     return { ok: false, reason: "channel_not_verified" };
+  }
+  const channelType = String(
+    (channelMetadata && channelMetadata.type) ||
+      (payload && payload.channel && payload.channel.type) ||
+      ""
+  ).trim();
+  const inputRiskReason = payloadHasInputRisk(payload);
+  if (inputRiskReason) {
+    return { ok: false, reason: inputRiskReason };
+  }
+  if (channelType === "ops" && POSTABLE_ACTIONS.has(response.action)) {
+    return { ok: false, reason: "ops_draft_only" };
   }
   if (!POSTABLE_ACTIONS.has(response.action)) {
     return { ok: false, reason: `non_posting_action:${response.action}` };
@@ -842,12 +999,18 @@ const MESSAGE_VISIBLE_GATE_REASONS = new Set([
   "external_link",
   "requires_approval",
   "approval_side_effect",
+  "input_everyone_or_here",
+  "input_role_mention",
+  "input_attachment",
+  "input_external_link",
+  "ops_draft_only",
   "draft",
   "non_posting_action:draft",
   "publish_blocked",
   "non_posting_action:publish_blocked",
 ]);
 const shouldReplyWithGateBlockedMessage = (reason) => MESSAGE_VISIBLE_GATE_REASONS.has(String(reason || ""));
+const isExplicitMessageTrigger = (source) => source === "mention" || source === "reply";
 
 const createOpenClawInteractionHandler = ({
   openClawClient,
@@ -898,12 +1061,23 @@ const createOpenClawInteractionHandler = ({
       contextEntries: typeof contextEntriesSource === "function" ? await contextEntriesSource(interaction) : [],
     });
     payload.request_id = requestIdFactory();
+    const inputGate = runInputRiskGate(payload);
+    if (!inputGate.ok) {
+      await interaction.editReply({ content: buildGateBlockedMessage(), allowedMentions: SAFE_ALLOWED_MENTIONS });
+      return { handled: true, requestId: payload.request_id, payload, gate: inputGate };
+    }
     await applyRuntimeStateToPayload({ payload, stateStore, logger });
     try {
       const response = validateOpenClawResponse(await openClawClient.execute(payload));
       await applyResponseFollowupTransitions({ payload, response, stateStore, logger });
       await saveResponseFollowupCandidates({ payload, response, stateStore, logger });
-      const gate = runOutboundGate({ response, channelId: operationChannelId, allowedChannelIds: allowed });
+      const gate = runOutboundGate({
+        response,
+        channelId: operationChannelId,
+        allowedChannelIds: allowed,
+        payload,
+        channelMetadata: payload.channel,
+      });
       if (!gate.ok) {
         await interaction.editReply({ content: buildGateBlockedMessage(), allowedMentions: SAFE_ALLOWED_MENTIONS });
         return { handled: true, requestId: payload.request_id, payload, response, gate };
@@ -955,15 +1129,41 @@ const createOpenClawMessageHandler = ({
       contextEntries: typeof contextEntriesSource === "function" ? await contextEntriesSource(message) : [],
     });
     payload.request_id = requestIdFactory();
+    const inputGate = runInputRiskGate(payload);
+    if (!inputGate.ok) {
+      if (isExplicitMessageTrigger(runtimeOptions.messageTriggerSource)) {
+        const sentMessage = await message.reply({
+          content: buildGateBlockedMessage(),
+          allowedMentions: SAFE_ALLOWED_MENTIONS,
+        });
+        return {
+          handled: true,
+          requestId: payload.request_id,
+          payload,
+          gate: inputGate,
+          replyMessageId: sentMessage && sentMessage.id,
+        };
+      }
+      return { handled: true, requestId: payload.request_id, payload, gate: inputGate };
+    }
     const stopTyping = startTypingKeepalive({ channel: message.channel, logger });
     await applyRuntimeStateToPayload({ payload, stateStore, logger });
     try {
       const response = validateOpenClawResponse(await openClawClient.execute(payload));
       await applyResponseFollowupTransitions({ payload, response, stateStore, logger });
       await saveResponseFollowupCandidates({ payload, response, stateStore, logger });
-      const gate = runOutboundGate({ response, channelId: operationChannelId, allowedChannelIds: allowed });
+      const gate = runOutboundGate({
+        response,
+        channelId: operationChannelId,
+        allowedChannelIds: allowed,
+        payload,
+        channelMetadata: payload.channel,
+      });
       if (!gate.ok) {
-        if (shouldReplyWithGateBlockedMessage(gate.reason)) {
+        if (
+          shouldReplyWithGateBlockedMessage(gate.reason) &&
+          isExplicitMessageTrigger(runtimeOptions.messageTriggerSource)
+        ) {
           const sentMessage = await message.reply({
             content: buildGateBlockedMessage(),
             allowedMentions: SAFE_ALLOWED_MENTIONS,
@@ -1018,6 +1218,7 @@ module.exports = {
   normalizeFollowupCandidates,
   normalizeRuntimeMode,
   parseAllowedChannelIds,
+  resolveOpenClawApiUrl,
   resolveOpenClawStateDir,
   runOutboundGate,
   validateOpenClawChannelRegistry,
