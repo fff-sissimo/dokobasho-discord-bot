@@ -35,6 +35,9 @@ const loadConfig = (env = process.env) => {
     agentMode: agentMode === "gateway" ? "gateway" : "local",
     agentId: String(env.OPENCLAW_AGENT_ID || "").trim(),
     sessionId: String(env.OPENCLAW_AGENT_SESSION_ID || "dokobasho-fairy-discord-v1").trim(),
+    sessionScope: String(env.OPENCLAW_AGENT_SESSION_SCOPE || "request").trim().toLowerCase() === "fixed"
+      ? "fixed"
+      : "request",
     thinking: String(env.OPENCLAW_AGENT_THINKING || "low").trim(),
     timeoutSeconds: parsePositiveInt(env.OPENCLAW_AGENT_TIMEOUT_SECONDS, 60),
     requestTimeoutMs: parsePositiveInt(env.OPENCLAW_REQUEST_TIMEOUT_MS, 70000),

@@ -8,12 +8,14 @@ const {
   SAFE_ALLOWED_MENTIONS,
   buildOpenClawPayload,
   createOpenClawClient,
+  createOpenClawInteractionHandler,
   createOpenClawMessageHandler,
   createOpenClawRuntimeConfig,
   createOpenClawStateStore,
   loadOpenClawChannelRegistry,
   normalizeFollowupCandidates,
   normalizeRuntimeMode,
+  resolveOpenClawApiUrl,
   resolveOpenClawStateDir,
   runOutboundGate,
   validateOpenClawResponse,
@@ -43,18 +45,52 @@ describe("fairy OpenClaw runtime", () => {
     expect(() =>
       createOpenClawRuntimeConfig({
         FAIRY_RUNTIME_MODE: "openclaw",
-        OPENCLAW_API_URL: "https://openclaw.example/run",
+        OPENCLAW_API_BASE_URL: "https://openclaw.example/discord/respond",
         OPENCLAW_API_KEY: "key",
         GUILD_ID: "guild_1",
       })
     ).toThrow("FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS");
   });
 
+  it("uses OPENCLAW_API_BASE_URL with OPENCLAW_API_URL as a legacy alias", () => {
+    expect(resolveOpenClawApiUrl({ OPENCLAW_API_BASE_URL: "https://openclaw.example/discord/respond" }))
+      .toBe("https://openclaw.example/discord/respond");
+    expect(resolveOpenClawApiUrl({ OPENCLAW_API_BASE_URL: "https://openclaw.example/discord/respond/" }))
+      .toBe("https://openclaw.example/discord/respond/");
+    expect(resolveOpenClawApiUrl({ OPENCLAW_API_URL: "https://openclaw.example/discord/respond" }))
+      .toBe("https://openclaw.example/discord/respond");
+    expect(
+      resolveOpenClawApiUrl({
+        OPENCLAW_API_BASE_URL: "https://openclaw.example/discord/respond",
+        OPENCLAW_API_URL: "https://openclaw.example/discord/respond",
+      })
+    ).toBe("https://openclaw.example/discord/respond");
+    expect(() =>
+      createOpenClawRuntimeConfig({
+        FAIRY_RUNTIME_MODE: "openclaw",
+        OPENCLAW_API_BASE_URL: "https://openclaw.example/base",
+        OPENCLAW_API_URL: "https://openclaw.example/discord/respond",
+        OPENCLAW_API_KEY: "key",
+        GUILD_ID: "guild_1",
+        FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS: "1094907178671939654",
+      })
+    ).toThrow("OPENCLAW_API_BASE_URL and OPENCLAW_API_URL differ");
+    expect(() =>
+      createOpenClawRuntimeConfig({
+        FAIRY_RUNTIME_MODE: "openclaw",
+        OPENCLAW_API_BASE_URL: "http://openclaw-api:8788",
+        OPENCLAW_API_KEY: "key",
+        GUILD_ID: "guild_1",
+        FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS: "1094907178671939654",
+      })
+    ).toThrow("OPENCLAW_API_BASE_URL must end with /discord/respond");
+  });
+
   it("uses runtime volume state dir by default and allows absolute FAIRY_OPENCLAW_STATE_DIR override", () => {
     expect(
       createOpenClawRuntimeConfig({
         FAIRY_RUNTIME_MODE: "openclaw",
-        OPENCLAW_API_URL: "https://openclaw.example/run",
+        OPENCLAW_API_BASE_URL: "https://openclaw.example/discord/respond",
         OPENCLAW_API_KEY: "key",
         GUILD_ID: "guild_1",
         FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS: "1094907178671939654",
@@ -64,7 +100,7 @@ describe("fairy OpenClaw runtime", () => {
     expect(
       createOpenClawRuntimeConfig({
         FAIRY_RUNTIME_MODE: "openclaw",
-        OPENCLAW_API_URL: "https://openclaw.example/run",
+        OPENCLAW_API_BASE_URL: "https://openclaw.example/discord/respond",
         OPENCLAW_API_KEY: "key",
         GUILD_ID: "guild_1",
         FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS: "1094907178671939654",
@@ -79,7 +115,7 @@ describe("fairy OpenClaw runtime", () => {
     const fairyMemoryDir = path.resolve(repoRoot, "..", "dokobasho-fairy-openclaw", "memory");
     const baseOpenClawEnv = {
       FAIRY_RUNTIME_MODE: "openclaw",
-      OPENCLAW_API_URL: "https://openclaw.example/run",
+      OPENCLAW_API_BASE_URL: "https://openclaw.example/discord/respond",
       OPENCLAW_API_KEY: "key",
       GUILD_ID: "guild_1",
       FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS: "1094907178671939654",
@@ -204,7 +240,7 @@ describe("fairy OpenClaw runtime", () => {
   it("rejects allowlisted channels unless they are verified registry entries", () => {
     const baseEnv = {
       FAIRY_RUNTIME_MODE: "openclaw",
-      OPENCLAW_API_URL: "https://openclaw.example/run",
+      OPENCLAW_API_BASE_URL: "https://openclaw.example/discord/respond",
       OPENCLAW_API_KEY: "key",
       GUILD_ID: "guild_1",
     };
@@ -216,12 +252,12 @@ describe("fairy OpenClaw runtime", () => {
       })
     ).toThrow("999999999999999999");
 
-    expect(() =>
+    expect(
       createOpenClawRuntimeConfig({
         ...baseEnv,
         FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS: "1311647968113332275",
-      })
-    ).toThrow("1311647968113332275");
+      }).channelRegistry["1311647968113332275"].status
+    ).toBe("verified");
 
     expect(() =>
       createOpenClawRuntimeConfig({
@@ -234,7 +270,7 @@ describe("fairy OpenClaw runtime", () => {
   it("rejects default project and ops allowlist entries until explicitly verified", () => {
     const baseEnv = {
       FAIRY_RUNTIME_MODE: "openclaw",
-      OPENCLAW_API_URL: "https://openclaw.example/run",
+      OPENCLAW_API_BASE_URL: "https://openclaw.example/discord/respond",
       OPENCLAW_API_KEY: "key",
       GUILD_ID: "guild_1",
     };
@@ -264,16 +300,24 @@ describe("fairy OpenClaw runtime", () => {
           '{"1465296404455882860":{"name":"vostok-vol02-general","type":"project","status":"verified"}}',
       }).channelRegistry["1465296404455882860"].status
     ).toBe("verified");
+    expect(
+      createOpenClawRuntimeConfig({
+        ...baseEnv,
+        FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS: "1094907178671939654,1465295987236143319",
+        FAIRY_OPENCLAW_CHANNEL_REGISTRY_JSON:
+          '[{"channel_id":"1465295987236143319","name":"vostok-vol02-pd","type":"project","status":"verified"}]',
+      }).channelRegistry["1465295987236143319"].status
+    ).toBe("verified");
   });
 
-  it("keeps idea board known but unregistered until verified", () => {
+  it("uses the canonical verified idea board registry by default", () => {
     const allowedChannelIds = new Set(["1311647968113332275"]);
     const payload = buildOpenClawPayload({
       eventType: "message_create",
       guildId: "840827137451229205",
       channel: { id: "1311647968113332275", name: "アイデアボード" },
       message: {
-        id: "msg_board_pending",
+        id: "msg_board_verified_default",
         author: { id: "user_1", username: "user" },
         channel: { id: "1311647968113332275", name: "アイデアボード" },
         createdAt: new Date("2026-05-04T10:00:00.000Z"),
@@ -287,13 +331,13 @@ describe("fairy OpenClaw runtime", () => {
     expect(DEFAULT_CHANNEL_REGISTRY["1311647968113332275"]).toEqual({
       name: "アイデアボード",
       type: "board",
-      status: "pending",
+      status: "verified",
     });
     expect(payload.channel).toEqual({
       id: "1311647968113332275",
       name: "アイデアボード",
-      type: "unknown",
-      registered: false,
+      type: "board",
+      registered: true,
       thread_id: "",
       parent_channel_id: "",
       category_id: "",
@@ -469,13 +513,63 @@ describe("fairy OpenClaw runtime", () => {
       body: "承知しました",
       followup_candidates: [
         { summary: "進捗確認", due_at: "2026-05-05T10:00:00.000Z", notes: "軽く確認" },
+        {
+          summary: "metadata形式",
+          due_at: "2026-05-05T11:00:00.000Z",
+          kind: "explicit_request",
+          basis: "unknown",
+          assigneeMemberId: "stale_user",
+          sourceFollowupId: "stale_due",
+          metadata: {
+            kind: "agreed_todo",
+            basis: "agreed_in_thread",
+            assignee_member_id: "user_2",
+            source_followup_id: "due_1",
+          },
+        },
+        {
+          summary: "空metadata優先",
+          due_at: "2026-05-05T12:00:00.000Z",
+          assigneeMemberId: "stale_user",
+          sourceFollowupId: "stale_due",
+          metadata: {
+            assignee_member_id: "",
+            source_followup_id: "",
+          },
+        },
         { summary: "日時なし" },
         "invalid",
       ],
     });
 
     expect(response.followup_candidates).toEqual([
-      { summary: "進捗確認", due_at: "2026-05-05T10:00:00.000Z", notes: "軽く確認" },
+      {
+        summary: "進捗確認",
+        due_at: "2026-05-05T10:00:00.000Z",
+        notes: "軽く確認",
+        kind: "explicit_request",
+        basis: "unknown",
+        assignee_member_id: "",
+        source_followup_id: "",
+      },
+      {
+        summary: "metadata形式",
+        due_at: "2026-05-05T11:00:00.000Z",
+        notes: "",
+        kind: "agreed_todo",
+        basis: "agreed_in_thread",
+        assignee_member_id: "user_2",
+        source_followup_id: "due_1",
+      },
+      {
+        summary: "空metadata優先",
+        due_at: "2026-05-05T12:00:00.000Z",
+        notes: "",
+        kind: "explicit_request",
+        basis: "unknown",
+        assignee_member_id: "",
+        source_followup_id: "",
+      },
     ]);
     expect(response.checked_followup_ids).toEqual([]);
     expect(response.closed_followup_ids).toEqual([]);
@@ -553,6 +647,10 @@ describe("fairy OpenClaw runtime", () => {
       "requested_by_member_id",
       "summary",
       "due_at",
+      "kind",
+      "basis",
+      "assignee_member_id",
+      "source_followup_id",
       "created_at",
       "last_checked_at",
       "closed_at",
@@ -567,6 +665,10 @@ describe("fairy OpenClaw runtime", () => {
       requested_by_member_id: "user_1",
       summary: "確認する",
       due_at: "2026-05-05T10:00:00.000Z",
+      kind: "explicit_request",
+      basis: "unknown",
+      assignee_member_id: "",
+      source_followup_id: "",
       created_at: null,
       last_checked_at: null,
       closed_at: null,
@@ -656,7 +758,17 @@ describe("fairy OpenClaw runtime", () => {
         requested_by_member_id: "user_1",
         has_promised_followup: true,
       },
-      candidates: [{ summary: "進捗を確認", due_at: "2026-05-05T10:00:00.000Z", notes: "短く聞く" }],
+      candidates: [
+        {
+          summary: "進捗を確認",
+          due_at: "2026-05-05T10:00:00.000Z",
+          notes: "短く聞く",
+          kind: "explicit_request",
+          basis: "unknown",
+          assignee_member_id: "",
+          source_followup_id: "",
+        },
+      ],
     });
     expect(JSON.stringify(addFollowupCandidatesSpy.mock.calls[0][0])).not.toContain("明日10:00に進捗確認して");
     const state = JSON.parse(await fs.readFile(path.join(stateDir, "followups.json"), "utf8"));
@@ -669,6 +781,10 @@ describe("fairy OpenClaw runtime", () => {
         requested_by_member_id: "user_1",
         summary: "進捗を確認",
         due_at: "2026-05-05T10:00:00.000Z",
+        kind: "explicit_request",
+        basis: "unknown",
+        assignee_member_id: "",
+        source_followup_id: "",
         status: "open",
         notes: "短く聞く",
       }),
@@ -728,6 +844,144 @@ describe("fairy OpenClaw runtime", () => {
     await handler(message, { messageTriggerSource: "mention" });
 
     await expect(fs.access(path.join(stateDir, "followups.json"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("stops risky input before calling OpenClaw or mutating runtime state", async () => {
+    const stateDir = await createTmpStateDir();
+    const stateStore = createOpenClawStateStore({ stateDir });
+    const openClawClient = { execute: jest.fn() };
+    const handler = createOpenClawMessageHandler({
+      openClawClient,
+      allowedChannelIds: ["1094907178671939654"],
+      guildId: "840827137451229205",
+      stateStore,
+      contextEntriesSource: async () => [],
+      requestIdFactory: () => "req_risky_input",
+    });
+    const message = {
+      id: "msg_risky_input",
+      content: "<@bot_1> https://example.com を見て",
+      channelId: "1094907178671939654",
+      guildId: "840827137451229205",
+      createdAt: new Date("2026-05-04T09:00:00.000Z"),
+      author: { id: "user_1", bot: false, username: "user" },
+      client: { user: { id: "bot_1" } },
+      channel: { id: "1094907178671939654", name: "妖精さんより", sendTyping: jest.fn() },
+      mentions: { everyone: false, roles: { map: () => [] } },
+      attachments: [],
+      reply: jest.fn().mockResolvedValue({ id: "reply_risky_input" }),
+    };
+
+    const result = await handler(message, { messageTriggerSource: "mention" });
+
+    expect(result.gate).toEqual({ ok: false, reason: "input_external_link" });
+    expect(openClawClient.execute).not.toHaveBeenCalled();
+    expect(message.channel.sendTyping).not.toHaveBeenCalled();
+    expect(message.reply).toHaveBeenCalledWith({
+      content: "-# 今回は自動送信せず止めました。",
+      allowedMentions: SAFE_ALLOWED_MENTIONS,
+    });
+    await expect(fs.access(path.join(stateDir, "followups.json"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.access(path.join(stateDir, "heartbeat-state.json"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("stops slash command role mention text before calling OpenClaw or mutating runtime state", async () => {
+    const stateDir = await createTmpStateDir();
+    const stateStore = createOpenClawStateStore({ stateDir });
+    const openClawClient = { execute: jest.fn() };
+    const handler = createOpenClawInteractionHandler({
+      openClawClient,
+      allowedChannelIds: ["1094907178671939654"],
+      guildId: "840827137451229205",
+      stateStore,
+      contextEntriesSource: async () => [],
+      requestIdFactory: () => "req_slash_risky_input",
+    });
+    const interaction = {
+      id: "interaction_risky_input",
+      commandName: "fairy",
+      guildId: "840827137451229205",
+      channelId: "1094907178671939654",
+      user: { id: "user_1", username: "user" },
+      member: { displayName: "user" },
+      channel: { id: "1094907178671939654", name: "妖精さんより" },
+      isChatInputCommand: () => true,
+      options: { getString: () => "<@&123456789012345678> に確認して" },
+      deferReply: jest.fn().mockResolvedValue(undefined),
+      editReply: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const result = await handler(interaction);
+
+    expect(result.gate).toEqual({ ok: false, reason: "input_role_mention" });
+    expect(openClawClient.execute).not.toHaveBeenCalled();
+    expect(interaction.deferReply).toHaveBeenCalledTimes(1);
+    expect(interaction.editReply).toHaveBeenCalledWith({
+      content: "-# 今回は自動送信せず止めました。",
+      allowedMentions: SAFE_ALLOWED_MENTIONS,
+    });
+    await expect(fs.access(path.join(stateDir, "followups.json"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.access(path.join(stateDir, "heartbeat-state.json"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("applies the followup channel-type gate matrix without requiring project assignees", async () => {
+    const cases = [
+      {
+        channel_type: "chat",
+        candidate: { summary: "明示依頼", due_at: "2026-05-05T10:00:00.000Z", kind: "explicit_request", basis: "explicit_user_request" },
+        allowed: true,
+      },
+      {
+        channel_type: "board",
+        candidate: { summary: "正式クエスト", due_at: "2026-05-05T10:00:00.000Z", kind: "formal_quest", basis: "agreed_in_thread" },
+        allowed: true,
+      },
+      {
+        channel_type: "project",
+        candidate: { summary: "合意済みTODO", due_at: "2026-05-05T10:00:00.000Z", kind: "agreed_todo", basis: "agreed_in_thread" },
+        allowed: true,
+      },
+      {
+        channel_type: "ops",
+        candidate: { summary: "運用確認", due_at: "2026-05-05T10:00:00.000Z", kind: "explicit_request", basis: "explicit_user_request" },
+        allowed: false,
+      },
+      {
+        channel_type: "unknown",
+        candidate: { summary: "未登録", due_at: "2026-05-05T10:00:00.000Z", kind: "explicit_request", basis: "explicit_user_request" },
+        allowed: false,
+      },
+    ];
+
+    for (const testCase of cases) {
+      const stateDir = await createTmpStateDir();
+      const stateStore = createOpenClawStateStore({
+        stateDir,
+        idFactory: () => `followup_${testCase.channel_type}`,
+        now: () => "2026-05-04T10:00:00.000Z",
+      });
+      const additions = await stateStore.addFollowupCandidates({
+        metadata: {
+          channel_id: `channel_${testCase.channel_type}`,
+          channel_type: testCase.channel_type,
+          source_message_id: "source_1",
+          requested_by_member_id: "user_1",
+          has_promised_followup: true,
+        },
+        candidates: [testCase.candidate],
+      });
+
+      expect(additions).toHaveLength(testCase.allowed ? 1 : 0);
+      if (testCase.allowed) {
+        expect(additions[0]).toEqual(expect.objectContaining({
+          kind: testCase.candidate.kind,
+          basis: testCase.candidate.basis,
+          assignee_member_id: "",
+        }));
+      } else {
+        await expect(fs.access(path.join(stateDir, "followups.json"))).rejects.toMatchObject({ code: "ENOENT" });
+      }
+    }
   });
 
   it("adds due open followup ids to the next OpenClaw payload", async () => {
@@ -1232,6 +1486,48 @@ describe("fairy OpenClaw runtime", () => {
     ).toBe("external_link");
     expect(
       runOutboundGate({
+        response: validateOpenClawResponse({ action: "reply", body: "token=synthetic-secret-value" }),
+        channelId,
+        allowedChannelIds,
+      }).reason
+    ).toBe("secret_like_output");
+    expect(
+      runOutboundGate({
+        response: validateOpenClawResponse({ action: "reply", body: "Authorization: Bearer syntheticBearer12345" }),
+        channelId,
+        allowedChannelIds,
+      }).reason
+    ).toBe("secret_like_output");
+    for (const body of [
+      "Authorization:Bearer syntheticBearer12345",
+      "Authorization:Basic c3ludGhldGljMTIzNDU=",
+    ]) {
+      expect(
+        runOutboundGate({
+          response: validateOpenClawResponse({ action: "reply", body }),
+          channelId,
+          allowedChannelIds,
+        }).reason
+      ).toBe("secret_like_output");
+    }
+    for (const body of [
+      "OPENCLAW_API_KEY=syntheticSecret12345",
+      "DISCORD_BOT_TOKEN=syntheticSecret12345",
+      "N8N_WEBHOOK_SECRET=syntheticSecret12345",
+      "OPENAI_API_KEY=\"syntheticSecret12345\"",
+      "BOT_TOKEN='syntheticSecret12345'",
+      "N8N_WEBHOOK_SECRET: \"syntheticSecret12345\"",
+    ]) {
+      expect(
+        runOutboundGate({
+          response: validateOpenClawResponse({ action: "reply", body }),
+          channelId,
+          allowedChannelIds,
+        }).reason
+      ).toBe("secret_like_output");
+    }
+    expect(
+      runOutboundGate({
         response: validateOpenClawResponse({ action: "reply", body: "承認待ち", requires_approval: true }),
         channelId,
         allowedChannelIds,
@@ -1246,11 +1542,70 @@ describe("fairy OpenClaw runtime", () => {
     ).toBe("non_posting_action:observe");
   });
 
+  it("blocks role mentions in output and input risk regardless of OpenClaw response", () => {
+    const allowedChannelIds = new Set(["1094907178671939654"]);
+    const channelId = "1094907178671939654";
+
+    expect(
+      runOutboundGate({
+        response: validateOpenClawResponse({ action: "reply", body: "hi <@&123456789012345678>" }),
+        channelId,
+        allowedChannelIds,
+      }).reason
+    ).toBe("blocked_mention");
+    expect(
+      runOutboundGate({
+        response: validateOpenClawResponse({ action: "reply", body: "確認しました" }),
+        channelId,
+        allowedChannelIds,
+        payload: { message: { role_mentions: ["123456789012345678"], attachments: [], links: [] }, channel: { type: "sandbox" } },
+      }).reason
+    ).toBe("input_role_mention");
+    expect(
+      runOutboundGate({
+        response: validateOpenClawResponse({ action: "reply", body: "確認しました" }),
+        channelId,
+        allowedChannelIds,
+        payload: { message: { mentions_everyone: true, role_mentions: [], attachments: [], links: [] }, channel: { type: "sandbox" } },
+      }).reason
+    ).toBe("input_everyone_or_here");
+    expect(
+      runOutboundGate({
+        response: validateOpenClawResponse({ action: "reply", body: "確認しました" }),
+        channelId,
+        allowedChannelIds,
+        payload: { message: { role_mentions: [], attachments: [{ id: "file_1" }], links: [] }, channel: { type: "sandbox" } },
+      }).reason
+    ).toBe("input_attachment");
+    expect(
+      runOutboundGate({
+        response: validateOpenClawResponse({ action: "reply", body: "確認しました" }),
+        channelId,
+        allowedChannelIds,
+        payload: { message: { role_mentions: [], attachments: [], links: ["https://example.com"] }, channel: { type: "sandbox" } },
+      }).reason
+    ).toBe("input_external_link");
+  });
+
+  it("keeps ops channels draft-only even when registry override verifies them", () => {
+    const allowedChannelIds = new Set(["840827137451229208"]);
+    const response = validateOpenClawResponse({ action: "reply", body: "確認しました" });
+
+    expect(
+      runOutboundGate({
+        response,
+        channelId: "840827137451229208",
+        allowedChannelIds,
+        channelMetadata: { type: "ops" },
+      })
+    ).toEqual({ ok: false, reason: "ops_draft_only" });
+  });
+
   it("sends OpenClaw request with bearer auth", async () => {
     const json = jest.fn().mockResolvedValue({ action: "observe", body: "" });
     const fetchImpl = jest.fn().mockResolvedValue({ ok: true, json });
     const client = createOpenClawClient({
-      apiUrl: "https://openclaw.example/run",
+      apiUrl: "https://openclaw.example/discord/respond",
       apiKey: "secret",
       fetchImpl,
       timeoutMs: 100,
@@ -1259,7 +1614,7 @@ describe("fairy OpenClaw runtime", () => {
     await client.execute({ schema_version: 1 });
 
     expect(fetchImpl).toHaveBeenCalledWith(
-      "https://openclaw.example/run",
+      "https://openclaw.example/discord/respond",
       expect.objectContaining({
         method: "POST",
         headers: expect.objectContaining({
