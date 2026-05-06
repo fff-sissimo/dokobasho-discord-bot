@@ -8,7 +8,7 @@ const { test } = require("node:test");
 
 const { DEFAULT_WORKSPACE_CONTEXT_MAX_CHARS, loadConfig } = require("../src/config");
 const { buildOpenClawArgs, buildOpenClawChildEnv, buildRequestScopedSessionId } = require("../src/openclaw-runner");
-const { createServer } = require("../src/server");
+const { buildMinimalRetryPayload, createServer } = require("../src/server");
 const {
   buildAgentPrompt,
   buildObserveResponse,
@@ -376,7 +376,7 @@ test("agent prompt stays under the OpenClaw live-smoke budget for capped context
     payload,
   });
 
-  assert.ok(prompt.length < 9000);
+  assert.ok(prompt.length < 7000);
 });
 
 test("agent prompt includes channel active thread and output policies", () => {
@@ -997,6 +997,171 @@ test("OpenClaw execution failure becomes safe observe response", async () => {
   });
 });
 
+test("minimal retry payload keeps only current-message decision fields", () => {
+  const payload = buildMinimalRetryPayload({
+    request_id: "req_retry",
+    event_type: "message_create",
+    received_at: "2026-05-06T06:40:00.000Z",
+    guild_id: "guild_1",
+    channel: {
+      id: "channel_1",
+      name: "raw channel name",
+      type: "sandbox",
+      registered: true,
+    },
+    message: {
+      id: "msg_1",
+      author_id: "user_1",
+      author_display_name: "raw display",
+      content: "x".repeat(800),
+      created_at: "2026-05-06T06:40:00.000Z",
+      is_reply_to_bot: false,
+      mentions_bot: true,
+      mentions_everyone: false,
+      role_mentions: ["role_1".repeat(100)],
+      attachments: [
+        {
+          id: "attachment_1".repeat(100),
+          name: "raw attachment name".repeat(100),
+          content_type: "image/png".repeat(100),
+          size: 123,
+        },
+      ],
+      links: ["https://example.com/".repeat(100)],
+    },
+    context: {
+      recent_messages: [
+        { message_id: "ctx_1", author_id: "user_1", content: "raw recent content" },
+      ],
+      active_thread_age_minutes: 2,
+      has_promised_followup: false,
+      matched_followup_ids: ["due_1"],
+    },
+    memory: {
+      member_ids: ["member_1"],
+    },
+  });
+
+  assert.equal(payload.message.content.length, 500);
+  assert.deepEqual(payload.context.recent_messages, []);
+  assert.equal(payload.channel.name, undefined);
+  assert.equal(payload.message.author_display_name, undefined);
+  assert.equal(payload.memory, undefined);
+  assert.deepEqual(payload.context.matched_followup_ids, ["due_1"]);
+  assert.equal(payload.message.mentions_bot, true);
+  assert.equal(payload.message.role_mentions[0].length, 80);
+  assert.equal(payload.message.attachments[0].id.length, 80);
+  assert.equal(payload.message.attachments[0].name, undefined);
+  assert.deepEqual(payload.message.links, [{ present: true }]);
+});
+
+test("retries once with a minimal prompt when OpenClaw returns context_overflow", async () => {
+  const calls = [];
+  const logs = [];
+  await withServer({
+    logger: { info: (entry) => logs.push(entry), warn: () => {} },
+    loadContext: async () => "x".repeat(1200),
+    runAgentCommand: async ({ message }) => {
+      calls.push(message);
+      if (calls.length === 1) {
+        assert.match(message, /raw recent content/);
+        return "Context overflow: prompt too large for the model.";
+      }
+      assert.doesNotMatch(message, /raw recent content/);
+      assert.match(message, /\(no workspace context loaded\)/);
+      return JSON.stringify({
+        payloads: [
+          {
+            text: JSON.stringify({
+              schema_version: 1,
+              action: "reply",
+              body: "いけます",
+              confidence: "high",
+            }),
+          },
+        ],
+      });
+    },
+  }, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/discord/respond`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer secret",
+      },
+      body: JSON.stringify({
+        request_id: "req_retry_success",
+        channel: { id: "1094907178671939654", type: "sandbox", registered: true },
+        message: {
+          id: "msg_1",
+          author_id: "user_1",
+          content: "live smoke S-1: 短い挨拶です。今の調子を一言で返してください。",
+          mentions_bot: true,
+          is_reply_to_bot: false,
+          mentions_everyone: false,
+          role_mentions: [],
+          attachments: [],
+          links: [],
+        },
+        context: {
+          recent_messages: [
+            { message_id: "ctx_1", author_id: "user_1", content: "raw recent content" },
+          ],
+          active_thread_age_minutes: 1,
+          has_promised_followup: false,
+          matched_followup_ids: [],
+        },
+      }),
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.action, "reply");
+    assert.equal(body.body, "いけます");
+  });
+
+  assert.equal(calls.length, 2);
+  assert.ok(calls[1].length < calls[0].length);
+  const completed = logs.find((entry) => entry && entry.request_id === "req_retry_success");
+  assert.equal(completed.retry_count, 1);
+  assert.ok(completed.initial_prompt_chars > completed.retry_prompt_chars);
+  assert.equal(completed.prompt_chars, completed.retry_prompt_chars);
+});
+
+test("does not retry context_overflow more than once", async () => {
+  const calls = [];
+  await withServer({
+    runAgentCommand: async ({ message }) => {
+      calls.push(message);
+      return "Context overflow: prompt too large for the model.";
+    },
+  }, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/discord/respond`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer secret",
+      },
+      body: JSON.stringify({
+        request_id: "req_retry_fail",
+        channel: { id: "1094907178671939654", type: "sandbox", registered: true },
+        message: {
+          id: "msg_1",
+          author_id: "user_1",
+          content: "短く返してください",
+          mentions_bot: true,
+        },
+        context: { recent_messages: [] },
+      }),
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.action, "observe");
+    assert.equal(body.reason, "context_overflow");
+  });
+
+  assert.equal(calls.length, 2);
+});
+
 test("request completed log keeps reason metadata bounded and redacted", async () => {
   const logs = [];
   await withServer({
@@ -1211,7 +1376,7 @@ test("loadConfig defaults to request scoped sessions with fixed compatibility op
   assert.equal(config.sessionScope, "request");
   assert.equal(config.timeoutSeconds, 120);
   assert.equal(config.requestTimeoutMs, 140000);
-  assert.equal(config.maxWorkspaceContextChars, 2500);
+  assert.equal(config.maxWorkspaceContextChars, 1200);
   assert.equal(config.promptFiles.includes("TOOLS.md"), false);
   assert.equal(loadConfig({
     OPENCLAW_API_KEY: "secret",

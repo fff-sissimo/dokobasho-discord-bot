@@ -83,6 +83,88 @@ const safeLogText = (value, { maxLength = 120 } = {}) => {
   return text.slice(0, maxLength);
 };
 
+const RETRY_MESSAGE_CONTENT_MAX_CHARS = 500;
+const RETRY_LIST_MAX_ITEMS = 5;
+const RETRY_IDENTIFIER_MAX_CHARS = 80;
+
+const normalizeRetryIdentifierList = (value) =>
+  (Array.isArray(value) ? value : [])
+    .map((item) => String(item || "").trim().slice(0, RETRY_IDENTIFIER_MAX_CHARS))
+    .filter(Boolean)
+    .slice(0, RETRY_LIST_MAX_ITEMS);
+
+const normalizeRetryAttachments = (value) =>
+  (Array.isArray(value) ? value : [])
+    .slice(0, RETRY_LIST_MAX_ITEMS)
+    .map((attachment) => {
+      const source = attachment && typeof attachment === "object" && !Array.isArray(attachment) ? attachment : {};
+      return {
+        id: String(source.id || "").trim().slice(0, RETRY_IDENTIFIER_MAX_CHARS),
+        content_type: String(source.content_type || source.contentType || "").trim().slice(0, RETRY_IDENTIFIER_MAX_CHARS),
+        size: Number.isFinite(source.size) ? source.size : null,
+      };
+    });
+
+const normalizeRetryLinks = (value) =>
+  (Array.isArray(value) ? value : [])
+    .slice(0, RETRY_LIST_MAX_ITEMS)
+    .map((link) => ({
+      present: Boolean(String(link || "").trim()),
+    }));
+
+const buildMinimalRetryPayload = (payload) => {
+  const source = payload && typeof payload === "object" && !Array.isArray(payload) ? payload : {};
+  const channel = source.channel && typeof source.channel === "object" && !Array.isArray(source.channel)
+    ? source.channel
+    : {};
+  const message = source.message && typeof source.message === "object" && !Array.isArray(source.message)
+    ? source.message
+    : {};
+  const context = source.context && typeof source.context === "object" && !Array.isArray(source.context)
+    ? source.context
+    : {};
+  return {
+    request_id: String(source.request_id || "").trim(),
+    schema_version: 1,
+    source: "discord",
+    event_type: String(source.event_type || "").trim(),
+    received_at: String(source.received_at || "").trim(),
+    guild_id: String(source.guild_id || "").trim(),
+    channel: {
+      id: String(channel.id || "").trim(),
+      type: String(channel.type || "").trim(),
+      registered: Boolean(channel.registered),
+    },
+    message: {
+      id: String(message.id || "").trim(),
+      author_id: String(message.author_id || "").trim(),
+      content: String(message.content || "").slice(0, RETRY_MESSAGE_CONTENT_MAX_CHARS),
+      created_at: String(message.created_at || "").trim(),
+      is_reply_to_bot: Boolean(message.is_reply_to_bot),
+      mentions_bot: Boolean(message.mentions_bot),
+      mentions_everyone: Boolean(message.mentions_everyone),
+      role_mentions: normalizeRetryIdentifierList(message.role_mentions),
+      attachments: normalizeRetryAttachments(message.attachments),
+      links: normalizeRetryLinks(message.links),
+    },
+    context: {
+      recent_messages: [],
+      active_thread_age_minutes: context.active_thread_age_minutes ?? null,
+      has_promised_followup: Boolean(context.has_promised_followup),
+      matched_followup_ids: normalizeRetryIdentifierList(context.matched_followup_ids),
+    },
+  };
+};
+
+const executeOpenClawPrompt = async ({ config, payload, workspaceContext, runAgentCommand }) => {
+  const prompt = buildAgentPrompt({ payload, workspaceContext });
+  const stdout = await runAgentCommand({ config, message: prompt });
+  return {
+    prompt,
+    response: parseAgentResponse(stdout),
+  };
+};
+
 const createServer = ({
   config = loadConfig(),
   logger = console,
@@ -127,9 +209,22 @@ const createServer = ({
         promptFiles: config.promptFiles,
         maxChars: config.maxWorkspaceContextChars,
       });
-      const prompt = buildAgentPrompt({ payload, workspaceContext });
-      const stdout = await runAgentCommand({ config, message: prompt });
-      const response = parseAgentResponse(stdout);
+      let result = await executeOpenClawPrompt({ config, payload, workspaceContext, runAgentCommand });
+      const initialPromptChars = result.prompt.length;
+      let retryCount = 0;
+      let retryPromptChars = 0;
+      if (result.response.action === "observe" && result.response.reason === "context_overflow") {
+        const retryPayload = buildMinimalRetryPayload(payload);
+        result = await executeOpenClawPrompt({
+          config,
+          payload: retryPayload,
+          workspaceContext: "",
+          runAgentCommand,
+        });
+        retryCount = 1;
+        retryPromptChars = result.prompt.length;
+      }
+      const response = result.response;
       logger.info({
         request_id: requestId,
         channel_id: payload.channel && payload.channel.id,
@@ -138,7 +233,10 @@ const createServer = ({
         confidence: safeLogText(response.confidence, { maxLength: 24 }),
         body_len: typeof response.body === "string" ? response.body.length : 0,
         elapsed_ms: Date.now() - requestStartedAt,
-        prompt_chars: prompt.length,
+        prompt_chars: result.prompt.length,
+        initial_prompt_chars: initialPromptChars,
+        retry_count: retryCount,
+        retry_prompt_chars: retryPromptChars,
         workspace_context_chars: workspaceContext.length,
       }, "[openclaw-api] request completed");
       sendJson(res, 200, response);
@@ -174,6 +272,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  buildMinimalRetryPayload,
   createServer,
   readJsonBody,
 };
