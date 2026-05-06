@@ -37,6 +37,25 @@ const buildOpenClawArgs = ({ agentMode, agentId, sessionId, thinking, timeoutSec
   return args;
 };
 
+const CHILD_ENV_ALLOWLIST = Object.freeze([
+  "HOME",
+  "LANG",
+  "LC_ALL",
+  "LOGNAME",
+  "PATH",
+  "SHELL",
+  "TERM",
+  "TMPDIR",
+  "USER",
+]);
+
+const buildOpenClawChildEnv = (sourceEnv = process.env) =>
+  Object.fromEntries(
+    CHILD_ENV_ALLOWLIST
+      .map((name) => [name, sourceEnv[name]])
+      .filter(([, value]) => value !== undefined && value !== null && String(value).trim() !== "")
+  );
+
 const runOpenClawAgent = ({ config, message }) =>
   new Promise((resolve, reject) => {
     const args = buildOpenClawArgs({
@@ -53,7 +72,7 @@ const runOpenClawAgent = ({ config, message }) =>
     });
     const child = spawn(config.command, args, {
       cwd: config.workspaceDir,
-      env: process.env,
+      env: buildOpenClawChildEnv(),
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
@@ -90,6 +109,7 @@ const runOpenClawAgent = ({ config, message }) =>
 
 module.exports = {
   buildOpenClawArgs,
+  buildOpenClawChildEnv,
   buildRequestScopedSessionId,
   runOpenClawAgent,
 };

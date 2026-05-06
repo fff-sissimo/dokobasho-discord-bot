@@ -4,7 +4,7 @@ const assert = require("node:assert/strict");
 const { test } = require("node:test");
 
 const { loadConfig } = require("../src/config");
-const { buildOpenClawArgs, buildRequestScopedSessionId } = require("../src/openclaw-runner");
+const { buildOpenClawArgs, buildOpenClawChildEnv, buildRequestScopedSessionId } = require("../src/openclaw-runner");
 const { createServer } = require("../src/server");
 const { buildAgentPrompt, buildObserveResponse, normalizeOpenClawResponse, parseAgentResponse } = require("../src/contracts");
 
@@ -455,6 +455,26 @@ test("request scoped session id falls back to a prompt hash and fixed scope keep
     }),
     "base-session"
   );
+});
+
+test("OpenClaw child env keeps runtime secrets out of the agent process", () => {
+  const childEnv = buildOpenClawChildEnv({
+    HOME: "/root",
+    PATH: "/usr/bin",
+    LANG: "C.UTF-8",
+    OPENCLAW_API_KEY: "synthetic-api-key",
+    BOT_TOKEN: "synthetic-bot-token",
+    N8N_WEBHOOK_SECRET: "synthetic-webhook-secret",
+    NOTION_TOKEN: "synthetic-notion-token",
+  });
+
+  assert.equal(childEnv.HOME, "/root");
+  assert.equal(childEnv.PATH, "/usr/bin");
+  assert.equal(childEnv.LANG, "C.UTF-8");
+  assert.equal(childEnv.OPENCLAW_API_KEY, undefined);
+  assert.equal(childEnv.BOT_TOKEN, undefined);
+  assert.equal(childEnv.N8N_WEBHOOK_SECRET, undefined);
+  assert.equal(childEnv.NOTION_TOKEN, undefined);
 });
 
 test("loadConfig defaults to request scoped sessions with fixed compatibility opt-out", () => {

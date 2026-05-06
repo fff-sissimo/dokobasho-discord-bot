@@ -88,7 +88,7 @@ services:
       - OPENCLAW_API_KEY=${OPENCLAW_API_KEY}
       - OPENCLAW_API_HOST=0.0.0.0
       - OPENCLAW_API_PORT=8788
-      - OPENCLAW_WORKSPACE_DIR=/opt/dokobasho/openclaw
+      - OPENCLAW_WORKSPACE_DIR=/opt/dokobasho-openclaw
       - OPENCLAW_AGENT_MODE=${OPENCLAW_AGENT_MODE:-local}
       - OPENCLAW_AGENT_ID=${OPENCLAW_AGENT_ID:-}
       - OPENCLAW_AGENT_SESSION_ID=${OPENCLAW_AGENT_SESSION_ID:-dokobasho-fairy-discord-v1}
@@ -102,19 +102,32 @@ services:
         set -e;
         apk add --no-cache git >/dev/null;
         npm install -g openclaw@2026.5.2 >/dev/null;
+        appdir=/opt/dokobasho/app;
         lockdir=/opt/dokobasho/.git-sync.lock;
-        while ! mkdir "$$lockdir" 2>/dev/null; do sleep 1; done;
-        cleanup(){ rmdir "$$lockdir" 2>/dev/null || true; };
+        lock_ttl_seconds=$${GIT_SYNC_LOCK_TTL_SECONDS:-300};
+        while ! mkdir "$$lockdir" 2>/dev/null; do
+          lock_mtime=$$(stat -c %Y "$$lockdir" 2>/dev/null || echo 0);
+          now=$$(date +%s);
+          if [ "$$lock_mtime" -gt 0 ] && [ $$((now - lock_mtime)) -gt "$$lock_ttl_seconds" ]; then
+            echo "[git-sync] removing stale lock: $$lockdir";
+            rm -rf "$$lockdir";
+            continue;
+          fi;
+          sleep 1;
+        done;
+        echo "$$$$" > "$$lockdir/pid";
+        cleanup(){ rm -f "$$lockdir/pid" 2>/dev/null || true; rmdir "$$lockdir" 2>/dev/null || true; };
         trap cleanup EXIT;
-        if [ ! -d /opt/dokobasho/.git ]; then
-          git clone --depth 1 --branch "$APP_BRANCH" "$APP_REPO" /opt/dokobasho;
+        mkdir -p "$$(dirname "$$appdir")";
+        if [ ! -d "$$appdir/.git" ]; then
+          git clone --depth 1 --branch "$APP_BRANCH" "$APP_REPO" "$$appdir";
         else
-          cd /opt/dokobasho && git fetch --depth 1 origin "$APP_BRANCH" && git reset --hard "origin/$APP_BRANCH";
+          cd "$$appdir" && git fetch --depth 1 origin "$APP_BRANCH" && git reset --hard "origin/$APP_BRANCH";
         fi;
-        cd /opt/dokobasho && echo "[git-sync] HEAD=$(git rev-parse --short HEAD) branch=$APP_BRANCH";
+        cd "$$appdir" && echo "[git-sync] HEAD=$$(git rev-parse --short HEAD) branch=$APP_BRANCH";
         trap - EXIT;
         cleanup;
-        rm -rf /root/.openclaw/workspace; mkdir -p /root/.openclaw/workspace; cp -a /opt/dokobasho/openclaw/. /root/.openclaw/workspace/; cd /opt/dokobasho/openclaw-api && node src/server.js
+        rm -rf /root/.openclaw/workspace; mkdir -p /root/.openclaw/workspace; cp -a /opt/dokobasho-openclaw/. /root/.openclaw/workspace/; cd "$$appdir/openclaw-api" && node src/server.js
     healthcheck:
       test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:8788/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
       interval: 30s
@@ -123,7 +136,7 @@ services:
       start_period: 60s
     volumes:
       - /docker/n8n/discord-bot-runtime:/opt/dokobasho
-      - /docker/n8n/dokobasho-fairy-openclaw:/opt/dokobasho/openclaw:ro
+      - /docker/n8n/dokobasho-fairy-openclaw:/opt/dokobasho-openclaw:ro
       - /docker/n8n/openclaw-state:/root/.openclaw
 
   discord-bot:
@@ -133,7 +146,7 @@ services:
       - n8n
     environment:
       - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}
-      - BOT_TOKEN=${DISCORD_BOT_TOKEN}
+      - BOT_TOKEN=${BOT_TOKEN}
       - CLIENT_ID=${CLIENT_ID}
       - GUILD_ID=${GUILD_ID}
       - SHEET_ID=${SHEET_ID}
@@ -158,7 +171,7 @@ services:
       # OPENCLAW_API_URL is a legacy alias. Keep it unset unless an older image still requires compatibility.
       # - OPENCLAW_API_URL=${OPENCLAW_API_URL}
       - OPENCLAW_API_KEY=${OPENCLAW_API_KEY}
-      - OPENCLAW_API_TIMEOUT_MS=${OPENCLAW_API_TIMEOUT_MS:-10000}
+      - OPENCLAW_API_TIMEOUT_MS=${OPENCLAW_API_TIMEOUT_MS:-85000}
       - FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS=${FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS}
       - FAIRY_OPENCLAW_CHANNEL_REGISTRY_JSON=${FAIRY_OPENCLAW_CHANNEL_REGISTRY_JSON}
       - FAIRY_OPENCLAW_STATE_DIR=${FAIRY_OPENCLAW_STATE_DIR:-/var/lib/dokobasho/fairy-openclaw-state}
@@ -168,19 +181,32 @@ services:
       - >-
         set -e;
         apk add --no-cache git >/dev/null;
+        appdir=/opt/dokobasho/app;
         lockdir=/opt/dokobasho/.git-sync.lock;
-        while ! mkdir "$$lockdir" 2>/dev/null; do sleep 1; done;
-        cleanup(){ rmdir "$$lockdir" 2>/dev/null || true; };
+        lock_ttl_seconds=$${GIT_SYNC_LOCK_TTL_SECONDS:-300};
+        while ! mkdir "$$lockdir" 2>/dev/null; do
+          lock_mtime=$$(stat -c %Y "$$lockdir" 2>/dev/null || echo 0);
+          now=$$(date +%s);
+          if [ "$$lock_mtime" -gt 0 ] && [ $$((now - lock_mtime)) -gt "$$lock_ttl_seconds" ]; then
+            echo "[git-sync] removing stale lock: $$lockdir";
+            rm -rf "$$lockdir";
+            continue;
+          fi;
+          sleep 1;
+        done;
+        echo "$$$$" > "$$lockdir/pid";
+        cleanup(){ rm -f "$$lockdir/pid" 2>/dev/null || true; rmdir "$$lockdir" 2>/dev/null || true; };
         trap cleanup EXIT;
-        if [ ! -d /opt/dokobasho/.git ]; then
-          git clone --depth 1 --branch "$APP_BRANCH" "$APP_REPO" /opt/dokobasho;
+        mkdir -p "$$(dirname "$$appdir")";
+        if [ ! -d "$$appdir/.git" ]; then
+          git clone --depth 1 --branch "$APP_BRANCH" "$APP_REPO" "$$appdir";
         else
-          cd /opt/dokobasho && git fetch --depth 1 origin "$APP_BRANCH" && git reset --hard "origin/$APP_BRANCH";
+          cd "$$appdir" && git fetch --depth 1 origin "$APP_BRANCH" && git reset --hard "origin/$APP_BRANCH";
         fi;
-        cd /opt/dokobasho && echo "[git-sync] HEAD=$(git rev-parse --short HEAD) branch=$APP_BRANCH";
+        cd "$$appdir" && echo "[git-sync] HEAD=$$(git rev-parse --short HEAD) branch=$APP_BRANCH";
         trap - EXIT;
         cleanup;
-        cd /opt/dokobasho/discord-bot && sh scripts/runtime-bootstrap.sh index.js
+        cd "$$appdir/discord-bot" && sh scripts/runtime-bootstrap.sh index.js
     volumes:
       - /docker/n8n/discord-bot-runtime:/opt/dokobasho
       - /docker/n8n/fairy-openclaw-state:/var/lib/dokobasho/fairy-openclaw-state
@@ -191,7 +217,7 @@ services:
     restart: always
     environment:
       - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}
-      - BOT_TOKEN=${DISCORD_BOT_TOKEN}
+      - BOT_TOKEN=${BOT_TOKEN}
       - CLIENT_ID=${CLIENT_ID}
       - GUILD_ID=${GUILD_ID}
       - SHEET_ID=${SHEET_ID}
@@ -217,19 +243,32 @@ services:
       - >-
         set -e;
         apk add --no-cache git >/dev/null;
+        appdir=/opt/dokobasho/app;
         lockdir=/opt/dokobasho/.git-sync.lock;
-        while ! mkdir "$$lockdir" 2>/dev/null; do sleep 1; done;
-        cleanup(){ rmdir "$$lockdir" 2>/dev/null || true; };
+        lock_ttl_seconds=$${GIT_SYNC_LOCK_TTL_SECONDS:-300};
+        while ! mkdir "$$lockdir" 2>/dev/null; do
+          lock_mtime=$$(stat -c %Y "$$lockdir" 2>/dev/null || echo 0);
+          now=$$(date +%s);
+          if [ "$$lock_mtime" -gt 0 ] && [ $$((now - lock_mtime)) -gt "$$lock_ttl_seconds" ]; then
+            echo "[git-sync] removing stale lock: $$lockdir";
+            rm -rf "$$lockdir";
+            continue;
+          fi;
+          sleep 1;
+        done;
+        echo "$$$$" > "$$lockdir/pid";
+        cleanup(){ rm -f "$$lockdir/pid" 2>/dev/null || true; rmdir "$$lockdir" 2>/dev/null || true; };
         trap cleanup EXIT;
-        if [ ! -d /opt/dokobasho/.git ]; then
-          git clone --depth 1 --branch "$APP_BRANCH" "$APP_REPO" /opt/dokobasho;
+        mkdir -p "$$(dirname "$$appdir")";
+        if [ ! -d "$$appdir/.git" ]; then
+          git clone --depth 1 --branch "$APP_BRANCH" "$APP_REPO" "$$appdir";
         else
-          cd /opt/dokobasho && git fetch --depth 1 origin "$APP_BRANCH" && git reset --hard "origin/$APP_BRANCH";
+          cd "$$appdir" && git fetch --depth 1 origin "$APP_BRANCH" && git reset --hard "origin/$APP_BRANCH";
         fi;
-        cd /opt/dokobasho && echo "[git-sync] HEAD=$(git rev-parse --short HEAD) branch=$APP_BRANCH";
+        cd "$$appdir" && echo "[git-sync] HEAD=$$(git rev-parse --short HEAD) branch=$APP_BRANCH";
         trap - EXIT;
         cleanup;
-        cd /opt/dokobasho/discord-bot && sh scripts/runtime-bootstrap.sh scheduler.js
+        cd "$$appdir/discord-bot" && sh scripts/runtime-bootstrap.sh scheduler.js
     healthcheck:
       test: ["CMD-SHELL", "node -e \"const fs=require('fs');const p=process.env.SCHEDULER_HEARTBEAT_PATH||'/tmp/discord-scheduler-heartbeat';const maxAgeMs=120000;const s=fs.statSync(p);if(Date.now()-s.mtimeMs>maxAgeMs) process.exit(1);\""]
       interval: 30s

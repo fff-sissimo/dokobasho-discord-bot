@@ -191,7 +191,19 @@ const resolveOpenClawApiUrl = (env = process.env) => {
   if (baseUrl && legacyUrl && baseUrl !== legacyUrl) {
     throw new Error("conflicting OpenClaw API config: OPENCLAW_API_BASE_URL and OPENCLAW_API_URL differ");
   }
-  return baseUrl || legacyUrl;
+  const apiUrl = baseUrl || legacyUrl;
+  if (!apiUrl) return "";
+  let parsed;
+  try {
+    parsed = new URL(apiUrl);
+  } catch {
+    throw new Error("invalid OpenClaw API config: OPENCLAW_API_BASE_URL must be a complete URL");
+  }
+  const endpointPath = parsed.pathname.replace(/\/+$/, "");
+  if (!/^https?:$/.test(parsed.protocol) || endpointPath !== "/discord/respond") {
+    throw new Error("invalid OpenClaw API config: OPENCLAW_API_BASE_URL must end with /discord/respond");
+  }
+  return apiUrl;
 };
 
 const createOpenClawRuntimeConfig = (env = process.env) => {
@@ -934,6 +946,13 @@ const validateOpenClawResponse = (response) => {
 
 const containsBlockedMention = (body) => /@everyone|@here|<@&\d+>/i.test(String(body || ""));
 const containsExternalLink = (body) => /https?:\/\/\S+/i.test(String(body || ""));
+const containsSecretLikeText = (body) => {
+  const text = String(body || "");
+  return /(?:^|[\s"'`({\[])(?:api[_-]?key|token|secret|password|passwd)\s*[:=]\s*["']?[^\s"',)}\]]{6,}/i.test(text) ||
+    /(?:^|[\s"'`({\[])[A-Z0-9_]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|PASSWD)\s*[:=]\s*["']?[^\s"',)}\]]{6,}/i.test(text) ||
+    /(?:^|[\s"'`({\[])authorization\s*:\s*(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/i.test(text) ||
+    /(?:^|[\s"'`({\[])(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/i.test(text);
+};
 const payloadHasInputRisk = (payload) => {
   const message = payload && payload.message ? payload.message : {};
   const content = String(message.content || "");
@@ -981,6 +1000,9 @@ const runOutboundGate = ({ response, channelId, allowedChannelIds, payload, chan
   if (containsExternalLink(response.body)) {
     return { ok: false, reason: "external_link" };
   }
+  if (containsSecretLikeText(response.body)) {
+    return { ok: false, reason: "secret_like_output" };
+  }
   const approval = response.approval || {};
   if (
     Array.isArray(approval.attachments) && approval.attachments.length > 0 ||
@@ -997,6 +1019,7 @@ const buildGateBlockedMessage = () => "-# 今回は自動送信せず止めま�
 const MESSAGE_VISIBLE_GATE_REASONS = new Set([
   "blocked_mention",
   "external_link",
+  "secret_like_output",
   "requires_approval",
   "approval_side_effect",
   "input_everyone_or_here",

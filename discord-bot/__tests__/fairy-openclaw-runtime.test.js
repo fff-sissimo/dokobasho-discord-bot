@@ -45,7 +45,7 @@ describe("fairy OpenClaw runtime", () => {
     expect(() =>
       createOpenClawRuntimeConfig({
         FAIRY_RUNTIME_MODE: "openclaw",
-        OPENCLAW_API_BASE_URL: "https://openclaw.example/run",
+        OPENCLAW_API_BASE_URL: "https://openclaw.example/discord/respond",
         OPENCLAW_API_KEY: "key",
         GUILD_ID: "guild_1",
       })
@@ -53,33 +53,38 @@ describe("fairy OpenClaw runtime", () => {
   });
 
   it("uses OPENCLAW_API_BASE_URL with OPENCLAW_API_URL as a legacy alias", () => {
-    expect(resolveOpenClawApiUrl({ OPENCLAW_API_BASE_URL: "https://openclaw.example/base" }))
-      .toBe("https://openclaw.example/base");
-    expect(resolveOpenClawApiUrl({ OPENCLAW_API_URL: "https://openclaw.example/legacy" }))
-      .toBe("https://openclaw.example/legacy");
+    expect(resolveOpenClawApiUrl({ OPENCLAW_API_BASE_URL: "https://openclaw.example/discord/respond" }))
+      .toBe("https://openclaw.example/discord/respond");
+    expect(resolveOpenClawApiUrl({ OPENCLAW_API_BASE_URL: "https://openclaw.example/discord/respond/" }))
+      .toBe("https://openclaw.example/discord/respond/");
+    expect(resolveOpenClawApiUrl({ OPENCLAW_API_URL: "https://openclaw.example/discord/respond" }))
+      .toBe("https://openclaw.example/discord/respond");
     expect(
       resolveOpenClawApiUrl({
-        OPENCLAW_API_BASE_URL: "https://openclaw.example/same",
-        OPENCLAW_API_URL: "https://openclaw.example/same",
+        OPENCLAW_API_BASE_URL: "https://openclaw.example/discord/respond",
+        OPENCLAW_API_URL: "https://openclaw.example/discord/respond",
       })
-    ).toBe("https://openclaw.example/same");
+    ).toBe("https://openclaw.example/discord/respond");
     expect(() =>
       createOpenClawRuntimeConfig({
         FAIRY_RUNTIME_MODE: "openclaw",
-        OPENCLAW_API_BASE_URL: "https://openclaw.example/base",
-        OPENCLAW_API_URL: "https://openclaw.example/legacy",
+        OPENCLAW_API_BASE_URL: "https://openclaw-a.example/discord/respond",
+        OPENCLAW_API_URL: "https://openclaw-b.example/discord/respond",
         OPENCLAW_API_KEY: "key",
         GUILD_ID: "guild_1",
         FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS: "1094907178671939654",
       })
     ).toThrow("OPENCLAW_API_BASE_URL and OPENCLAW_API_URL differ");
+    expect(() =>
+      resolveOpenClawApiUrl({ OPENCLAW_API_BASE_URL: "http://openclaw-api:8788" })
+    ).toThrow("/discord/respond");
   });
 
   it("uses runtime volume state dir by default and allows absolute FAIRY_OPENCLAW_STATE_DIR override", () => {
     expect(
       createOpenClawRuntimeConfig({
         FAIRY_RUNTIME_MODE: "openclaw",
-        OPENCLAW_API_BASE_URL: "https://openclaw.example/run",
+        OPENCLAW_API_BASE_URL: "https://openclaw.example/discord/respond",
         OPENCLAW_API_KEY: "key",
         GUILD_ID: "guild_1",
         FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS: "1094907178671939654",
@@ -89,7 +94,7 @@ describe("fairy OpenClaw runtime", () => {
     expect(
       createOpenClawRuntimeConfig({
         FAIRY_RUNTIME_MODE: "openclaw",
-        OPENCLAW_API_BASE_URL: "https://openclaw.example/run",
+        OPENCLAW_API_BASE_URL: "https://openclaw.example/discord/respond",
         OPENCLAW_API_KEY: "key",
         GUILD_ID: "guild_1",
         FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS: "1094907178671939654",
@@ -104,7 +109,7 @@ describe("fairy OpenClaw runtime", () => {
     const fairyMemoryDir = path.resolve(repoRoot, "..", "dokobasho-fairy-openclaw", "memory");
     const baseOpenClawEnv = {
       FAIRY_RUNTIME_MODE: "openclaw",
-      OPENCLAW_API_BASE_URL: "https://openclaw.example/run",
+      OPENCLAW_API_BASE_URL: "https://openclaw.example/discord/respond",
       OPENCLAW_API_KEY: "key",
       GUILD_ID: "guild_1",
       FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS: "1094907178671939654",
@@ -229,7 +234,7 @@ describe("fairy OpenClaw runtime", () => {
   it("rejects allowlisted channels unless they are verified registry entries", () => {
     const baseEnv = {
       FAIRY_RUNTIME_MODE: "openclaw",
-      OPENCLAW_API_BASE_URL: "https://openclaw.example/run",
+      OPENCLAW_API_BASE_URL: "https://openclaw.example/discord/respond",
       OPENCLAW_API_KEY: "key",
       GUILD_ID: "guild_1",
     };
@@ -259,7 +264,7 @@ describe("fairy OpenClaw runtime", () => {
   it("rejects default project and ops allowlist entries until explicitly verified", () => {
     const baseEnv = {
       FAIRY_RUNTIME_MODE: "openclaw",
-      OPENCLAW_API_BASE_URL: "https://openclaw.example/run",
+      OPENCLAW_API_BASE_URL: "https://openclaw.example/discord/respond",
       OPENCLAW_API_KEY: "key",
       GUILD_ID: "guild_1",
     };
@@ -1473,6 +1478,26 @@ describe("fairy OpenClaw runtime", () => {
         allowedChannelIds,
       }).reason
     ).toBe("external_link");
+    for (const body of [
+      "token=synthetic-secret-value",
+      "Authorization: Bearer syntheticBearer12345",
+      "Authorization:Bearer syntheticBearer12345",
+      "Authorization:Basic c3ludGhldGljMTIzNDU=",
+      "OPENCLAW_API_KEY=syntheticSecret12345",
+      "DISCORD_BOT_TOKEN=syntheticSecret12345",
+      "N8N_WEBHOOK_SECRET=syntheticSecret12345",
+      "OPENAI_API_KEY=\"syntheticSecret12345\"",
+      "BOT_TOKEN='syntheticSecret12345'",
+      "N8N_WEBHOOK_SECRET: \"syntheticSecret12345\"",
+    ]) {
+      expect(
+        runOutboundGate({
+          response: validateOpenClawResponse({ action: "reply", body }),
+          channelId,
+          allowedChannelIds,
+        }).reason
+      ).toBe("secret_like_output");
+    }
     expect(
       runOutboundGate({
         response: validateOpenClawResponse({ action: "reply", body: "承認待ち", requires_approval: true }),
@@ -1552,7 +1577,7 @@ describe("fairy OpenClaw runtime", () => {
     const json = jest.fn().mockResolvedValue({ action: "observe", body: "" });
     const fetchImpl = jest.fn().mockResolvedValue({ ok: true, json });
     const client = createOpenClawClient({
-      apiUrl: "https://openclaw.example/run",
+      apiUrl: "https://openclaw.example/discord/respond",
       apiKey: "secret",
       fetchImpl,
       timeoutMs: 100,
@@ -1561,7 +1586,7 @@ describe("fairy OpenClaw runtime", () => {
     await client.execute({ schema_version: 1 });
 
     expect(fetchImpl).toHaveBeenCalledWith(
-      "https://openclaw.example/run",
+      "https://openclaw.example/discord/respond",
       expect.objectContaining({
         method: "POST",
         headers: expect.objectContaining({
