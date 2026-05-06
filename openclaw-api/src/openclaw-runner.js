@@ -3,12 +3,18 @@
 const { spawn } = require("node:child_process");
 const { createHash } = require("node:crypto");
 
-const sanitizeSessionSegment = (value) =>
+const OPENCLAW_SESSION_ID_MAX_CHARS = 64;
+const SESSION_HASH_CHARS = 16;
+const SESSION_ATTEMPT_MAX_CHARS = 24;
+
+const normalizeSessionSegment = (value) =>
   String(value || "")
     .trim()
     .replace(/[^A-Za-z0-9_.:-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 96);
+    .replace(/^-+|-+$/g, "");
+
+const sanitizeSessionSegment = (value) =>
+  normalizeSessionSegment(value).slice(0, 96);
 
 const extractRequestId = (message) => {
   const match = String(message || "").match(/"request_id"\s*:\s*"([^"]{1,200})"/);
@@ -16,7 +22,36 @@ const extractRequestId = (message) => {
 };
 
 const hashPrompt = (message) =>
-  createHash("sha256").update(String(message || ""), "utf8").digest("hex").slice(0, 16);
+  createHash("sha256").update(String(message || ""), "utf8").digest("hex").slice(0, SESSION_HASH_CHARS);
+
+const hashSessionValue = (value) =>
+  hashPrompt(String(value || "").trim());
+
+const shortenSessionSegment = (segment, maxLength) => {
+  const safeSegment = normalizeSessionSegment(segment) || "session";
+  if (safeSegment.length <= maxLength) return safeSegment;
+  const hash = hashSessionValue(segment);
+  if (maxLength <= SESSION_HASH_CHARS) return hash.slice(0, maxLength);
+  const prefixLength = maxLength - SESSION_HASH_CHARS - 1;
+  const prefix = safeSegment.slice(0, prefixLength).replace(/[-_.:]+$/g, "");
+  return prefix ? `${prefix}-${hash}` : hash.slice(0, maxLength);
+};
+
+const buildSessionAttemptSegment = (sessionAttempt) => {
+  const rawAttemptSegment = String(sessionAttempt || "").trim();
+  const attemptSegment = normalizeSessionSegment(rawAttemptSegment);
+  if (!attemptSegment) return rawAttemptSegment ? `attempt-${hashSessionValue(rawAttemptSegment)}` : "";
+  if (attemptSegment.length <= SESSION_ATTEMPT_MAX_CHARS) return attemptSegment;
+  return `attempt-${hashSessionValue(rawAttemptSegment)}`;
+};
+
+const buildBoundedSessionId = ({ baseSessionId, trailingSegments = [] }) => {
+  const segments = trailingSegments.map(sanitizeSessionSegment).filter(Boolean);
+  const suffix = segments.length ? `-${segments.join("-")}` : "";
+  const maxBaseLength = Math.max(1, OPENCLAW_SESSION_ID_MAX_CHARS - suffix.length);
+  const safeBaseSessionId = shortenSessionSegment(baseSessionId, maxBaseLength);
+  return `${safeBaseSessionId}${suffix}`;
+};
 
 const hashDiagnosticText = (value) =>
   createHash("sha256").update(String(value || ""), "utf8").digest("hex").slice(0, 16);
@@ -52,14 +87,19 @@ const buildStderrDiagnostics = (stderr) => {
 const buildRequestScopedSessionId = ({ sessionId, sessionScope, requestId, message, sessionAttempt }) => {
   const baseSessionId = String(sessionId || "").trim();
   if (!baseSessionId) return "";
-  const attemptSegment = sanitizeSessionSegment(sessionAttempt);
+  const attemptSegment = buildSessionAttemptSegment(sessionAttempt);
   if (sessionScope === "fixed") {
-    return attemptSegment ? `${baseSessionId}-${attemptSegment}` : baseSessionId;
+    return buildBoundedSessionId({
+      baseSessionId,
+      trailingSegments: attemptSegment ? [attemptSegment] : [],
+    });
   }
-  const requestSegment = sanitizeSessionSegment(requestId || extractRequestId(message));
-  const scopedSegment = requestSegment || `prompt-${hashPrompt(message)}`;
-  const requestScopedSessionId = `${baseSessionId}-req-${scopedSegment}`;
-  return attemptSegment ? `${requestScopedSessionId}-${attemptSegment}` : requestScopedSessionId;
+  const rawRequestSegment = String(requestId || extractRequestId(message) || "").trim();
+  const scopedSegment = rawRequestSegment ? `req-${hashSessionValue(rawRequestSegment)}` : `prompt-${hashPrompt(message)}`;
+  return buildBoundedSessionId({
+    baseSessionId,
+    trailingSegments: attemptSegment ? [scopedSegment, attemptSegment] : [scopedSegment],
+  });
 };
 
 const buildOpenClawArgs = ({ agentMode, agentId, sessionId, thinking, timeoutSeconds, message }) => {

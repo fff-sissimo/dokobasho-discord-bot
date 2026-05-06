@@ -2311,7 +2311,9 @@ test("request scoped session id uses request id without embedding raw prompt con
     ].join("\n"),
   });
 
-  assert.equal(sessionId, "dokobasho-fairy-discord-v1-req-req:abc-123");
+  assert.match(sessionId, /^dokobasho-fairy-discord-v1-req-[0-9a-f]{16}$/);
+  assert.equal(sessionId.length <= 64, true);
+  assert.doesNotMatch(sessionId, /req:abc|abc-123/);
   assert.doesNotMatch(sessionId, /secret raw discord body/);
 });
 
@@ -2331,7 +2333,9 @@ test("request scoped retry session id appends a safe attempt suffix", () => {
     sessionAttempt: "retry 1",
   });
 
-  assert.equal(sessionId, "dokobasho-fairy-discord-v1-req-req:abc-123-retry-1");
+  assert.match(sessionId, /^dokobasho-fairy-discord-v1-req-[0-9a-f]{16}-retry-1$/);
+  assert.equal(sessionId.length <= 64, true);
+  assert.doesNotMatch(sessionId, /req:abc|abc-123/);
   assert.doesNotMatch(sessionId, /secret raw discord body/);
 });
 
@@ -2341,7 +2345,8 @@ test("request scoped session id falls back to a prompt hash and fixed scope keep
     sessionScope: "request",
     message: "prompt with secret value",
   });
-  assert.match(scoped, /^base-session-req-prompt-[0-9a-f]{16}$/);
+  assert.match(scoped, /^base-session-prompt-[0-9a-f]{16}$/);
+  assert.equal(scoped.length <= 64, true);
   assert.doesNotMatch(scoped, /secret value/);
 
   assert.equal(
@@ -2355,6 +2360,93 @@ test("request scoped session id falls back to a prompt hash and fixed scope keep
   );
 });
 
+test("request scoped session id keeps uuid and retry attempts within OpenClaw cache key limit", () => {
+  const requestId = "61de62ad-b7ba-44f0-b4b0-69453b159743";
+  const first = buildRequestScopedSessionId({
+    sessionId: "dokobasho-fairy-discord-v1",
+    sessionScope: "request",
+    requestId,
+    message: "prompt",
+  });
+  const retry = buildRequestScopedSessionId({
+    sessionId: "dokobasho-fairy-discord-v1",
+    sessionScope: "request",
+    requestId,
+    message: "prompt",
+    sessionAttempt: "retry-1",
+  });
+
+  assert.equal(first.length <= 64, true);
+  assert.equal(retry.length <= 64, true);
+  assert.notEqual(first, retry);
+  assert.doesNotMatch(first, /61de62ad|b7ba|159743/);
+  assert.doesNotMatch(retry, /61de62ad|b7ba|159743/);
+  assert.match(first, /^dokobasho-fairy-discord-v1-req-[0-9a-f]{16}$/);
+  assert.match(retry, /^dokobasho-fairy-discord-v1-req-[0-9a-f]{16}-retry-1$/);
+});
+
+test("long session ids and attempts are shortened without losing retry separation", () => {
+  const first = buildRequestScopedSessionId({
+    sessionId: "dokobasho-fairy-discord-v1-extra-long-session-name-that-would-overflow",
+    sessionScope: "request",
+    requestId: "req_1",
+    message: "prompt",
+  });
+  const retry = buildRequestScopedSessionId({
+    sessionId: "dokobasho-fairy-discord-v1-extra-long-session-name-that-would-overflow",
+    sessionScope: "request",
+    requestId: "req_1",
+    message: "prompt",
+    sessionAttempt: "retry attempt name that is far too long to pass through directly",
+  });
+
+  assert.equal(first.length <= 64, true);
+  assert.equal(retry.length <= 64, true);
+  assert.notEqual(first, retry);
+  assert.match(retry, /-attempt-[0-9a-f]{16}$/);
+});
+
+test("session id hashes use raw values before output normalization to avoid collisions", () => {
+  const requestA = buildRequestScopedSessionId({
+    sessionId: "base-session",
+    sessionScope: "request",
+    requestId: "req abc",
+    message: "prompt",
+  });
+  const requestB = buildRequestScopedSessionId({
+    sessionId: "base-session",
+    sessionScope: "request",
+    requestId: "req/abc",
+    message: "prompt",
+  });
+  assert.notEqual(requestA, requestB);
+  assert.equal(requestA.length <= 64, true);
+  assert.equal(requestB.length <= 64, true);
+
+  const nonAsciiRequest = buildRequestScopedSessionId({
+    sessionId: "base-session",
+    sessionScope: "request",
+    requestId: "要求一",
+    message: "prompt",
+  });
+  assert.match(nonAsciiRequest, /^base-session-req-[0-9a-f]{16}$/);
+  assert.equal(nonAsciiRequest.length <= 64, true);
+
+  const longBaseA = buildRequestScopedSessionId({
+    sessionId: `${"x".repeat(96)}A`,
+    sessionScope: "fixed",
+    message: "prompt",
+  });
+  const longBaseB = buildRequestScopedSessionId({
+    sessionId: `${"x".repeat(96)}B`,
+    sessionScope: "fixed",
+    message: "prompt",
+  });
+  assert.notEqual(longBaseA, longBaseB);
+  assert.equal(longBaseA.length <= 64, true);
+  assert.equal(longBaseB.length <= 64, true);
+});
+
 test("fixed scoped retry session id is separated from the base session", () => {
   assert.equal(
     buildRequestScopedSessionId({
@@ -2366,6 +2458,27 @@ test("fixed scoped retry session id is separated from the base session", () => {
     }),
     "base-session-retry-1"
   );
+});
+
+test("long fixed scoped session id is bounded for OpenClaw cache key limit", () => {
+  const first = buildRequestScopedSessionId({
+    sessionId: "fixed-session-name-that-is-longer-than-openclaw-cache-key-allows-and-needs-shortening",
+    sessionScope: "fixed",
+    requestId: "req_1",
+    message: "prompt",
+  });
+  const retry = buildRequestScopedSessionId({
+    sessionId: "fixed-session-name-that-is-longer-than-openclaw-cache-key-allows-and-needs-shortening",
+    sessionScope: "fixed",
+    requestId: "req_1",
+    message: "prompt",
+    sessionAttempt: "retry-1",
+  });
+
+  assert.equal(first.length <= 64, true);
+  assert.equal(retry.length <= 64, true);
+  assert.notEqual(first, retry);
+  assert.match(retry, /-retry-1$/);
 });
 
 test("OpenClaw runner trace logs child process timeout lifecycle", async () => {
@@ -2402,11 +2515,11 @@ test("OpenClaw runner trace logs child process timeout lifecycle", async () => {
         ...baseConfig,
         command: commandPath,
         workspaceDir,
-        requestTimeoutMs: 250,
+        requestTimeoutMs: 750,
         timeoutSeconds: 5,
       },
       message: JSON.stringify({ request_id: "req_runner_trace", content: "raw secret body" }),
-      timeoutMs: 250,
+      timeoutMs: 750,
       logger: { info: (entry) => logs.onInfo(entry) },
       traceLogs: true,
       requestId: "req_runner_trace",
