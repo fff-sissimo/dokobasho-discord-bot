@@ -696,6 +696,48 @@ describe("fairy OpenClaw runtime", () => {
     expect(normalizeFollowupCandidates(null)).toEqual([]);
   });
 
+  it("whitelist-normalizes OpenClaw diagnostics without keeping raw unsafe values", () => {
+    const response = validateOpenClawResponse({
+      schema_version: 1,
+      action: "observe",
+      body: "",
+      reason: "OPENCLAW_TIMEOUT",
+      diagnostics: {
+        request_id: "req_123",
+        reason_code: "OPENCLAW_TIMEOUT",
+        elapsed_ms: 1234.8,
+        prompt_chars: "2048",
+        initial_prompt_chars: 1024,
+        retry_count: 1,
+        retry_prompt_chars: 512,
+        workspace_context_chars: 4096,
+        error_code: "OPENCLAW_EXIT",
+        stdout: "raw stdout",
+        prompt: "raw prompt",
+        discord_body: "raw Discord body",
+        stack: "Error: secret\n at app.js:1",
+        message: "https://example.com/raw",
+        url: "https://example.com",
+        secret: "token=abcdefsecret",
+      },
+    });
+
+    expect(response.diagnostics).toEqual({
+      request_id: "req_123",
+      reason_code: "OPENCLAW_TIMEOUT",
+      elapsed_ms: 1234,
+      prompt_chars: 2048,
+      initial_prompt_chars: 1024,
+      retry_count: 1,
+      retry_prompt_chars: 512,
+      workspace_context_chars: 4096,
+      error_code: "OPENCLAW_EXIT",
+    });
+    expect(JSON.stringify(response.diagnostics)).not.toContain("raw stdout");
+    expect(JSON.stringify(response.diagnostics)).not.toContain("https://example.com");
+    expect(JSON.stringify(response.diagnostics)).not.toContain("abcdefsecret");
+  });
+
   it("does not persist unsafe followup summary or notes", async () => {
     const stateDir = await createTmpStateDir();
     const stateStore = createOpenClawStateStore({
@@ -1475,6 +1517,15 @@ describe("fairy OpenClaw runtime", () => {
         body: "",
         reason,
         requires_approval: false,
+        diagnostics: {
+          request_id: "raw request id with spaces",
+          reason_code: reason,
+          elapsed_ms: 2001,
+          prompt_chars: 1234,
+          error_code: "OPENCLAW_EXIT",
+          stdout: "raw stdout must not be shown",
+          message: "https://example.com/raw",
+        },
       }),
     };
     const handler = createOpenClawMessageHandler({
@@ -1504,9 +1555,54 @@ describe("fairy OpenClaw runtime", () => {
     expect(result.gate.reason).toBe("non_posting_action:observe");
     expect(result.replyMessageId).toBe("reply_observe_timeout");
     expect(message.reply).toHaveBeenCalledWith({
-      content: "-# OpenClaw 直接実行に失敗しました。時間をおいてもう一度試してください。",
+      content:
+        "-# OpenClaw 直接実行に失敗しました。時間をおいてもう一度試してください。\n" +
+        `-# 詳細: request_id=req_observe_timeout reason_code=${reason} elapsed_ms=2001 prompt_chars=1234 error_code=OPENCLAW_EXIT`,
       allowedMentions: SAFE_ALLOWED_MENTIONS,
     });
+    expect(message.reply.mock.calls[0][0].content).not.toContain("raw stdout");
+    expect(message.reply.mock.calls[0][0].content).not.toContain("https://example.com");
+  });
+
+  it("replies with safe client diagnostics on OpenClaw client catch without exposing error messages", async () => {
+    const openClawClient = {
+      execute: jest.fn().mockRejectedValue(Object.assign(new Error("raw https://example.com stack token=abcdefsecret"), {
+        code: "OPENCLAW_CLIENT_TIMEOUT",
+      })),
+    };
+    const handler = createOpenClawMessageHandler({
+      openClawClient,
+      allowedChannelIds: ["1094907178671939654"],
+      guildId: "840827137451229205",
+      contextEntriesSource: async () => [],
+      requestIdFactory: () => "req_client_timeout",
+    });
+    const message = {
+      id: "msg_client_timeout",
+      content: "<@bot_1> 見て",
+      channelId: "1094907178671939654",
+      guildId: "840827137451229205",
+      createdAt: new Date("2026-05-03T10:00:00.000Z"),
+      author: { id: "user_1", bot: false, username: "user" },
+      client: { user: { id: "bot_1" } },
+      channel: { id: "1094907178671939654", name: "妖精さんより", sendTyping: jest.fn().mockResolvedValue(undefined) },
+      mentions: { everyone: false, roles: { map: () => [] } },
+      attachments: [],
+      reply: jest.fn().mockResolvedValue({ id: "reply_client_timeout" }),
+    };
+
+    const result = await handler(message, { messageTriggerSource: "mention" });
+
+    expect(result.handled).toBe(true);
+    expect(result.replyMessageId).toBe("reply_client_timeout");
+    expect(message.reply).toHaveBeenCalledWith({
+      content:
+        "-# OpenClaw 直接実行に失敗しました。時間をおいてもう一度試してください。\n" +
+        "-# 詳細: request_id=req_client_timeout reason_code=client_error error_code=OPENCLAW_CLIENT_TIMEOUT",
+      allowedMentions: SAFE_ALLOWED_MENTIONS,
+    });
+    expect(message.reply.mock.calls[0][0].content).not.toContain("https://example.com");
+    expect(message.reply.mock.calls[0][0].content).not.toContain("abcdefsecret");
   });
 
   it("does not call OpenClaw or reply outside verified channels", async () => {

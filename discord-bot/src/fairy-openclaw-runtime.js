@@ -46,6 +46,16 @@ const FOLLOWUP_KINDS = new Set([
   "test_only",
 ]);
 const FOLLOWUP_BASES = new Set(["explicit_user_request", "agreed_in_thread", "due_followup", "unknown"]);
+const DIAGNOSTIC_STRING_KEYS = new Set(["request_id", "reason_code", "error_code"]);
+const DIAGNOSTIC_NUMBER_KEYS = new Set([
+  "elapsed_ms",
+  "prompt_chars",
+  "initial_prompt_chars",
+  "retry_count",
+  "retry_prompt_chars",
+  "workspace_context_chars",
+]);
+const SAFE_DIAGNOSTIC_VALUE_PATTERN = /^[A-Za-z0-9_.:-]+$/;
 
 const normalizeRuntimeMode = (raw) => {
   const value = String(raw || "n8n").trim().toLowerCase();
@@ -573,14 +583,18 @@ const createOpenClawClient = ({
         });
       } catch (error) {
         if (error instanceof Error && error.name === "AbortError") {
-          throw new Error(`OpenClaw request timed out: timeoutMs=${timeoutMs}`);
+          const timeoutError = new Error(`OpenClaw request timed out: timeoutMs=${timeoutMs}`);
+          timeoutError.code = "OPENCLAW_CLIENT_TIMEOUT";
+          throw timeoutError;
         }
         throw error;
       } finally {
         clearTimeout(timer);
       }
       if (!response.ok) {
-        throw new Error(`OpenClaw request failed: status=${response.status}`);
+        const statusError = new Error(`OpenClaw request failed: status=${response.status}`);
+        statusError.code = "OPENCLAW_CLIENT_HTTP_STATUS";
+        throw statusError;
       }
       return response.json();
     },
@@ -980,10 +994,38 @@ const validateOpenClawResponse = (response) => {
     reason: normalizeMessageContent(response.reason),
     requires_approval: Boolean(response.requires_approval),
     approval: response.approval && typeof response.approval === "object" ? response.approval : {},
+    diagnostics: normalizeOpenClawDiagnostics(response.diagnostics),
     followup_candidates: normalizeFollowupCandidates(response.followup_candidates),
     checked_followup_ids: normalizeFollowupIdList(response.checked_followup_ids),
     closed_followup_ids: normalizeFollowupIdList(response.closed_followup_ids),
   };
+};
+
+const normalizeDiagnosticString = (value) => {
+  const text = String(value || "").trim();
+  if (!text || text.length > 80 || !SAFE_DIAGNOSTIC_VALUE_PATTERN.test(text)) return "";
+  if (containsExternalLink(text) || containsSecretLikeText(text)) return "";
+  return text;
+};
+
+const normalizeDiagnosticNumber = (value) => {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0) return null;
+  return Math.floor(number);
+};
+
+const normalizeOpenClawDiagnostics = (diagnostics) => {
+  if (!diagnostics || typeof diagnostics !== "object" || Array.isArray(diagnostics)) return {};
+  const normalized = {};
+  for (const key of DIAGNOSTIC_STRING_KEYS) {
+    const value = normalizeDiagnosticString(diagnostics[key]);
+    if (value) normalized[key] = value;
+  }
+  for (const key of DIAGNOSTIC_NUMBER_KEYS) {
+    const value = normalizeDiagnosticNumber(diagnostics[key]);
+    if (value !== null) normalized[key] = value;
+  }
+  return normalized;
 };
 
 const containsBlockedMention = (body) => /@everyone|@here|<@&\d+>/i.test(String(body || ""));
@@ -1057,7 +1099,61 @@ const runOutboundGate = ({ response, channelId, allowedChannelIds, payload, chan
   return { ok: true, reason: "ok" };
 };
 
-const buildSafeFailureMessage = () => "-# OpenClaw 直接実行に失敗しました。時間をおいてもう一度試してください。";
+const buildDiagnosticsSummary = (diagnostics = {}) => {
+  const parts = [];
+  for (const key of [
+    "request_id",
+    "reason_code",
+    "elapsed_ms",
+    "prompt_chars",
+    "initial_prompt_chars",
+    "retry_count",
+    "retry_prompt_chars",
+    "workspace_context_chars",
+    "error_code",
+  ]) {
+    if (!Object.prototype.hasOwnProperty.call(diagnostics, key)) continue;
+    parts.push(`${key}=${diagnostics[key]}`);
+  }
+  return parts.join(" ");
+};
+
+const buildResponseFailureDiagnostics = ({ payload, response }) => {
+  const diagnostics = normalizeOpenClawDiagnostics(response && response.diagnostics);
+  if (payload && payload.request_id && !diagnostics.request_id) {
+    diagnostics.request_id = normalizeDiagnosticString(payload.request_id);
+  }
+  if (response && response.reason && !diagnostics.reason_code) {
+    diagnostics.reason_code = normalizeDiagnosticString(response.reason);
+  }
+  return diagnostics;
+};
+
+const normalizeClientErrorCode = (error) => {
+  if (error && typeof error === "object") {
+    const code = normalizeDiagnosticString(error.code);
+    if (code) return code;
+    if (error.name === "AbortError") return "ABORT_ERROR";
+  }
+  return "CLIENT_ERROR";
+};
+
+const buildClientFailureDiagnostics = ({ payload, error }) => {
+  const diagnostics = {
+    reason_code: "client_error",
+    error_code: normalizeClientErrorCode(error),
+  };
+  if (payload && payload.request_id) {
+    diagnostics.request_id = normalizeDiagnosticString(payload.request_id);
+  }
+  return diagnostics;
+};
+
+const buildSafeFailureMessage = (diagnostics) => {
+  const summary = buildDiagnosticsSummary(normalizeOpenClawDiagnostics(diagnostics));
+  const base = "-# OpenClaw 直接実行に失敗しました。時間をおいてもう一度試してください。";
+  return summary ? `${base}\n-# 詳細: ${summary}` : base;
+};
 const buildGateBlockedMessage = () => "-# 今回は自動送信せず止めました。";
 const OPENCLAW_FAILURE_OBSERVE_REASONS = new Set([
   "OPENCLAW_TIMEOUT",
@@ -1161,7 +1257,10 @@ const createOpenClawInteractionHandler = ({
       });
       if (!gate.ok) {
         if (isOpenClawFailureObserve(response)) {
-          await interaction.editReply({ content: buildSafeFailureMessage(), allowedMentions: SAFE_ALLOWED_MENTIONS });
+          await interaction.editReply({
+            content: buildSafeFailureMessage(buildResponseFailureDiagnostics({ payload, response })),
+            allowedMentions: SAFE_ALLOWED_MENTIONS,
+          });
           return { handled: true, requestId: payload.request_id, payload, response, gate };
         }
         await interaction.editReply({ content: buildGateBlockedMessage(), allowedMentions: SAFE_ALLOWED_MENTIONS });
@@ -1171,7 +1270,10 @@ const createOpenClawInteractionHandler = ({
       return { handled: true, requestId: payload.request_id, payload, response, gate };
     } catch (error) {
       if (logger) logger.warn({ err: error, requestId: payload.request_id }, "[fairy-openclaw] interaction failed");
-      await interaction.editReply({ content: buildSafeFailureMessage(), allowedMentions: SAFE_ALLOWED_MENTIONS });
+      await interaction.editReply({
+        content: buildSafeFailureMessage(buildClientFailureDiagnostics({ payload, error })),
+        allowedMentions: SAFE_ALLOWED_MENTIONS,
+      });
       return { handled: true, requestId: payload.request_id, payload, error: String(error) };
     }
   };
@@ -1247,7 +1349,7 @@ const createOpenClawMessageHandler = ({
       if (!gate.ok) {
         if (isOpenClawFailureObserve(response) && isExplicitMessageTrigger(runtimeOptions.messageTriggerSource)) {
           const sentMessage = await message.reply({
-            content: buildSafeFailureMessage(),
+            content: buildSafeFailureMessage(buildResponseFailureDiagnostics({ payload, response })),
             allowedMentions: SAFE_ALLOWED_MENTIONS,
           });
           return {
@@ -1289,7 +1391,10 @@ const createOpenClawMessageHandler = ({
       };
     } catch (error) {
       if (logger) logger.warn({ err: error, requestId: payload.request_id }, "[fairy-openclaw] message failed");
-      const sentMessage = await message.reply({ content: buildSafeFailureMessage(), allowedMentions: SAFE_ALLOWED_MENTIONS });
+      const sentMessage = await message.reply({
+        content: buildSafeFailureMessage(buildClientFailureDiagnostics({ payload, error })),
+        allowedMentions: SAFE_ALLOWED_MENTIONS,
+      });
       return {
         handled: true,
         requestId: payload.request_id,

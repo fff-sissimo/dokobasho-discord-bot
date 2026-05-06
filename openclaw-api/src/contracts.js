@@ -58,25 +58,77 @@ const normalizeSafeIdentifier = (value) => {
   return text;
 };
 
-const buildObserveResponse = (reason) => ({
-  schema_version: 1,
-  action: "observe",
-  body: "",
-  reason: normalizeString(reason),
-  confidence: "low",
-  memory_candidates: [],
-  followup_candidates: [],
-  checked_followup_ids: [],
-  closed_followup_ids: [],
-  requires_approval: false,
-  approval: {
-    target_channel_id: "",
+const DIAGNOSTIC_NUMBER_FIELDS = new Set([
+  "elapsed_ms",
+  "prompt_chars",
+  "initial_prompt_chars",
+  "retry_count",
+  "retry_prompt_chars",
+  "workspace_context_chars",
+]);
+const DIAGNOSTIC_IDENTIFIER_FIELDS = new Set(["request_id", "reason_code", "error_code"]);
+const DIAGNOSTIC_FIELDS = [
+  "request_id",
+  "reason_code",
+  "elapsed_ms",
+  "prompt_chars",
+  "initial_prompt_chars",
+  "retry_count",
+  "retry_prompt_chars",
+  "workspace_context_chars",
+  "error_code",
+];
+
+const normalizeDiagnosticNumber = (value) => {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0) return null;
+  return Math.trunc(number);
+};
+
+const normalizeSafeDiagnostics = (value) => {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const diagnostics = {};
+  for (const field of DIAGNOSTIC_FIELDS) {
+    if (!hasOwn(source, field)) continue;
+    if (DIAGNOSTIC_IDENTIFIER_FIELDS.has(field)) {
+      const normalized = normalizeSafeIdentifier(source[field]);
+      if (normalized) diagnostics[field] = normalized;
+      continue;
+    }
+    if (DIAGNOSTIC_NUMBER_FIELDS.has(field)) {
+      const normalized = normalizeDiagnosticNumber(source[field]);
+      if (normalized !== null) diagnostics[field] = normalized;
+    }
+  }
+  return diagnostics;
+};
+
+const buildObserveResponse = (reason, diagnostics) => {
+  const response = {
+    schema_version: 1,
+    action: "observe",
     body: "",
-    mentions: [],
-    attachments: [],
-    links: [],
-  },
-});
+    reason: normalizeString(reason),
+    confidence: "low",
+    memory_candidates: [],
+    followup_candidates: [],
+    checked_followup_ids: [],
+    closed_followup_ids: [],
+    requires_approval: false,
+    approval: {
+      target_channel_id: "",
+      body: "",
+      mentions: [],
+      attachments: [],
+      links: [],
+    },
+  };
+  const normalizedDiagnostics = normalizeSafeDiagnostics(diagnostics);
+  if (Object.keys(normalizedDiagnostics).length > 0) {
+    response.diagnostics = normalizedDiagnostics;
+  }
+  return response;
+};
 
 const normalizeArray = (value) => (Array.isArray(value) ? value : []);
 
@@ -617,5 +669,6 @@ module.exports = {
   buildObserveResponse,
   loadWorkspaceContext,
   normalizeOpenClawResponse,
+  normalizeSafeDiagnostics,
   parseAgentResponse,
 };

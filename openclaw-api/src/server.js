@@ -7,6 +7,7 @@ const {
   buildAgentPrompt,
   buildObserveResponse,
   loadWorkspaceContext,
+  normalizeSafeDiagnostics,
   parseAgentResponse,
 } = require("./contracts");
 const { runOpenClawAgent } = require("./openclaw-runner");
@@ -81,6 +82,29 @@ const safeLogText = (value, { maxLength = 120 } = {}) => {
   if (/(?:api[_-]?key|token|secret|password|passwd)\s*[:=]/i.test(text)) return "[redacted]";
   if (/(?:bearer|basic)\s+[a-z0-9._~+/=-]{8,}/i.test(text)) return "[redacted]";
   return text.slice(0, maxLength);
+};
+
+const FAILURE_OBSERVE_REASONS = new Set([
+  "context_overflow",
+  "invalid_openclaw_action",
+  "invalid_openclaw_response",
+  "openclaw_error_text",
+  "secret_like_output",
+  "unparseable_openclaw_output",
+]);
+
+const isFailureObserveResponse = (response) =>
+  response &&
+  response.action === "observe" &&
+  FAILURE_OBSERVE_REASONS.has(String(response.reason || "").trim());
+
+const attachFailureDiagnostics = (response, diagnostics) => {
+  const normalizedDiagnostics = normalizeSafeDiagnostics(diagnostics);
+  if (Object.keys(normalizedDiagnostics).length === 0) return response;
+  return {
+    ...response,
+    diagnostics: normalizedDiagnostics,
+  };
 };
 
 const RETRY_MESSAGE_CONTENT_MAX_CHARS = 500;
@@ -271,6 +295,16 @@ const createServer = ({
         retryPromptChars = result.prompt.length;
       }
       const response = result.response;
+      const metrics = {
+        request_id: requestId,
+        reason_code: response.reason,
+        elapsed_ms: Date.now() - requestStartedAt,
+        prompt_chars: result.prompt.length,
+        initial_prompt_chars: initialPromptChars,
+        retry_count: retryCount,
+        retry_prompt_chars: retryPromptChars,
+        workspace_context_chars: workspaceContext.length,
+      };
       logger.info({
         request_id: requestId,
         channel_id: payload.channel && payload.channel.id,
@@ -278,14 +312,16 @@ const createServer = ({
         reason: safeLogIdentifier(response.reason),
         confidence: safeLogText(response.confidence, { maxLength: 24 }),
         body_len: typeof response.body === "string" ? response.body.length : 0,
-        elapsed_ms: Date.now() - requestStartedAt,
-        prompt_chars: result.prompt.length,
-        initial_prompt_chars: initialPromptChars,
-        retry_count: retryCount,
-        retry_prompt_chars: retryPromptChars,
-        workspace_context_chars: workspaceContext.length,
+        elapsed_ms: metrics.elapsed_ms,
+        prompt_chars: metrics.prompt_chars,
+        initial_prompt_chars: metrics.initial_prompt_chars,
+        retry_count: metrics.retry_count,
+        retry_prompt_chars: metrics.retry_prompt_chars,
+        workspace_context_chars: metrics.workspace_context_chars,
       }, "[openclaw-api] request completed");
-      sendJson(res, 200, response);
+      sendJson(res, 200, isFailureObserveResponse(response)
+        ? attachFailureDiagnostics(response, metrics)
+        : response);
     } catch (error) {
       logger.warn({
         request_id: requestId,
@@ -294,7 +330,13 @@ const createServer = ({
         code: error && error.code,
         elapsed_ms: Date.now() - requestStartedAt,
       }, "[openclaw-api] request failed");
-      sendJson(res, 200, buildObserveResponse(error && error.code ? error.code : "openclaw_execution_failed"));
+      const reason = error && error.code ? error.code : "openclaw_execution_failed";
+      sendJson(res, 200, buildObserveResponse(reason, {
+        request_id: requestId,
+        reason_code: reason,
+        elapsed_ms: Date.now() - requestStartedAt,
+        error_code: error && error.code,
+      }));
     }
   });
 };

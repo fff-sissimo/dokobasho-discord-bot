@@ -14,6 +14,7 @@ const {
   buildObserveResponse,
   loadWorkspaceContext,
   normalizeOpenClawResponse,
+  normalizeSafeDiagnostics,
   parseAgentResponse,
 } = require("../src/contracts");
 
@@ -113,6 +114,7 @@ test("discord respond returns normalized OpenClaw response", async () => {
     assert.deepEqual(body.closed_followup_ids, ["followup_2"]);
     assert.deepEqual(body.approval.mentions, []);
     assert.deepEqual(body.approval.links, []);
+    assert.equal(Object.prototype.hasOwnProperty.call(body, "diagnostics"), false);
   });
 });
 
@@ -284,6 +286,42 @@ test("invalid OpenClaw output becomes observe response", () => {
   const response = parseAgentResponse("not json");
   assert.equal(response.action, "observe");
   assert.equal(response.reason, "unparseable_openclaw_output");
+});
+
+test("normalizes diagnostics to whitelisted structured fields only", () => {
+  assert.deepEqual(normalizeSafeDiagnostics({
+    request_id: "req_1",
+    reason_code: "context_overflow",
+    elapsed_ms: 12.9,
+    prompt_chars: "120",
+    initial_prompt_chars: 140,
+    retry_count: 1,
+    retry_prompt_chars: 80,
+    workspace_context_chars: 40,
+    error_code: "OPENCLAW_TIMEOUT",
+    stdout: "raw stdout",
+    prompt: "raw prompt",
+    stack: "Error stack",
+    message: "freeform error",
+    url: "https://example.com/raw",
+  }), {
+    request_id: "req_1",
+    reason_code: "context_overflow",
+    elapsed_ms: 12,
+    prompt_chars: 120,
+    initial_prompt_chars: 140,
+    retry_count: 1,
+    retry_prompt_chars: 80,
+    workspace_context_chars: 40,
+    error_code: "OPENCLAW_TIMEOUT",
+  });
+
+  assert.deepEqual(normalizeSafeDiagnostics({
+    request_id: "https://example.com/raw",
+    reason_code: "token=unsafe-secret-value",
+    error_code: "boom message with spaces",
+    elapsed_ms: -1,
+  }), {});
 });
 
 test("agent prompt includes phase2 chat restraint rules", () => {
@@ -995,6 +1033,43 @@ test("OpenClaw execution failure becomes safe observe response", async () => {
     const body = await response.json();
     assert.equal(body.action, "observe");
     assert.equal(body.reason, "OPENCLAW_TIMEOUT");
+    assert.equal(body.diagnostics.request_id, "req_2");
+    assert.equal(body.diagnostics.reason_code, "OPENCLAW_TIMEOUT");
+    assert.equal(body.diagnostics.error_code, "OPENCLAW_TIMEOUT");
+    assert.ok(body.diagnostics.elapsed_ms >= 0);
+  });
+});
+
+test("OpenClaw execution failure omits unsafe freeform error code diagnostics", async () => {
+  await withServer({
+    runAgentCommand: async () => {
+      const error = new Error("timeout with raw message");
+      error.code = "timeout with spaces";
+      throw error;
+    },
+  }, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/discord/respond`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer secret",
+      },
+      body: JSON.stringify({
+        request_id: "req_unsafe_error_code",
+        channel: { id: "1094907178671939654" },
+      }),
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.action, "observe");
+    assert.equal(body.reason, "timeout with spaces");
+    assert.deepEqual(body.diagnostics, {
+      request_id: "req_unsafe_error_code",
+      elapsed_ms: body.diagnostics.elapsed_ms,
+    });
+    assert.ok(body.diagnostics.elapsed_ms >= 0);
+    assert.equal(Object.prototype.hasOwnProperty.call(body.diagnostics, "reason_code"), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(body.diagnostics, "error_code"), false);
   });
 });
 
@@ -1289,6 +1364,66 @@ test("does not retry context_overflow more than once", async () => {
   });
 
   assert.equal(calls.length, 2);
+});
+
+test("OpenClaw failure observe response includes safe diagnostics from request metrics", async () => {
+  await withServer({
+    loadContext: async () => "runtime context for diagnostics",
+    runAgentCommand: async () => JSON.stringify({
+      payloads: [
+        {
+          text: JSON.stringify({
+            schema_version: 1,
+            action: "reply",
+            body: "Request failed: 500 internal server error",
+            reason: "normal",
+            confidence: "high",
+          }),
+        },
+      ],
+    }),
+  }, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/discord/respond`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer secret",
+      },
+      body: JSON.stringify({
+        request_id: "req_observe_diagnostics",
+        channel: { id: "1094907178671939654", type: "sandbox", registered: true },
+        message: {
+          id: "msg_1",
+          author_id: "user_1",
+          content: "短く返してください",
+          mentions_bot: true,
+        },
+        context: { recent_messages: [] },
+      }),
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.action, "observe");
+    assert.equal(body.reason, "openclaw_error_text");
+    assert.deepEqual(Object.keys(body.diagnostics).sort(), [
+      "elapsed_ms",
+      "initial_prompt_chars",
+      "prompt_chars",
+      "reason_code",
+      "request_id",
+      "retry_count",
+      "retry_prompt_chars",
+      "workspace_context_chars",
+    ].sort());
+    assert.equal(body.diagnostics.request_id, "req_observe_diagnostics");
+    assert.equal(body.diagnostics.reason_code, "openclaw_error_text");
+    assert.equal(body.diagnostics.retry_count, 0);
+    assert.equal(body.diagnostics.retry_prompt_chars, 0);
+    assert.equal(body.diagnostics.workspace_context_chars, "runtime context for diagnostics".length);
+    assert.ok(body.diagnostics.prompt_chars > 0);
+    assert.equal(body.diagnostics.initial_prompt_chars, body.diagnostics.prompt_chars);
+    assert.ok(body.diagnostics.elapsed_ms >= 0);
+  });
 });
 
 test("request completed log keeps reason metadata bounded and redacted", async () => {
