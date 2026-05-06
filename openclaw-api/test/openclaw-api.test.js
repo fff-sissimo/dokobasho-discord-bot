@@ -794,6 +794,20 @@ test("falls back to safe reply when OpenClaw payload text is non-json", () => {
   assert.deepEqual(response.approval.mentions, []);
 });
 
+test("non-json text fallback preserves intentional line breaks", () => {
+  const response = parseAgentResponse(JSON.stringify({
+    payloads: [
+      {
+        text: "  A=返信量: 短めでOK。  \n  B=安全gate: 自動返信可。  \n\n\n  C=followup: 作成なし。  ",
+      },
+    ],
+  }));
+
+  assert.equal(response.action, "reply");
+  assert.equal(response.body, "A=返信量: 短めでOK。\nB=安全gate: 自動返信可。\n\nC=followup: 作成なし。");
+  assert.equal(response.reason, "non_json_openclaw_text");
+});
+
 test("classifies OpenClaw error text without falling back to reply", () => {
   for (const [text, reason] of [
     [

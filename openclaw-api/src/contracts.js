@@ -581,7 +581,7 @@ const isClassifiedFailureResponse = (response) =>
 const buildTextFallbackResponse = (text) => ({
   schema_version: 1,
   action: "reply",
-  body: normalizeString(text).slice(0, 1800),
+  body: normalizeResponseBodyText(text).slice(0, 1800),
   reason: "non_json_openclaw_text",
   confidence: "low",
   memory_candidates: [],
