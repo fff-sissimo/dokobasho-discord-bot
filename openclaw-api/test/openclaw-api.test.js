@@ -1037,6 +1037,7 @@ test("OpenClaw execution failure becomes safe observe response", async () => {
     assert.equal(body.diagnostics.request_id, "req_2");
     assert.equal(body.diagnostics.reason_code, "OPENCLAW_TIMEOUT");
     assert.equal(body.diagnostics.error_code, "OPENCLAW_TIMEOUT");
+    assert.ok(body.diagnostics.prompt_chars > 0);
     assert.ok(body.diagnostics.elapsed_ms >= 0);
   });
 });
@@ -1067,8 +1068,10 @@ test("OpenClaw execution failure omits unsafe freeform error code diagnostics", 
     assert.deepEqual(body.diagnostics, {
       request_id: "req_unsafe_error_code",
       elapsed_ms: body.diagnostics.elapsed_ms,
+      prompt_chars: body.diagnostics.prompt_chars,
     });
     assert.ok(body.diagnostics.elapsed_ms >= 0);
+    assert.ok(body.diagnostics.prompt_chars > 0);
     assert.equal(Object.prototype.hasOwnProperty.call(body.diagnostics, "reason_code"), false);
     assert.equal(Object.prototype.hasOwnProperty.call(body.diagnostics, "error_code"), false);
   });
@@ -1407,6 +1410,55 @@ test("skips context_overflow retry when the request deadline has too little time
   assert.equal(calls.length, 1);
 });
 
+test("keeps context_overflow as the response reason when retry execution times out", async () => {
+  const calls = [];
+  await withServer({
+    config: { ...baseConfig, requestTimeoutMs: 1000, retryMinTimeoutMs: 150 },
+    runAgentCommand: async ({ message, timeoutMs }) => {
+      calls.push({ message, timeoutMs });
+      if (calls.length === 1) {
+        return "Context overflow: prompt too large for the model.";
+      }
+      const error = new Error("retry command timed out with raw text");
+      error.code = "OPENCLAW_TIMEOUT";
+      throw error;
+    },
+  }, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/discord/respond`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer secret",
+      },
+      body: JSON.stringify({
+        request_id: "req_retry_timeout_preserve_context",
+        channel: { id: "1094907178671939654", type: "sandbox", registered: true },
+        message: {
+          id: "msg_1",
+          author_id: "user_1",
+          content: "短く返してください",
+          mentions_bot: true,
+        },
+        context: { recent_messages: [] },
+      }),
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.action, "observe");
+    assert.equal(body.reason, "context_overflow");
+    assert.equal(body.diagnostics.request_id, "req_retry_timeout_preserve_context");
+    assert.equal(body.diagnostics.reason_code, "context_overflow");
+    assert.equal(body.diagnostics.error_code, "OPENCLAW_TIMEOUT");
+    assert.equal(body.diagnostics.retry_count, 1);
+    assert.ok(body.diagnostics.retry_prompt_chars > 0);
+    assert.doesNotMatch(JSON.stringify(body.diagnostics), /raw text/);
+  });
+
+  assert.equal(calls.length, 2);
+  assert.ok(calls[1].timeoutMs <= calls[0].timeoutMs);
+  assert.match(calls[1].message, /\(no workspace context loaded\)/);
+});
+
 test("OpenClaw failure observe response includes safe diagnostics from request metrics", async () => {
   await withServer({
     loadContext: async () => "runtime context for diagnostics",
@@ -1681,7 +1733,7 @@ test("loadConfig defaults to request scoped sessions with fixed compatibility op
   assert.equal(config.sessionScope, "request");
   assert.equal(config.timeoutSeconds, 120);
   assert.equal(config.requestTimeoutMs, 140000);
-  assert.equal(config.retryMinTimeoutMs, 15000);
+  assert.equal(config.retryMinTimeoutMs, 60000);
   assert.equal(config.maxWorkspaceContextChars, 1200);
   assert.equal(config.promptFiles.includes("TOOLS.md"), false);
   assert.deepEqual(config.promptFiles, ["RUNTIME_PROMPT.md"]);

@@ -4,7 +4,7 @@ const DEFAULT_PROMPT_FILES = [
   "RUNTIME_PROMPT.md",
 ];
 const DEFAULT_WORKSPACE_CONTEXT_MAX_CHARS = 1200;
-const DEFAULT_RETRY_MIN_TIMEOUT_MS = 15000;
+const DEFAULT_RETRY_MIN_TIMEOUT_MS = 60000;
 
 const parsePositiveInt = (value, fallback) => {
   const parsed = Number(value);

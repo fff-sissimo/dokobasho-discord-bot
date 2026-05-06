@@ -233,7 +233,15 @@ const executeOpenClawPrompt = async ({
 }) => {
   const promptPayload = projectPayload ? buildPromptPayload(payload) : payload;
   const prompt = buildAgentPrompt({ payload: promptPayload, workspaceContext });
-  const stdout = await runAgentCommand({ config, message: prompt, timeoutMs });
+  let stdout;
+  try {
+    stdout = await runAgentCommand({ config, message: prompt, timeoutMs });
+  } catch (error) {
+    if (error && typeof error === "object") {
+      error.prompt = prompt;
+    }
+    throw error;
+  }
   return {
     prompt,
     response: parseAgentResponse(stdout),
@@ -306,20 +314,26 @@ const createServer = ({
       const initialPromptChars = result.prompt.length;
       let retryCount = 0;
       let retryPromptChars = 0;
+      let retryErrorCode = "";
       if (result.response.action === "observe" && result.response.reason === "context_overflow") {
         const retryTimeoutMs = remainingRequestTimeoutMs({ config, requestStartedAt });
         if (retryTimeoutMs >= config.retryMinTimeoutMs) {
           const retryPayload = buildMinimalRetryPayload(payload);
-          result = await executeOpenClawPrompt({
-            config,
-            payload: retryPayload,
-            workspaceContext: "",
-            runAgentCommand,
-            projectPayload: false,
-            timeoutMs: retryTimeoutMs,
-          });
           retryCount = 1;
-          retryPromptChars = result.prompt.length;
+          try {
+            result = await executeOpenClawPrompt({
+              config,
+              payload: retryPayload,
+              workspaceContext: "",
+              runAgentCommand,
+              projectPayload: false,
+              timeoutMs: retryTimeoutMs,
+            });
+            retryPromptChars = result.prompt.length;
+          } catch (error) {
+            retryErrorCode = error && error.code ? error.code : "openclaw_execution_failed";
+            retryPromptChars = error && error.prompt ? String(error.prompt).length : 0;
+          }
         }
       }
       const response = result.response;
@@ -333,6 +347,9 @@ const createServer = ({
         retry_prompt_chars: retryPromptChars,
         workspace_context_chars: workspaceContext.length,
       };
+      if (retryErrorCode) {
+        metrics.error_code = retryErrorCode;
+      }
       logger.info({
         request_id: requestId,
         channel_id: payload.channel && payload.channel.id,
@@ -359,12 +376,16 @@ const createServer = ({
         elapsed_ms: Date.now() - requestStartedAt,
       }, "[openclaw-api] request failed");
       const reason = error && error.code ? error.code : "openclaw_execution_failed";
-      sendJson(res, 200, buildObserveResponse(reason, {
+      const diagnostics = {
         request_id: requestId,
         reason_code: reason,
         elapsed_ms: Date.now() - requestStartedAt,
         error_code: error && error.code,
-      }));
+      };
+      if (error && error.prompt) {
+        diagnostics.prompt_chars = String(error.prompt).length;
+      }
+      sendJson(res, 200, buildObserveResponse(reason, diagnostics));
     }
   });
 };
