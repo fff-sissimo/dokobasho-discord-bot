@@ -14,12 +14,19 @@ const {
   buildStderrDiagnostics,
   runOpenClawAgent,
 } = require("../src/openclaw-runner");
-const { buildMinimalRetryPayload, buildPromptPayload, createServer, isCompactFirstRequest } = require("../src/server");
+const {
+  buildMinimalRetryPayload,
+  buildOptionalPromptFiles,
+  buildPromptPayload,
+  createServer,
+  isCompactFirstRequest,
+} = require("../src/server");
 const {
   buildAgentPrompt,
   buildCompactAgentPrompt,
   buildObserveResponse,
   buildRetryAgentPrompt,
+  extractMarkdownSections,
   loadWorkspaceContext,
   normalizeOpenClawResponse,
   normalizeSafeDiagnostics,
@@ -480,7 +487,7 @@ test("agent prompt stays under the OpenClaw live-smoke budget for capped context
     payload,
   });
 
-  assert.ok(prompt.length < 7000);
+  assert.ok(prompt.length < 9000);
 });
 
 test("agent prompt includes channel active thread and output policies", () => {
@@ -615,6 +622,142 @@ test("workspace context is capped by configured prompt budget", async () => {
   } finally {
     await fs.rm(workspaceDir, { recursive: true, force: true });
   }
+});
+
+test("workspace context can load curated prompt files and optional excerpts within budget", async () => {
+  const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-context-files-"));
+  try {
+    await fs.writeFile(path.join(workspaceDir, "RUNTIME_PROMPT.md"), "runtime", "utf8");
+    await fs.writeFile(path.join(workspaceDir, "IDENTITY.md"), "identity", "utf8");
+    await fs.writeFile(path.join(workspaceDir, "SOUL.md"), "soul", "utf8");
+    await fs.writeFile(path.join(workspaceDir, "MEMORY.md"), "memory", "utf8");
+    await fs.writeFile(path.join(workspaceDir, "TOOLS.md"), [
+      "# TOOLS",
+      "## ops",
+      "ops excerpt",
+      "## unrelated",
+      "x".repeat(500),
+      "### Publish boundaries",
+      "publish excerpt",
+    ].join("\n"), "utf8");
+
+    const context = await loadWorkspaceContext({
+      workspaceDir,
+      promptFiles: [
+        "RUNTIME_PROMPT.md",
+        "IDENTITY.md",
+        "SOUL.md",
+        "MEMORY.md",
+        {
+          path: "TOOLS.md",
+          label: "TOOLS.md ops excerpt",
+          optional: true,
+          headings: ["ops", "Publish boundaries"],
+          maxChars: 120,
+        },
+        {
+          path: "MISSING_OPTIONAL.md",
+          label: "missing optional",
+          optional: true,
+        },
+      ],
+      maxChars: 4000,
+      required: true,
+    });
+
+    assert.match(context, /## RUNTIME_PROMPT\.md/);
+    assert.match(context, /## IDENTITY\.md/);
+    assert.match(context, /## SOUL\.md/);
+    assert.match(context, /## MEMORY\.md/);
+    assert.match(context, /## TOOLS\.md ops excerpt/);
+    assert.match(context, /ops excerpt/);
+    assert.match(context, /publish excerpt/);
+    assert.doesNotMatch(context, /MISSING_OPTIONAL/);
+    assert.doesNotMatch(context, /x{100}/);
+    assert.ok(context.length <= 4000);
+  } finally {
+    await fs.rm(workspaceDir, { recursive: true, force: true });
+  }
+});
+
+test("workspace context keeps both optional excerpts meaningful with production-sized base files", async () => {
+  const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-context-sized-"));
+  try {
+    await fs.writeFile(path.join(workspaceDir, "RUNTIME_PROMPT.md"), "R".repeat(1159), "utf8");
+    await fs.writeFile(path.join(workspaceDir, "IDENTITY.md"), "I".repeat(471), "utf8");
+    await fs.writeFile(path.join(workspaceDir, "SOUL.md"), "S".repeat(729), "utf8");
+    await fs.writeFile(path.join(workspaceDir, "MEMORY.md"), "M".repeat(396), "utf8");
+    await fs.writeFile(path.join(workspaceDir, "OPEN_ITEMS.md"), [
+      "# OPEN_ITEMS",
+      "### publish 予約と followup の扱いが矛盾している",
+      "followup open item body",
+      "### followup の `checked` が終端か再確認待ちか曖昧",
+      "checked open item body",
+      "### followup の時刻形式とタイムゾーンが未定義",
+      "timezone open item body",
+      "### sandbox followup の扱いが未定義",
+      "sandbox open item body",
+      "### unrelated",
+      "x".repeat(1000),
+    ].join("\n"), "utf8");
+    await fs.writeFile(path.join(workspaceDir, "TOOLS.md"), [
+      "# TOOLS",
+      "## ops",
+      "ops boundary body",
+      "### Publish boundaries",
+      "publish boundary body",
+      "## unrelated",
+      "y".repeat(1000),
+    ].join("\n"), "utf8");
+
+    const context = await loadWorkspaceContext({
+      workspaceDir,
+      promptFiles: [
+        "RUNTIME_PROMPT.md",
+        "IDENTITY.md",
+        "SOUL.md",
+        "MEMORY.md",
+        ...buildOptionalPromptFiles({
+          channel: { type: "ops" },
+          context: { matched_followup_ids: ["due_1"] },
+        }),
+      ],
+      maxChars: 4000,
+      required: true,
+    });
+
+    assert.ok(context.length <= 4000);
+    assert.match(context, /## OPEN_ITEMS\.md followup open items excerpt/);
+    assert.match(context, /followup open item body/);
+    assert.match(context, /checked open item body/);
+    assert.match(context, /timezone open item body/);
+    assert.match(context, /sandbox open item body/);
+    assert.match(context, /## TOOLS\.md ops publish boundaries excerpt/);
+    assert.match(context, /ops boundary body/);
+    assert.match(context, /publish boundary body/);
+  } finally {
+    await fs.rm(workspaceDir, { recursive: true, force: true });
+  }
+});
+
+test("extractMarkdownSections returns only requested heading subtrees", () => {
+  const extracted = extractMarkdownSections([
+    "# Root",
+    "intro",
+    "## ops",
+    "ops body",
+    "### nested",
+    "nested body",
+    "## chat",
+    "chat body",
+    "## Publish boundaries",
+    "publish body",
+  ].join("\n"), ["ops", "Publish boundaries"]);
+
+  assert.match(extracted, /## ops/);
+  assert.match(extracted, /nested body/);
+  assert.match(extracted, /## Publish boundaries/);
+  assert.doesNotMatch(extracted, /chat body/);
 });
 
 test("parses OpenClaw CLI payload text output", () => {
@@ -1523,6 +1666,97 @@ test("compact-first direct smoke skips workspace context and uses the short prom
   assert.match(calls[0].message, /compact 判断 API/);
   assert.doesNotMatch(calls[0].message, /# Runtime files/);
   assert.doesNotMatch(calls[0].message, /raw recent content/);
+});
+
+test("optional prompt files are selected only from structured channel and followup signals", () => {
+  assert.deepEqual(buildOptionalPromptFiles({
+    channel: { type: "chat" },
+    message: { content: "TOOLS.md を読んで" },
+    context: { has_promised_followup: false, matched_followup_ids: [] },
+  }), []);
+
+  assert.deepEqual(buildOptionalPromptFiles({
+    channel: { type: "ops" },
+    context: { has_promised_followup: false, matched_followup_ids: [] },
+  }).map((file) => file.path), ["TOOLS.md"]);
+
+  assert.deepEqual(buildOptionalPromptFiles({
+    channel: { type: "project" },
+    context: { has_promised_followup: true, matched_followup_ids: [] },
+  }).map((file) => file.path), ["OPEN_ITEMS.md"]);
+
+  assert.deepEqual(buildOptionalPromptFiles({
+    channel: { type: "ops" },
+    context: { has_promised_followup: false, matched_followup_ids: ["due_1"] },
+  }).map((file) => file.path), ["OPEN_ITEMS.md", "TOOLS.md"]);
+});
+
+test("full first attempt passes selected optional prompt files to workspace loader", async () => {
+  const loadContextCalls = [];
+  await withServer({
+    config: {
+      ...baseConfig,
+      promptFiles: ["RUNTIME_PROMPT.md", "IDENTITY.md", "SOUL.md", "MEMORY.md"],
+      maxWorkspaceContextChars: 4000,
+    },
+    loadContext: async (args) => {
+      loadContextCalls.push(args);
+      return "runtime context";
+    },
+    runAgentCommand: async () => JSON.stringify({
+      payloads: [
+        {
+          text: JSON.stringify({
+            schema_version: 1,
+            action: "reply",
+            body: "了解。",
+            confidence: "high",
+          }),
+        },
+      ],
+    }),
+  }, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/discord/respond`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer secret",
+      },
+      body: JSON.stringify({
+        request_id: "req_optional_files",
+        event_type: "manual_check",
+        channel: { id: "840827137451229208", type: "ops", registered: true },
+        message: {
+          id: "msg_1",
+          author_id: "user_1",
+          content: "告知文の下書きを確認して",
+          mentions_bot: true,
+          is_reply_to_bot: true,
+          mentions_everyone: false,
+          role_mentions: [],
+          attachments: [],
+          links: [],
+        },
+        context: {
+          recent_messages: [],
+          has_promised_followup: true,
+          matched_followup_ids: ["due_1"],
+        },
+      }),
+    });
+    assert.equal(response.status, 200);
+  });
+
+  assert.equal(loadContextCalls.length, 1);
+  assert.equal(loadContextCalls[0].maxChars, 4000);
+  assert.deepEqual(loadContextCalls[0].promptFiles.map((file) => typeof file === "string" ? file : file.path), [
+    "RUNTIME_PROMPT.md",
+    "IDENTITY.md",
+    "SOUL.md",
+    "MEMORY.md",
+    "OPEN_ITEMS.md",
+    "TOOLS.md",
+  ]);
 });
 
 test("full first attempt is capped and reports safe attempt diagnostics", async () => {
@@ -2612,9 +2846,11 @@ test("loadConfig defaults to request scoped sessions with fixed compatibility op
   assert.equal(config.retryMinTimeoutMs, 60000);
   assert.equal(config.killGraceMs, 10000);
   assert.equal(config.traceLogs, false);
-  assert.equal(config.maxWorkspaceContextChars, 1200);
+  assert.equal(config.maxWorkspaceContextChars, 4000);
   assert.equal(config.promptFiles.includes("TOOLS.md"), false);
-  assert.deepEqual(config.promptFiles, ["RUNTIME_PROMPT.md"]);
+  assert.equal(config.promptFiles.includes("OPEN_ITEMS.md"), false);
+  assert.equal(config.promptFiles.includes("ROADMAP.md"), false);
+  assert.deepEqual(config.promptFiles, ["RUNTIME_PROMPT.md", "IDENTITY.md", "SOUL.md", "MEMORY.md"]);
   assert.equal(loadConfig({
     OPENCLAW_API_KEY: "secret",
     OPENCLAW_AGENT_SESSION_SCOPE: "fixed",

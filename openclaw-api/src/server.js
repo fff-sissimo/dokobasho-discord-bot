@@ -119,6 +119,8 @@ const NORMAL_MESSAGE_CONTENT_MAX_CHARS = 1000;
 const NORMAL_RECENT_MESSAGE_CONTENT_MAX_CHARS = 200;
 const RETRY_LIST_MAX_ITEMS = 5;
 const RETRY_IDENTIFIER_MAX_CHARS = 80;
+const OPS_OPTIONAL_CONTEXT_MAX_CHARS = 500;
+const FOLLOWUP_OPTIONAL_CONTEXT_MAX_CHARS = 500;
 
 const normalizeRetryIdentifierList = (value) =>
   (Array.isArray(value) ? value : [])
@@ -276,6 +278,49 @@ const buildPromptPayload = (payload, { mode = "normal" } = {}) => {
 };
 
 const buildMinimalRetryPayload = (payload) => buildPromptPayload(payload, { mode: "retry" });
+
+const hasFollowupSignals = (payload) => {
+  const source = payload && typeof payload === "object" && !Array.isArray(payload) ? payload : {};
+  const context = source.context && typeof source.context === "object" && !Array.isArray(source.context)
+    ? source.context
+    : {};
+  if (context.has_promised_followup) return true;
+  if (Array.isArray(context.matched_followup_ids) && context.matched_followup_ids.length > 0) return true;
+  const eventType = String(source.event_type || "").trim();
+  return /followup/i.test(eventType);
+};
+
+const buildOptionalPromptFiles = (payload) => {
+  const source = payload && typeof payload === "object" && !Array.isArray(payload) ? payload : {};
+  const channel = source.channel && typeof source.channel === "object" && !Array.isArray(source.channel)
+    ? source.channel
+    : {};
+  const files = [];
+  if (hasFollowupSignals(source)) {
+    files.push({
+      path: "OPEN_ITEMS.md",
+      label: "OPEN_ITEMS.md followup open items excerpt",
+      optional: true,
+      headings: [
+        "publish 予約と followup の扱いが矛盾している",
+        "followup の `checked` が終端か再確認待ちか曖昧",
+        "followup の時刻形式とタイムゾーンが未定義",
+        "sandbox followup の扱いが未定義",
+      ],
+      maxChars: FOLLOWUP_OPTIONAL_CONTEXT_MAX_CHARS,
+    });
+  }
+  if (String(channel.type || "").trim() === "ops") {
+    files.push({
+      path: "TOOLS.md",
+      label: "TOOLS.md ops publish boundaries excerpt",
+      optional: true,
+      headings: ["ops", "Publish approval flow", "Publish boundaries"],
+      maxChars: OPS_OPTIONAL_CONTEXT_MAX_CHARS,
+    });
+  }
+  return files;
+};
 
 const executeOpenClawPrompt = async ({
   config,
@@ -486,17 +531,23 @@ const createServer = ({
           prompt_file_count: Array.isArray(config.promptFiles) ? config.promptFiles.length : 0,
         });
         try {
+          const optionalPromptFiles = buildOptionalPromptFiles(payload);
+          const promptFiles = [
+            ...config.promptFiles,
+            ...optionalPromptFiles,
+          ];
           workspaceContext = await loadContext({
-          workspaceDir: config.workspaceDir,
-          promptFiles: config.promptFiles,
-          maxChars: config.maxWorkspaceContextChars,
-          required: true,
-        });
+            workspaceDir: config.workspaceDir,
+            promptFiles,
+            maxChars: config.maxWorkspaceContextChars,
+            required: true,
+          });
           trace({
             stage: "workspace_context_load_end",
             attempt_mode: attemptMode,
             workspace_context_chars: workspaceContext.length,
-            prompt_file_count: Array.isArray(config.promptFiles) ? config.promptFiles.length : 0,
+            prompt_file_count: promptFiles.length,
+            optional_prompt_file_count: optionalPromptFiles.length,
             duration_ms: Date.now() - contextStartedAt,
           });
         } catch (error) {
@@ -504,6 +555,7 @@ const createServer = ({
             stage: "workspace_context_load_fail",
             attempt_mode: attemptMode,
             prompt_file_count: Array.isArray(config.promptFiles) ? config.promptFiles.length : 0,
+            optional_prompt_file_count: buildOptionalPromptFiles(payload).length,
             duration_ms: Date.now() - contextStartedAt,
             error_code: error && error.code ? error.code : "workspace_context_error",
           });
@@ -852,6 +904,7 @@ if (require.main === module) {
 
 module.exports = {
   buildMinimalRetryPayload,
+  buildOptionalPromptFiles,
   buildPromptPayload,
   createServer,
   isCompactFirstRequest,

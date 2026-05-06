@@ -291,21 +291,98 @@ const appendSectionWithinBudget = (output, section, maxChars) => {
   };
 };
 
+const getPromptFilePath = (promptFile) => {
+  if (typeof promptFile === "string") return promptFile;
+  if (promptFile && typeof promptFile === "object" && !Array.isArray(promptFile)) {
+    return promptFile.path || promptFile.file || "";
+  }
+  return "";
+};
+
+const getPromptFileLabel = (promptFile, relativePath) => {
+  if (promptFile && typeof promptFile === "object" && !Array.isArray(promptFile) && promptFile.label) {
+    return String(promptFile.label).trim();
+  }
+  return relativePath;
+};
+
+const normalizeHeadingName = (value) =>
+  String(value || "")
+    .replace(/^#+\s*/, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+
+const extractMarkdownSections = (content, headings, { maxSectionChars } = {}) => {
+  const targetHeadings = new Set((Array.isArray(headings) ? headings : []).map(normalizeHeadingName).filter(Boolean));
+  if (targetHeadings.size === 0) return String(content || "");
+  const sectionBudget = Number.isFinite(Number(maxSectionChars)) && Number(maxSectionChars) > 0
+    ? Math.floor(Number(maxSectionChars))
+    : 0;
+
+  const source = String(content || "").replace(/\r\n/g, "\n");
+  const lines = source.split("\n");
+  const sections = [];
+  let active = null;
+
+  const closeActive = (endIndex) => {
+    if (!active) return;
+    const section = lines.slice(active.start, endIndex).join("\n").trim();
+    sections.push(sectionBudget > 0 ? fitTextToBudget(section, sectionBudget) : section);
+    active = null;
+  };
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = lines[index].match(/^(#{1,6})\s+(.+?)\s*$/);
+    if (!match) continue;
+    const level = match[1].length;
+    const headingName = normalizeHeadingName(match[2]);
+    if (active && level <= active.level) closeActive(index);
+    if (!active && targetHeadings.has(headingName)) {
+      active = { start: index, level };
+    }
+  }
+  closeActive(lines.length);
+
+  return sections.join("\n\n").trim();
+};
+
+const preparePromptFileContent = ({ content, promptFile }) => {
+  if (!promptFile || typeof promptFile !== "object" || Array.isArray(promptFile)) return String(content || "").trim();
+  if (Number.isFinite(Number(promptFile.maxChars)) && Number(promptFile.maxChars) > 0) {
+    const maxChars = Math.floor(Number(promptFile.maxChars));
+    const headingCount = Array.isArray(promptFile.headings) ? promptFile.headings.filter(Boolean).length : 0;
+    const extracted = extractMarkdownSections(content, promptFile.headings, {
+      maxSectionChars: headingCount > 1 ? Math.max(80, Math.floor(maxChars / headingCount)) : 0,
+    });
+    const body = (extracted || String(content || "")).trim();
+    return fitTextToBudget(body, Math.floor(Number(promptFile.maxChars)));
+  }
+  const extracted = extractMarkdownSections(content, promptFile.headings);
+  const body = (extracted || String(content || "")).trim();
+  return body;
+};
+
 const loadWorkspaceContext = async ({ workspaceDir, promptFiles, maxChars, required = false }) => {
   let output = "";
   let loadedFiles = 0;
   for (const filePath of promptFiles) {
-    const relativePath = safeRelativePath(filePath);
+    const relativePath = safeRelativePath(getPromptFilePath(filePath));
     if (!relativePath) continue;
+    const isOptional = Boolean(
+      filePath && typeof filePath === "object" && !Array.isArray(filePath) && filePath.optional
+    );
     const absolutePath = path.join(workspaceDir, relativePath);
     try {
       const content = await fs.readFile(absolutePath, "utf8");
       loadedFiles += 1;
-      const next = appendSectionWithinBudget(output, `## ${relativePath}\n\n${content.trim()}`, maxChars);
+      const label = getPromptFileLabel(filePath, relativePath);
+      const body = preparePromptFileContent({ content, promptFile: filePath });
+      const next = appendSectionWithinBudget(output, `## ${label}\n\n${body}`, maxChars);
       output = next.output;
       if (next.truncated) break;
     } catch (error) {
-      if (required && error && error.code === "ENOENT") {
+      if (required && !isOptional && error && error.code === "ENOENT") {
         throw error;
       }
       if (error && error.code !== "ENOENT") {
@@ -756,6 +833,7 @@ module.exports = {
   buildCompactAgentPrompt,
   buildObserveResponse,
   buildRetryAgentPrompt,
+  extractMarkdownSections,
   loadWorkspaceContext,
   normalizeOpenClawResponse,
   normalizeSafeDiagnostics,
