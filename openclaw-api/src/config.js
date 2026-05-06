@@ -7,7 +7,7 @@ const DEFAULT_PROMPT_FILES = [
   "HEARTBEAT.md",
   "memory/README.md",
 ];
-const DEFAULT_WORKSPACE_CONTEXT_MAX_CHARS = 8000;
+const DEFAULT_WORKSPACE_CONTEXT_MAX_CHARS = 2500;
 
 const parsePositiveInt = (value, fallback) => {
   const parsed = Number(value);

@@ -6,7 +6,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { test } = require("node:test");
 
-const { loadConfig } = require("../src/config");
+const { DEFAULT_WORKSPACE_CONTEXT_MAX_CHARS, loadConfig } = require("../src/config");
 const { buildOpenClawArgs, buildOpenClawChildEnv, buildRequestScopedSessionId } = require("../src/openclaw-runner");
 const { createServer } = require("../src/server");
 const {
@@ -305,6 +305,78 @@ test("agent prompt includes phase2 chat restraint rules", () => {
   assert.match(prompt, /explicit_user_request, agreed_in_thread, due_followup, unknown/);
   assert.match(prompt, /due followup を一度確認したら/);
   assert.match(prompt, /ID だけを入れ、raw 本文は入れない/);
+});
+
+test("agent prompt keeps Discord payload compact", () => {
+  const payload = {
+    channel: { id: "1094907178671939654", type: "sandbox" },
+    message: { id: "msg_1", content: "短い確認" },
+    context: {
+      recent_messages: [
+        { message_id: "ctx_1", author_id: "user_1", content: "前の文脈", created_at: "2026-05-03T09:45:00.000Z" },
+      ],
+    },
+  };
+  const prompt = buildAgentPrompt({ workspaceContext: "runtime context", payload });
+
+  assert.match(prompt, /# Discord payload\n```json\n\{"channel":/);
+  assert.doesNotMatch(prompt, /\n  "channel"/);
+  assert.ok(prompt.length < buildAgentPrompt({ workspaceContext: "runtime context", payload: {} }).length + 500);
+});
+
+test("agent prompt stays under the OpenClaw live-smoke budget for capped context", () => {
+  const payload = {
+    request_id: "synthetic",
+    schema_version: 1,
+    source: "discord",
+    event_type: "message_create",
+    received_at: "2026-05-06T06:30:00.000Z",
+    guild_id: "840827137451229205",
+    channel: {
+      id: "1094907178671939654",
+      name: "妖精さんより",
+      type: "sandbox",
+      registered: true,
+      thread_id: "",
+      parent_channel_id: "",
+      category_id: "",
+    },
+    message: {
+      id: "msg_live_smoke",
+      author_id: "user_1",
+      author_display_name: "user",
+      content: "live smoke S-1: 短い挨拶です。今の調子を一言で返してください。",
+      created_at: "2026-05-06T06:30:00.000Z",
+      is_reply_to_bot: false,
+      mentions_bot: true,
+      mentions_everyone: false,
+      role_mentions: [],
+      attachments: [],
+      links: [],
+    },
+    context: {
+      recent_messages: Array.from({ length: 5 }, (_, index) => ({
+        message_id: `ctx_${index}`,
+        author_id: "user_1",
+        content: `${index}: ${"x".repeat(300)}`,
+        created_at: "2026-05-06T06:29:00.000Z",
+      })),
+      active_thread_age_minutes: 1,
+      has_promised_followup: false,
+      matched_followup_ids: [],
+    },
+    memory: {
+      member_ids: [],
+      project_ids: [],
+      daily_refs: [],
+    },
+  };
+  const prompt = buildAgentPrompt({
+    workspaceContext: "x".repeat(DEFAULT_WORKSPACE_CONTEXT_MAX_CHARS),
+    payload,
+  });
+
+  assert.ok(prompt.length < 9000);
 });
 
 test("agent prompt includes channel active thread and output policies", () => {
@@ -1139,7 +1211,7 @@ test("loadConfig defaults to request scoped sessions with fixed compatibility op
   assert.equal(config.sessionScope, "request");
   assert.equal(config.timeoutSeconds, 120);
   assert.equal(config.requestTimeoutMs, 140000);
-  assert.equal(config.maxWorkspaceContextChars, 8000);
+  assert.equal(config.maxWorkspaceContextChars, 2500);
   assert.equal(config.promptFiles.includes("TOOLS.md"), false);
   assert.equal(loadConfig({
     OPENCLAW_API_KEY: "secret",

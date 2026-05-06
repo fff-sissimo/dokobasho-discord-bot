@@ -35,9 +35,9 @@ const DEFAULT_CHANNEL_REGISTRY = Object.freeze({
 const CHANNEL_REGISTRY_STATUSES = new Set(["verified", "pending", "known", "not-connected"]);
 const FOLLOWUP_STATUSES = new Set(["open", "checked", "closed"]);
 const FOLLOWUP_TEXT_MAX_LENGTH = 200;
-const OPENCLAW_CONTEXT_MAX_MESSAGES = 8;
-const OPENCLAW_CONTEXT_MAX_CHARS = 2000;
-const OPENCLAW_CONTEXT_ENTRY_MAX_CHARS = 500;
+const OPENCLAW_CONTEXT_MAX_MESSAGES = 5;
+const OPENCLAW_CONTEXT_MAX_CHARS = 1000;
+const OPENCLAW_CONTEXT_ENTRY_MAX_CHARS = 300;
 const FOLLOWUP_KINDS = new Set([
   "explicit_request",
   "agreed_todo",
@@ -683,7 +683,12 @@ const normalizeContextEntries = (entries) => {
       content: normalizeMessageContent(entry.content),
       created_at: normalizeIsoTimestamp(entry.created_at || entry.createdAt || entry.createdTimestamp),
     }))
-    .filter((entry) => entry.message_id && entry.author_id && entry.content && entry.author_is_bot === false)
+    .filter((entry) => (
+      entry.message_id &&
+      entry.author_id &&
+      entry.content &&
+      entry.author_is_bot === false
+    ))
     .map((entry) => ({
       message_id: entry.message_id,
       author_id: entry.author_id,
@@ -692,10 +697,21 @@ const normalizeContextEntries = (entries) => {
     }));
 };
 
-const capContextEntriesForPrompt = (entries) => {
+const isOpenClawOperationalNoise = (content) => {
+  const text = normalizeMessageContent(content);
+  if (!text) return false;
+  return /OpenClaw\s*直接実行に失敗しました|今回は自動送信せず止めました|Context overflow|prompt too large|larger-context model|maximum context length|context length exceeded|token limit|too many tokens/i.test(text);
+};
+
+const capContextEntriesForPrompt = (entries, { currentMessageId = "" } = {}) => {
   let totalChars = 0;
   const cappedEntries = [];
-  const source = Array.isArray(entries) ? entries.slice(-OPENCLAW_CONTEXT_MAX_MESSAGES).reverse() : [];
+  const source = Array.isArray(entries)
+    ? entries
+      .filter((entry) => entry && entry.message_id !== currentMessageId && !isOpenClawOperationalNoise(entry.content))
+      .slice(-OPENCLAW_CONTEXT_MAX_MESSAGES)
+      .reverse()
+    : [];
   for (const entry of source) {
     const remainingChars = OPENCLAW_CONTEXT_MAX_CHARS - totalChars;
     if (remainingChars <= 0) break;
@@ -818,7 +834,7 @@ const buildOpenClawPayload = ({
     normalizeIsoTimestamp(message && message.createdTimestamp) ||
     now;
   const normalizedContextEntries = normalizeContextEntries(contextEntries);
-  const recentMessages = capContextEntriesForPrompt(normalizedContextEntries);
+  const recentMessages = capContextEntriesForPrompt(normalizedContextEntries, { currentMessageId: messageId });
 
   return {
     schema_version: 1,

@@ -229,10 +229,70 @@ describe("fairy OpenClaw runtime", () => {
       contextEntries,
     });
 
-    expect(payload.context.recent_messages.length).toBeLessThanOrEqual(8);
+    expect(payload.context.recent_messages.length).toBeLessThanOrEqual(5);
     expect(payload.context.recent_messages.reduce((sum, entry) => sum + entry.content.length, 0))
-      .toBeLessThanOrEqual(2000);
-    expect(payload.context.recent_messages.every((entry) => entry.content.length <= 500)).toBe(true);
+      .toBeLessThanOrEqual(1000);
+    expect(payload.context.recent_messages.every((entry) => entry.content.length <= 300)).toBe(true);
+  });
+
+  it("removes current message and OpenClaw operational noise from recent context", () => {
+    const allowedChannelIds = new Set(["1094907178671939654"]);
+    const payload = buildOpenClawPayload({
+      eventType: "message_create",
+      guildId: "840827137451229205",
+      channel: { id: "1094907178671939654", name: "妖精さんより" },
+      message: {
+        id: "msg_current",
+        author: { id: "user_1", username: "user" },
+        channel: { id: "1094907178671939654", name: "妖精さんより" },
+        createdAt: new Date("2026-05-03T10:00:00.000Z"),
+        mentions: { everyone: false, roles: { map: () => [] } },
+        attachments: [],
+      },
+      content: "今の投稿",
+      mentionsBot: true,
+      allowedChannelIds,
+      contextEntries: [
+        {
+          message_id: "ctx_keep",
+          author_user_id: "user_1",
+          author_is_bot: false,
+          content: "直前の人間投稿",
+          created_at: "2026-05-03T09:45:00.000Z",
+        },
+        {
+          message_id: "ctx_failure",
+          author_user_id: "user_1",
+          author_is_bot: false,
+          content: "Context overflow: prompt too large for the model.",
+          created_at: "2026-05-03T09:50:00.000Z",
+        },
+        {
+          message_id: "ctx_fixed_notice",
+          author_user_id: "user_1",
+          author_is_bot: false,
+          content: "OpenClaw 直接実行に失敗しました。時間をおいてもう一度試してください。",
+          created_at: "2026-05-03T09:55:00.000Z",
+        },
+        {
+          message_id: "msg_current",
+          author_user_id: "user_1",
+          author_is_bot: false,
+          content: "今の投稿",
+          created_at: "2026-05-03T10:00:00.000Z",
+        },
+      ],
+    });
+
+    expect(payload.context.recent_messages).toEqual([
+      {
+        message_id: "ctx_keep",
+        author_id: "user_1",
+        content: "直前の人間投稿",
+        created_at: "2026-05-03T09:45:00.000Z",
+      },
+    ]);
+    expect(payload.context.active_thread_age_minutes).toBe(5);
   });
 
   it("uses uncapped context entries for active thread age while sending capped recent messages", () => {

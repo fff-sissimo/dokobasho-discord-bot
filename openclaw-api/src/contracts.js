@@ -250,7 +250,7 @@ const buildAgentPrompt = ({ payload, workspaceContext }) => [
   "",
   "# Discord payload",
   "```json",
-  JSON.stringify(payload, null, 2),
+  JSON.stringify(payload),
   "```",
 ].join("\n");
 
