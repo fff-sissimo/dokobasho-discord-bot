@@ -37,6 +37,14 @@ const VALID_FOLLOWUP_BASIS = new Set([
 ]);
 
 const normalizeString = (value) => String(value || "").replace(/\s+/g, " ").trim();
+const normalizeResponseBodyText = (value) =>
+  String(value || "")
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) => line.replace(/[^\S\n]+/g, " ").trim())
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 const WORKSPACE_CONTEXT_TRUNCATED_MARKER = "\n[truncated:workspace_context_budget]";
 const normalizeAction = (value) => {
   const text = normalizeString(value)
@@ -212,7 +220,7 @@ const normalizeApproval = (approval) => {
   const source = approval && typeof approval === "object" && !Array.isArray(approval) ? approval : {};
   return {
     target_channel_id: String(source.target_channel_id || "").trim(),
-    body: normalizeString(source.body),
+    body: normalizeResponseBodyText(source.body),
     mentions: [],
     attachments: normalizeArray(source.attachments),
     links: normalizeArray(source.links),
@@ -237,7 +245,7 @@ const normalizeOpenClawResponse = (value) => {
   return {
     schema_version: 1,
     action,
-    body: normalizeString(value.body),
+    body: normalizeResponseBodyText(value.body),
     reason: normalizeString(value.reason),
     confidence: VALID_CONFIDENCE.has(String(value.confidence || "").trim())
       ? String(value.confidence).trim()
@@ -326,6 +334,9 @@ const buildAgentPrompt = ({ payload, workspaceContext }) => [
   "action は observe, reply, offer, assist, draft, publish_blocked のどれかだけです。",
   "action は必ず小文字 ASCII の exact value にしてください。respond, response, message, answer などの別名は使わず、返信する時は必ず action: \"reply\" にしてください。",
   "bot への明示 mention、bot への reply、または「一言で返して」「挨拶して」のような直接依頼では、禁止要素がない限り action: \"reply\" で短く返してください。",
+  "body の口調は SOUL.md に合わせ、一人称は `僕`、語尾はフランク寄りを基本にしてください。同じ返答内で硬い敬体とくだけた口調を混ぜすぎないでください。",
+  "「挨拶してください」「短い挨拶」の依頼では、説明ではなく短い挨拶そのものを返してください。",
+  "2点以上を整理する時は body に改行箇条書きを使い、1行に詰め込まないでください。",
   "everyone/here、role mention、外部 URL、添付、公開告知、運営判断、承認が必要な内容は requires_approval を true にするか publish_blocked にしてください。",
   "approval.mentions は常に空配列にしてください。許可された mention はありません。",
   "外部 URL が含まれていても、URL 本文やリンク先内容を自動取得・要約・記憶しないでください。ユーザーが貼った URL は文字列として扱い、本文取得が必要なら確認してください。",
@@ -353,6 +364,9 @@ const buildRetryAgentPrompt = ({ payload }) => [
   "返却 JSON は schema_version, action, body, reason, confidence, memory_candidates, followup_candidates, checked_followup_ids, closed_followup_ids, requires_approval, approval を含めてください。",
   "action は observe, reply, offer, assist, draft, publish_blocked のどれかだけです。",
   "bot への明示 mention、bot への reply、または短い直接依頼では、禁止要素がない限り action: \"reply\" で短く返してください。",
+  "body の口調は `どこばしょのようせい` として、一人称は `僕`、語尾はフランク寄りを基本にしてください。",
+  "「挨拶してください」「短い挨拶」の依頼では、説明ではなく短い挨拶そのものを返してください。",
+  "2点以上を整理する時は body に改行箇条書きを使い、1行に詰め込まないでください。",
   "everyone/here、role mention、外部 URL、添付、公開告知、運営判断、承認が必要な内容は requires_approval を true にするか publish_blocked にしてください。",
   "approval.mentions は常に空配列にしてください。外部 URL は自動取得しないでください。",
   "raw Discord 本文、秘密値、未加工の会話ログは保存・出力しないでください。",
@@ -370,6 +384,9 @@ const buildCompactAgentPrompt = ({ payload }) => [
   "返却 JSON は schema_version, action, body, reason, confidence, memory_candidates, followup_candidates, checked_followup_ids, closed_followup_ids, requires_approval, approval を含めてください。",
   "action は observe, reply, offer, assist, draft, publish_blocked のどれかだけです。",
   "短い疎通確認、ping、挨拶、一言の直接依頼では、禁止要素がない限り action: \"reply\" で短く返してください。",
+  "body の口調は `どこばしょのようせい` として、一人称は `僕`、語尾はフランク寄りを基本にしてください。",
+  "「挨拶してください」「短い挨拶」の依頼では、説明ではなく短い挨拶そのものを返してください。",
+  "2点以上を整理する時は body に改行箇条書きを使い、1行に詰め込まないでください。",
   "everyone/here、role mention、外部 URL、添付、公開告知、運営判断、承認が必要な内容は requires_approval を true にするか publish_blocked にしてください。",
   "approval.mentions は常に空配列にしてください。外部 URL は自動取得しないでください。",
   "raw Discord 本文、秘密値、未加工の会話ログは保存・出力しないでください。",

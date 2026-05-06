@@ -160,6 +160,19 @@ test("normalizes safe OpenClaw action aliases to exact contract actions", () => 
   assert.equal(normalizeOpenClawResponse({ action: "\"message\"", body: "ok" }).reason, "invalid_openclaw_action");
 });
 
+test("normalizes response body without flattening intentional line breaks", () => {
+  const response = normalizeOpenClawResponse({
+    action: "reply",
+    body: "  A=返信量: 短めでOK。  \n  B=安全gate: 自動返信可。  \n\n\n  C=followup: 作成なし。  ",
+    approval: {
+      body: "  下書き 1  \r\n  下書き 2  ",
+    },
+  });
+
+  assert.equal(response.body, "A=返信量: 短めでOK。\nB=安全gate: 自動返信可。\n\nC=followup: 作成なし。");
+  assert.equal(response.approval.body, "下書き 1\n下書き 2");
+});
+
 test("normalizes followup state fields as arrays", () => {
   assert.deepEqual(
     normalizeOpenClawResponse({
@@ -393,6 +406,9 @@ test("agent prompt includes phase2 chat restraint rules", () => {
   assert.match(prompt, /explicit_user_request, agreed_in_thread, due_followup, unknown/);
   assert.match(prompt, /due followup を一度確認したら/);
   assert.match(prompt, /ID だけを入れ、raw 本文は入れない/);
+  assert.match(prompt, /一人称は `僕`/);
+  assert.match(prompt, /短い挨拶.*説明ではなく短い挨拶そのもの/);
+  assert.match(prompt, /改行箇条書き/);
 });
 
 test("agent prompt keeps Discord payload compact", () => {
@@ -544,6 +560,9 @@ test("retry agent prompt stays short and excludes runtime context sections", () 
 
   assert.ok(retryPrompt.length < normalPrompt.length);
   assert.match(retryPrompt, /context overflow/);
+  assert.match(retryPrompt, /一人称は `僕`/);
+  assert.match(retryPrompt, /説明ではなく短い挨拶そのもの/);
+  assert.match(retryPrompt, /改行箇条書き/);
   assert.match(retryPrompt, /# Discord payload/);
   assert.doesNotMatch(retryPrompt, /# Runtime files/);
   assert.doesNotMatch(retryPrompt, /runtime context/);
@@ -566,6 +585,9 @@ test("compact agent prompt stays short and keeps direct-response safety rules", 
 
   assert.match(compactPrompt, /必ず JSON だけ/);
   assert.match(compactPrompt, /approval\.mentions は常に空配列/);
+  assert.match(compactPrompt, /一人称は `僕`/);
+  assert.match(compactPrompt, /説明ではなく短い挨拶そのもの/);
+  assert.match(compactPrompt, /改行箇条書き/);
   assert.match(compactPrompt, /外部 URL は自動取得しない/);
   assert.match(compactPrompt, /raw Discord 本文、秘密値/);
   assert.match(compactPrompt, /# Discord payload/);

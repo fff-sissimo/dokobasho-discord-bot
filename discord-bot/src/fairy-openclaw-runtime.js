@@ -651,6 +651,14 @@ const startTypingKeepalive = ({ channel, logger, intervalMs = TYPING_KEEPALIVE_I
 };
 
 const normalizeMessageContent = (value) => String(value || "").replace(/\s+/g, " ").trim();
+const normalizeOutboundMessageContent = (value) =>
+  String(value || "")
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) => line.replace(/[^\S\n]+/g, " ").trim())
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 
 const normalizeIsoTimestamp = (value) => {
   if (value && typeof value.toISOString === "function") return value.toISOString();
@@ -1010,7 +1018,7 @@ const validateOpenClawResponse = (response) => {
   return {
     schema_version: response.schema_version,
     action,
-    body: normalizeMessageContent(response.body),
+    body: normalizeOutboundMessageContent(response.body),
     reason: normalizeMessageContent(response.reason),
     requires_approval: Boolean(response.requires_approval),
     approval: response.approval && typeof response.approval === "object" ? response.approval : {},

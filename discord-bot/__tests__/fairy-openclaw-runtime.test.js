@@ -696,6 +696,18 @@ describe("fairy OpenClaw runtime", () => {
     expect(normalizeFollowupCandidates(null)).toEqual([]);
   });
 
+  it("validates OpenClaw response body without flattening intentional line breaks", () => {
+    const response = validateOpenClawResponse({
+      schema_version: 1,
+      action: "reply",
+      body: "  A=返信量: 短めでOK。  \n  B=安全gate: 自動返信可。  \n\n\n  C=followup: 作成なし。  ",
+      reason: "  line\nbreak reason  ",
+    });
+
+    expect(response.body).toBe("A=返信量: 短めでOK。\nB=安全gate: 自動返信可。\n\nC=followup: 作成なし。");
+    expect(response.reason).toBe("line break reason");
+  });
+
   it("whitelist-normalizes OpenClaw diagnostics without keeping raw unsafe values", () => {
     const response = validateOpenClawResponse({
       schema_version: 1,
