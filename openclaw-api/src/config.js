@@ -4,6 +4,7 @@ const DEFAULT_PROMPT_FILES = [
   "RUNTIME_PROMPT.md",
 ];
 const DEFAULT_WORKSPACE_CONTEXT_MAX_CHARS = 1200;
+const DEFAULT_RETRY_MIN_TIMEOUT_MS = 15000;
 
 const parsePositiveInt = (value, fallback) => {
   const parsed = Number(value);
@@ -37,6 +38,7 @@ const loadConfig = (env = process.env) => {
     thinking: String(env.OPENCLAW_AGENT_THINKING || "low").trim(),
     timeoutSeconds: parsePositiveInt(env.OPENCLAW_AGENT_TIMEOUT_SECONDS, 120),
     requestTimeoutMs: parsePositiveInt(env.OPENCLAW_REQUEST_TIMEOUT_MS, 140000),
+    retryMinTimeoutMs: parsePositiveInt(env.OPENCLAW_RETRY_MIN_TIMEOUT_MS, DEFAULT_RETRY_MIN_TIMEOUT_MS),
     maxBodyBytes: parsePositiveInt(env.OPENCLAW_API_MAX_BODY_BYTES, 65536),
     maxWorkspaceContextChars: parsePositiveInt(
       env.OPENCLAW_WORKSPACE_CONTEXT_MAX_CHARS,
@@ -60,6 +62,7 @@ const assertRuntimeConfig = (config) => {
 
 module.exports = {
   DEFAULT_PROMPT_FILES,
+  DEFAULT_RETRY_MIN_TIMEOUT_MS,
   DEFAULT_WORKSPACE_CONTEXT_MAX_CHARS,
   assertRuntimeConfig,
   loadConfig,

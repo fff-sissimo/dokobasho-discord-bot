@@ -56,8 +56,18 @@ const buildOpenClawChildEnv = (sourceEnv = process.env) =>
       .filter(([, value]) => value !== undefined && value !== null && String(value).trim() !== "")
   );
 
-const runOpenClawAgent = ({ config, message }) =>
+const runOpenClawAgent = ({ config, message, timeoutMs }) =>
   new Promise((resolve, reject) => {
+    const effectiveTimeoutMs = Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0
+      ? Math.floor(Number(timeoutMs))
+      : config.requestTimeoutMs;
+    const effectiveTimeoutSeconds = Math.max(
+      1,
+      Math.min(
+        Number(config.timeoutSeconds) || Math.ceil(effectiveTimeoutMs / 1000),
+        Math.ceil(effectiveTimeoutMs / 1000)
+      )
+    );
     const args = buildOpenClawArgs({
       agentMode: config.agentMode,
       agentId: config.agentId,
@@ -67,7 +77,7 @@ const runOpenClawAgent = ({ config, message }) =>
         message,
       }),
       thinking: config.thinking,
-      timeoutSeconds: config.timeoutSeconds,
+      timeoutSeconds: effectiveTimeoutSeconds,
       message,
     });
     const child = spawn(config.command, args, {
@@ -79,10 +89,10 @@ const runOpenClawAgent = ({ config, message }) =>
     let stderr = "";
     const timer = setTimeout(() => {
       child.kill("SIGTERM");
-      const error = new Error(`OpenClaw command timed out: timeoutMs=${config.requestTimeoutMs}`);
+      const error = new Error(`OpenClaw command timed out: timeoutMs=${effectiveTimeoutMs}`);
       error.code = "OPENCLAW_TIMEOUT";
       reject(error);
-    }, config.requestTimeoutMs);
+    }, effectiveTimeoutMs);
 
     child.stdout.on("data", (chunk) => {
       stdout += chunk.toString("utf8");

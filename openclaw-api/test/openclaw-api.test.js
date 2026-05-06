@@ -30,6 +30,7 @@ const baseConfig = {
   thinking: "low",
   timeoutSeconds: 60,
   requestTimeoutMs: 1000,
+  retryMinTimeoutMs: 150,
   maxBodyBytes: 65536,
   maxWorkspaceContextChars: 16000,
   sessionScope: "request",
@@ -1265,8 +1266,8 @@ test("retries once with a minimal prompt when OpenClaw returns context_overflow"
   await withServer({
     logger: { info: (entry) => logs.push(entry), warn: () => {} },
     loadContext: async () => "x".repeat(1200),
-    runAgentCommand: async ({ message }) => {
-      calls.push(message);
+    runAgentCommand: async ({ message, timeoutMs }) => {
+      calls.push({ message, timeoutMs });
       if (calls.length === 1) {
         assert.match(message, /raw recent content/);
         return "Context overflow: prompt too large for the model.";
@@ -1324,7 +1325,9 @@ test("retries once with a minimal prompt when OpenClaw returns context_overflow"
   });
 
   assert.equal(calls.length, 2);
-  assert.ok(calls[1].length < calls[0].length);
+  assert.ok(calls[0].timeoutMs <= baseConfig.requestTimeoutMs);
+  assert.ok(calls[1].timeoutMs <= calls[0].timeoutMs);
+  assert.ok(calls[1].message.length < calls[0].message.length);
   const completed = logs.find((entry) => entry && entry.request_id === "req_retry_success");
   assert.equal(completed.retry_count, 1);
   assert.ok(completed.initial_prompt_chars > completed.retry_prompt_chars);
@@ -1364,6 +1367,44 @@ test("does not retry context_overflow more than once", async () => {
   });
 
   assert.equal(calls.length, 2);
+});
+
+test("skips context_overflow retry when the request deadline has too little time left", async () => {
+  const calls = [];
+  await withServer({
+    config: { ...baseConfig, requestTimeoutMs: 1000, retryMinTimeoutMs: 1500 },
+    runAgentCommand: async ({ message, timeoutMs }) => {
+      calls.push({ message, timeoutMs });
+      return "Context overflow: prompt too large for the model.";
+    },
+  }, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/discord/respond`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer secret",
+      },
+      body: JSON.stringify({
+        request_id: "req_retry_skipped",
+        channel: { id: "1094907178671939654", type: "sandbox", registered: true },
+        message: {
+          id: "msg_1",
+          author_id: "user_1",
+          content: "短く返してください",
+          mentions_bot: true,
+        },
+        context: { recent_messages: [] },
+      }),
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.action, "observe");
+    assert.equal(body.reason, "context_overflow");
+    assert.equal(body.diagnostics.retry_count, 0);
+    assert.equal(body.diagnostics.retry_prompt_chars, 0);
+  });
+
+  assert.equal(calls.length, 1);
 });
 
 test("OpenClaw failure observe response includes safe diagnostics from request metrics", async () => {
@@ -1640,6 +1681,7 @@ test("loadConfig defaults to request scoped sessions with fixed compatibility op
   assert.equal(config.sessionScope, "request");
   assert.equal(config.timeoutSeconds, 120);
   assert.equal(config.requestTimeoutMs, 140000);
+  assert.equal(config.retryMinTimeoutMs, 15000);
   assert.equal(config.maxWorkspaceContextChars, 1200);
   assert.equal(config.promptFiles.includes("TOOLS.md"), false);
   assert.deepEqual(config.promptFiles, ["RUNTIME_PROMPT.md"]);

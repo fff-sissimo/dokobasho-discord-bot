@@ -223,14 +223,30 @@ const buildPromptPayload = (payload, { mode = "normal" } = {}) => {
 
 const buildMinimalRetryPayload = (payload) => buildPromptPayload(payload, { mode: "retry" });
 
-const executeOpenClawPrompt = async ({ config, payload, workspaceContext, runAgentCommand, projectPayload = true }) => {
+const executeOpenClawPrompt = async ({
+  config,
+  payload,
+  workspaceContext,
+  runAgentCommand,
+  projectPayload = true,
+  timeoutMs,
+}) => {
   const promptPayload = projectPayload ? buildPromptPayload(payload) : payload;
   const prompt = buildAgentPrompt({ payload: promptPayload, workspaceContext });
-  const stdout = await runAgentCommand({ config, message: prompt });
+  const stdout = await runAgentCommand({ config, message: prompt, timeoutMs });
   return {
     prompt,
     response: parseAgentResponse(stdout),
   };
+};
+
+const remainingRequestTimeoutMs = ({ config, requestStartedAt }) =>
+  Math.max(0, Number(config.requestTimeoutMs || 0) - (Date.now() - requestStartedAt));
+
+const buildTimeoutError = () => {
+  const error = new Error("OpenClaw request deadline exhausted");
+  error.code = "OPENCLAW_TIMEOUT";
+  return error;
 };
 
 const createServer = ({
@@ -278,21 +294,33 @@ const createServer = ({
         maxChars: config.maxWorkspaceContextChars,
         required: true,
       });
-      let result = await executeOpenClawPrompt({ config, payload, workspaceContext, runAgentCommand });
+      const firstTimeoutMs = remainingRequestTimeoutMs({ config, requestStartedAt });
+      if (firstTimeoutMs <= 0) throw buildTimeoutError();
+      let result = await executeOpenClawPrompt({
+        config,
+        payload,
+        workspaceContext,
+        runAgentCommand,
+        timeoutMs: firstTimeoutMs,
+      });
       const initialPromptChars = result.prompt.length;
       let retryCount = 0;
       let retryPromptChars = 0;
       if (result.response.action === "observe" && result.response.reason === "context_overflow") {
-        const retryPayload = buildMinimalRetryPayload(payload);
-        result = await executeOpenClawPrompt({
-          config,
-          payload: retryPayload,
-          workspaceContext: "",
-          runAgentCommand,
-          projectPayload: false,
-        });
-        retryCount = 1;
-        retryPromptChars = result.prompt.length;
+        const retryTimeoutMs = remainingRequestTimeoutMs({ config, requestStartedAt });
+        if (retryTimeoutMs >= config.retryMinTimeoutMs) {
+          const retryPayload = buildMinimalRetryPayload(payload);
+          result = await executeOpenClawPrompt({
+            config,
+            payload: retryPayload,
+            workspaceContext: "",
+            runAgentCommand,
+            projectPayload: false,
+            timeoutMs: retryTimeoutMs,
+          });
+          retryCount = 1;
+          retryPromptChars = result.prompt.length;
+        }
       }
       const response = result.response;
       const metrics = {
