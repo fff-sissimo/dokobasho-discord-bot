@@ -13,6 +13,11 @@ const parsePositiveInt = (value, fallback) => {
   return Math.floor(parsed);
 };
 
+const parseBoolean = (value, fallback = false) => {
+  if (value === undefined || value === null || String(value).trim() === "") return fallback;
+  return /^(?:1|true|yes|on)$/i.test(String(value).trim());
+};
+
 const parsePromptFiles = (value) =>
   String(value || "")
     .split(",")
@@ -44,6 +49,7 @@ const loadConfig = (env = process.env) => {
       DEFAULT_FIRST_ATTEMPT_TIMEOUT_MS
     ),
     retryMinTimeoutMs: parsePositiveInt(env.OPENCLAW_RETRY_MIN_TIMEOUT_MS, DEFAULT_RETRY_MIN_TIMEOUT_MS),
+    traceLogs: parseBoolean(env.OPENCLAW_TRACE_LOGS, false),
     maxBodyBytes: parsePositiveInt(env.OPENCLAW_API_MAX_BODY_BYTES, 65536),
     maxWorkspaceContextChars: parsePositiveInt(
       env.OPENCLAW_WORKSPACE_CONTEXT_MAX_CHARS,
@@ -72,5 +78,6 @@ module.exports = {
   DEFAULT_WORKSPACE_CONTEXT_MAX_CHARS,
   assertRuntimeConfig,
   loadConfig,
+  parseBoolean,
   parsePositiveInt,
 };

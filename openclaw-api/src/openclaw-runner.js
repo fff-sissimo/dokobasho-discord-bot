@@ -61,8 +61,25 @@ const buildOpenClawChildEnv = (sourceEnv = process.env) =>
       .filter(([, value]) => value !== undefined && value !== null && String(value).trim() !== "")
   );
 
-const runOpenClawAgent = ({ config, message, timeoutMs, sessionAttempt }) =>
+const emitTraceLog = ({ logger, traceLogs, entry, message }) => {
+  if (!traceLogs || !logger || typeof logger.info !== "function") return;
+  logger.info(entry, message);
+};
+
+const runOpenClawAgent = ({
+  config,
+  message,
+  timeoutMs,
+  sessionAttempt,
+  logger,
+  traceLogs = false,
+  requestId,
+  channelId,
+  attempt,
+  attemptMode,
+}) =>
   new Promise((resolve, reject) => {
+    const startedAt = Date.now();
     const effectiveTimeoutMs = Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0
       ? Math.floor(Number(timeoutMs))
       : config.requestTimeoutMs;
@@ -73,53 +90,177 @@ const runOpenClawAgent = ({ config, message, timeoutMs, sessionAttempt }) =>
         Math.ceil(effectiveTimeoutMs / 1000)
       )
     );
+    const scopedSessionId = buildRequestScopedSessionId({
+      sessionId: config.sessionId,
+      sessionScope: config.sessionScope,
+      requestId,
+      message,
+      sessionAttempt,
+    });
     const args = buildOpenClawArgs({
       agentMode: config.agentMode,
       agentId: config.agentId,
-      sessionId: buildRequestScopedSessionId({
-        sessionId: config.sessionId,
-        sessionScope: config.sessionScope,
-        message,
-        sessionAttempt,
-      }),
+      sessionId: scopedSessionId,
       thinking: config.thinking,
       timeoutSeconds: effectiveTimeoutSeconds,
       message,
     });
-    const child = spawn(config.command, args, {
-      cwd: config.workspaceDir,
-      env: buildOpenClawChildEnv(),
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    const baseLog = {
+      request_id: String(requestId || extractRequestId(message) || "").trim(),
+      channel_id: channelId,
+      attempt,
+      session_attempt: sessionAttempt || "first",
+      attempt_mode: attemptMode,
+    };
+    const trace = (entry, logMessage = "[openclaw-api] trace") => {
+      emitTraceLog({
+        logger,
+        traceLogs,
+        entry: {
+          ...baseLog,
+          elapsed_ms: Date.now() - startedAt,
+          ...entry,
+        },
+        message: logMessage,
+      });
+    };
     let stdout = "";
     let stderr = "";
-    const timer = setTimeout(() => {
-      child.kill("SIGTERM");
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let sawStdout = false;
+    let sawStderr = false;
+    let settled = false;
+    let timedOut = false;
+    let timer;
+
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(error);
+    };
+    const succeed = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+
+    trace({
+      stage: "openclaw_spawn_start",
+      command: config.command,
+      cwd: config.workspaceDir,
+      timeout_ms: effectiveTimeoutMs,
+      timeout_seconds: effectiveTimeoutSeconds,
+      agent_mode: config.agentMode,
+      has_agent_id: Boolean(config.agentId),
+      has_session_id: Boolean(scopedSessionId),
+    });
+
+    let child;
+    try {
+      child = spawn(config.command, args, {
+        cwd: config.workspaceDir,
+        env: buildOpenClawChildEnv(),
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (error) {
+      error.stage = "openclaw_spawn_error";
+      trace({
+        stage: "openclaw_spawn_error",
+        error_code: error.code || "SPAWN_THROW",
+        duration_ms: Date.now() - startedAt,
+      });
+      fail(error);
+      return;
+    }
+    trace({
+      stage: "openclaw_spawned",
+      pid: child.pid || 0,
+    });
+    timer = setTimeout(() => {
+      timedOut = true;
+      const killSent = child.kill("SIGTERM");
+      trace({
+        stage: "openclaw_timeout_signal_sent",
+        pid: child.pid || 0,
+        kill_signal: "SIGTERM",
+        kill_sent: killSent,
+        duration_ms: Date.now() - startedAt,
+        stdout_bytes: stdoutBytes,
+        stderr_bytes: stderrBytes,
+      });
       const error = new Error(`OpenClaw command timed out: timeoutMs=${effectiveTimeoutMs}`);
       error.code = "OPENCLAW_TIMEOUT";
-      reject(error);
+      error.stage = "openclaw_timeout";
+      error.stdout_bytes = stdoutBytes;
+      error.stderr_bytes = stderrBytes;
+      fail(error);
     }, effectiveTimeoutMs);
 
     child.stdout.on("data", (chunk) => {
+      stdoutBytes += chunk.length;
       stdout += chunk.toString("utf8");
+      if (!sawStdout) {
+        sawStdout = true;
+        trace({
+          stage: "openclaw_first_stdout_chunk",
+          stdout_bytes: stdoutBytes,
+          time_to_first_stdout_ms: Date.now() - startedAt,
+        });
+      }
     });
     child.stderr.on("data", (chunk) => {
+      stderrBytes += chunk.length;
       stderr += chunk.toString("utf8");
+      if (!sawStderr) {
+        sawStderr = true;
+        trace({
+          stage: "openclaw_first_stderr_chunk",
+          stderr_bytes: stderrBytes,
+          time_to_first_stderr_ms: Date.now() - startedAt,
+        });
+      }
     });
     child.on("error", (error) => {
-      clearTimeout(timer);
-      reject(error);
+      error.stage = "openclaw_spawn_error";
+      trace({
+        stage: "openclaw_spawn_error",
+        pid: child.pid || 0,
+        error_code: error.code || "SPAWN_ERROR",
+        duration_ms: Date.now() - startedAt,
+        stdout_bytes: stdoutBytes,
+        stderr_bytes: stderrBytes,
+      });
+      fail(error);
     });
-    child.on("close", (code) => {
-      clearTimeout(timer);
+    child.on("close", (code, signal) => {
+      const closeCode = code === null
+        ? -1
+        : Number.isFinite(Number(code)) ? Number(code) : -1;
+      trace({
+        stage: "openclaw_close",
+        pid: child.pid || 0,
+        close_code: closeCode,
+        close_signal: signal || "",
+        duration_ms: Date.now() - startedAt,
+        stdout_bytes: stdoutBytes,
+        stderr_bytes: stderrBytes,
+        timed_out: timedOut,
+      });
+      if (settled) return;
       if (code !== 0) {
         const error = new Error(`OpenClaw command failed: code=${code}`);
         error.code = "OPENCLAW_EXIT";
+        error.stage = "openclaw_close";
+        error.stdout_bytes = stdoutBytes;
+        error.stderr_bytes = stderrBytes;
         error.stderr = stderr.slice(-4000);
-        reject(error);
+        fail(error);
         return;
       }
-      resolve(stdout);
+      succeed(stdout);
     });
   });
 

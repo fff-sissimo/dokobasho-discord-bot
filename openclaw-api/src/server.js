@@ -86,6 +86,11 @@ const safeLogText = (value, { maxLength = 120 } = {}) => {
   return text.slice(0, maxLength);
 };
 
+const emitTraceLog = ({ config, logger, entry, message = "[openclaw-api] trace" }) => {
+  if (!config.traceLogs || !logger || typeof logger.info !== "function") return;
+  logger.info(entry, message);
+};
+
 const FAILURE_OBSERVE_REASONS = new Set([
   "context_overflow",
   "invalid_openclaw_action",
@@ -281,21 +286,112 @@ const executeOpenClawPrompt = async ({
   timeoutMs,
   promptBuilder = buildAgentPrompt,
   sessionAttempt,
+  logger,
+  trace,
+  attempt,
+  attemptMode,
 }) => {
+  const attemptStartedAt = Date.now();
   const promptPayload = projectPayload ? buildPromptPayload(payload) : payload;
   const prompt = promptBuilder({ payload: promptPayload, workspaceContext });
+  const promptBuilderName = promptBuilder === buildCompactAgentPrompt
+    ? "compact"
+    : promptBuilder === buildRetryAgentPrompt
+      ? "retry"
+      : "full";
+  if (trace) {
+    trace({
+      stage: "prompt_built",
+      attempt,
+      session_attempt: sessionAttempt || "first",
+      attempt_mode: attemptMode,
+      prompt_builder: promptBuilderName,
+      project_payload: projectPayload,
+      prompt_chars: prompt.length,
+      workspace_context_chars: String(workspaceContext || "").length,
+      timeout_ms: timeoutMs,
+    });
+    trace({
+      stage: "openclaw_attempt_start",
+      attempt,
+      session_attempt: sessionAttempt || "first",
+      attempt_mode: attemptMode,
+      timeout_ms: timeoutMs,
+      prompt_chars: prompt.length,
+    });
+  }
   let stdout;
   try {
-    stdout = await runAgentCommand({ config, message: prompt, timeoutMs, sessionAttempt });
+    stdout = await runAgentCommand({
+      config,
+      message: prompt,
+      timeoutMs,
+      sessionAttempt,
+      logger,
+      traceLogs: Boolean(config.traceLogs),
+      requestId: payload.request_id,
+      channelId: payload.channel && payload.channel.id,
+      attempt,
+      attemptMode,
+    });
   } catch (error) {
     if (error && typeof error === "object") {
       error.prompt = prompt;
+      error.attempt_elapsed_ms = Date.now() - attemptStartedAt;
+      error.stage = error.stage || "openclaw_attempt_failed";
+    }
+    if (trace) {
+      trace({
+        stage: "openclaw_attempt_fail",
+        attempt,
+        session_attempt: sessionAttempt || "first",
+        attempt_mode: attemptMode,
+        timeout_ms: timeoutMs,
+        prompt_chars: prompt.length,
+        duration_ms: Date.now() - attemptStartedAt,
+        error_code: error && error.code ? error.code : "openclaw_execution_failed",
+        stdout_bytes: error && Number.isFinite(Number(error.stdout_bytes)) ? Number(error.stdout_bytes) : 0,
+        stderr_bytes: error && Number.isFinite(Number(error.stderr_bytes)) ? Number(error.stderr_bytes) : 0,
+      });
     }
     throw error;
   }
+  if (trace) {
+    trace({
+      stage: "openclaw_attempt_end",
+      attempt,
+      session_attempt: sessionAttempt || "first",
+      attempt_mode: attemptMode,
+      timeout_ms: timeoutMs,
+      prompt_chars: prompt.length,
+      duration_ms: Date.now() - attemptStartedAt,
+      stdout_bytes: Buffer.byteLength(String(stdout || ""), "utf8"),
+    });
+    trace({
+      stage: "openclaw_parse_start",
+      attempt,
+      session_attempt: sessionAttempt || "first",
+      attempt_mode: attemptMode,
+      stdout_bytes: Buffer.byteLength(String(stdout || ""), "utf8"),
+    });
+  }
+  const response = parseAgentResponse(stdout);
+  if (trace) {
+    trace({
+      stage: "openclaw_parse_end",
+      attempt,
+      session_attempt: sessionAttempt || "first",
+      attempt_mode: attemptMode,
+      stdout_bytes: Buffer.byteLength(String(stdout || ""), "utf8"),
+      response_action: response.action,
+      reason: safeLogIdentifier(response.reason),
+    });
+  }
   return {
     prompt,
-    response: parseAgentResponse(stdout),
+    response,
+    attempt_elapsed_ms: Date.now() - attemptStartedAt,
+    stdout_bytes: Buffer.byteLength(String(stdout || ""), "utf8"),
   };
 };
 
@@ -357,17 +453,63 @@ const createServer = ({
     const requestId = String(payload.request_id || "").trim();
     const requestStartedAt = Date.now();
     let effectiveFirstAttemptTimeoutMs = 0;
+    let lastStage = "request_received";
+    const trace = (entry) => {
+      if (entry && entry.stage) lastStage = entry.stage;
+      emitTraceLog({
+        config,
+        logger,
+        entry: {
+          request_id: requestId,
+          channel_id: payload.channel && payload.channel.id,
+          elapsed_ms: Date.now() - requestStartedAt,
+          ...entry,
+        },
+      });
+    };
     try {
       const compactFirst = isCompactFirstRequest(payload);
       const attemptMode = compactFirst ? "compact_first" : "full_first";
-      const workspaceContext = compactFirst
-        ? ""
-        : await loadContext({
+      trace({
+        stage: "request_received",
+        event_type: safeLogText(payload.event_type, { maxLength: 32 }),
+        message_id: payload.message && payload.message.id,
+        attempt_mode: attemptMode,
+        compact_first: compactFirst,
+      });
+      let workspaceContext = "";
+      if (!compactFirst) {
+        const contextStartedAt = Date.now();
+        trace({
+          stage: "workspace_context_load_start",
+          attempt_mode: attemptMode,
+          prompt_file_count: Array.isArray(config.promptFiles) ? config.promptFiles.length : 0,
+        });
+        try {
+          workspaceContext = await loadContext({
           workspaceDir: config.workspaceDir,
           promptFiles: config.promptFiles,
           maxChars: config.maxWorkspaceContextChars,
           required: true,
         });
+          trace({
+            stage: "workspace_context_load_end",
+            attempt_mode: attemptMode,
+            workspace_context_chars: workspaceContext.length,
+            prompt_file_count: Array.isArray(config.promptFiles) ? config.promptFiles.length : 0,
+            duration_ms: Date.now() - contextStartedAt,
+          });
+        } catch (error) {
+          trace({
+            stage: "workspace_context_load_fail",
+            attempt_mode: attemptMode,
+            prompt_file_count: Array.isArray(config.promptFiles) ? config.promptFiles.length : 0,
+            duration_ms: Date.now() - contextStartedAt,
+            error_code: error && error.code ? error.code : "workspace_context_error",
+          });
+          throw error;
+        }
+      }
       const firstTimeoutMs = firstAttemptTimeoutMs({ config, requestStartedAt });
       effectiveFirstAttemptTimeoutMs = firstTimeoutMs;
       if (firstTimeoutMs <= 0) throw buildTimeoutError();
@@ -377,6 +519,12 @@ const createServer = ({
       let retryPromptChars = 0;
       let retryErrorCode = "";
       let initialError = null;
+      let firstAttemptElapsedMs = 0;
+      let retryElapsedMs = 0;
+      let retrySkipReason = "";
+      let retryLastStage = "";
+      let retryStdoutBytes = 0;
+      let retryStderrBytes = 0;
       try {
         if (compactFirst) {
           const compactPayload = buildMinimalRetryPayload(payload);
@@ -388,6 +536,10 @@ const createServer = ({
             projectPayload: false,
             timeoutMs: firstTimeoutMs,
             promptBuilder: buildCompactAgentPrompt,
+            logger,
+            trace,
+            attempt: "first",
+            attemptMode,
           });
         } else {
           result = await executeOpenClawPrompt({
@@ -396,12 +548,20 @@ const createServer = ({
             workspaceContext,
             runAgentCommand,
             timeoutMs: firstTimeoutMs,
+            logger,
+            trace,
+            attempt: "first",
+            attemptMode,
           });
         }
         initialPromptChars = result.prompt.length;
+        firstAttemptElapsedMs = result.attempt_elapsed_ms || 0;
       } catch (error) {
         initialError = error;
         initialPromptChars = error && error.prompt ? String(error.prompt).length : 0;
+        firstAttemptElapsedMs = error && Number.isFinite(Number(error.attempt_elapsed_ms))
+          ? Number(error.attempt_elapsed_ms)
+          : 0;
         if (!isRetryableInitialError(error)) {
           throw error;
         }
@@ -413,7 +573,18 @@ const createServer = ({
         result.response.reason === "context_overflow"
       ) {
         const retryTimeoutMs = remainingRequestTimeoutMs({ config, requestStartedAt });
-        if (retryTimeoutMs >= config.retryMinTimeoutMs) {
+        const retryAllowed = retryTimeoutMs >= config.retryMinTimeoutMs;
+        retrySkipReason = retryAllowed ? "" : "insufficient_time";
+        trace({
+          stage: "retry_decision",
+          attempt_mode: attemptMode,
+          retry_reason: "context_overflow",
+          retry_allowed: retryAllowed,
+          retry_timeout_ms: retryTimeoutMs,
+          retry_min_timeout_ms: config.retryMinTimeoutMs,
+          retry_skip_reason: retrySkipReason,
+        });
+        if (retryAllowed) {
           const retryPayload = buildMinimalRetryPayload(payload);
           retryCount = 1;
           try {
@@ -426,17 +597,44 @@ const createServer = ({
               timeoutMs: retryTimeoutMs,
               promptBuilder: buildRetryAgentPrompt,
               sessionAttempt: "retry-1",
+              logger,
+              trace,
+              attempt: "retry",
+              attemptMode,
             });
             retryPromptChars = result.prompt.length;
+            retryElapsedMs = result.attempt_elapsed_ms || 0;
           } catch (error) {
             retryErrorCode = error && error.code ? error.code : "openclaw_execution_failed";
             retryPromptChars = error && error.prompt ? String(error.prompt).length : 0;
+            retryElapsedMs = error && Number.isFinite(Number(error.attempt_elapsed_ms))
+              ? Number(error.attempt_elapsed_ms)
+              : 0;
+            retryLastStage = error && error.stage ? String(error.stage) : "openclaw_attempt_failed";
+            retryStdoutBytes = error && Number.isFinite(Number(error.stdout_bytes))
+              ? Number(error.stdout_bytes)
+              : 0;
+            retryStderrBytes = error && Number.isFinite(Number(error.stderr_bytes))
+              ? Number(error.stderr_bytes)
+              : 0;
           }
         }
       }
       if (initialError) {
         const retryTimeoutMs = remainingRequestTimeoutMs({ config, requestStartedAt });
-        if (retryTimeoutMs >= config.retryMinTimeoutMs) {
+        const retryAllowed = retryTimeoutMs >= config.retryMinTimeoutMs;
+        retrySkipReason = retryAllowed ? "" : "insufficient_time";
+        trace({
+          stage: "retry_decision",
+          attempt_mode: attemptMode,
+          retry_reason: "initial_error",
+          retry_allowed: retryAllowed,
+          retry_timeout_ms: retryTimeoutMs,
+          retry_min_timeout_ms: config.retryMinTimeoutMs,
+          retry_skip_reason: retrySkipReason,
+          initial_error_code: initialError && initialError.code ? initialError.code : "openclaw_execution_failed",
+        });
+        if (retryAllowed) {
           const retryPayload = buildMinimalRetryPayload(payload);
           retryCount = 1;
           try {
@@ -449,19 +647,41 @@ const createServer = ({
               timeoutMs: retryTimeoutMs,
               promptBuilder: buildRetryAgentPrompt,
               sessionAttempt: "retry-1",
+              logger,
+              trace,
+              attempt: "retry",
+              attemptMode,
             });
             retryPromptChars = result.prompt.length;
+            retryElapsedMs = result.attempt_elapsed_ms || 0;
           } catch (error) {
             retryErrorCode = error && error.code ? error.code : "openclaw_execution_failed";
             retryPromptChars = error && error.prompt ? String(error.prompt).length : 0;
+            retryElapsedMs = error && Number.isFinite(Number(error.attempt_elapsed_ms))
+              ? Number(error.attempt_elapsed_ms)
+              : 0;
+            retryLastStage = error && error.stage ? String(error.stage) : "openclaw_attempt_failed";
+            retryStdoutBytes = error && Number.isFinite(Number(error.stdout_bytes))
+              ? Number(error.stdout_bytes)
+              : 0;
+            retryStderrBytes = error && Number.isFinite(Number(error.stderr_bytes))
+              ? Number(error.stderr_bytes)
+              : 0;
             if (initialError && typeof initialError === "object") {
               initialError.retry_count = retryCount;
               initialError.retry_prompt_chars = retryPromptChars;
               initialError.retry_error_code = retryErrorCode;
+              initialError.retry_elapsed_ms = retryElapsedMs;
+              initialError.retry_last_stage = retryLastStage;
+              initialError.retry_stdout_bytes = retryStdoutBytes;
+              initialError.retry_stderr_bytes = retryStderrBytes;
             }
             throw initialError;
           }
         } else {
+          if (initialError && typeof initialError === "object") {
+            initialError.retry_skip_reason = retrySkipReason;
+          }
           throw initialError;
         }
       }
@@ -474,10 +694,20 @@ const createServer = ({
         first_attempt_timeout_ms: firstTimeoutMs,
         prompt_chars: result.prompt.length,
         initial_prompt_chars: initialPromptChars,
+        first_attempt_elapsed_ms: firstAttemptElapsedMs,
         retry_count: retryCount,
         retry_prompt_chars: retryPromptChars,
+        retry_elapsed_ms: retryElapsedMs,
         workspace_context_chars: workspaceContext.length,
+        stdout_bytes: result.stdout_bytes || 0,
+        last_stage: "request_completed",
+        retry_skip_reason: retrySkipReason,
       };
+      if (retryCount > 0) {
+        metrics.retry_stdout_bytes = retryStdoutBytes;
+        metrics.retry_stderr_bytes = retryStderrBytes;
+        if (retryLastStage) metrics.retry_last_stage = retryLastStage;
+      }
       if (retryErrorCode) {
         metrics.error_code = retryErrorCode;
       }
@@ -491,11 +721,19 @@ const createServer = ({
         elapsed_ms: metrics.elapsed_ms,
         prompt_chars: metrics.prompt_chars,
         initial_prompt_chars: metrics.initial_prompt_chars,
+        first_attempt_elapsed_ms: metrics.first_attempt_elapsed_ms,
         retry_count: metrics.retry_count,
         retry_prompt_chars: metrics.retry_prompt_chars,
+        retry_elapsed_ms: metrics.retry_elapsed_ms,
+        retry_stdout_bytes: metrics.retry_stdout_bytes,
+        retry_stderr_bytes: metrics.retry_stderr_bytes,
         attempt_mode: metrics.attempt_mode,
         first_attempt_timeout_ms: metrics.first_attempt_timeout_ms,
         workspace_context_chars: metrics.workspace_context_chars,
+        stdout_bytes: metrics.stdout_bytes,
+        stage: metrics.last_stage,
+        retry_last_stage: metrics.retry_last_stage,
+        retry_skip_reason: metrics.retry_skip_reason,
       }, "[openclaw-api] request completed");
       sendJson(res, 200, isFailureObserveResponse(response)
         ? attachFailureDiagnostics(response, metrics)
@@ -507,6 +745,8 @@ const createServer = ({
         err: error && error.message,
         code: error && error.code,
         elapsed_ms: Date.now() - requestStartedAt,
+        stage: error && error.stage ? error.stage : lastStage,
+        retry_skip_reason: error && error.retry_skip_reason ? error.retry_skip_reason : "",
       }, "[openclaw-api] request failed");
       const reason = error && error.code ? error.code : "openclaw_execution_failed";
       const diagnostics = {
@@ -517,15 +757,39 @@ const createServer = ({
         first_attempt_timeout_ms: effectiveFirstAttemptTimeoutMs ||
           firstAttemptTimeoutMs({ config, requestStartedAt }),
         error_code: error && (error.retry_error_code || error.code),
+        initial_error_code: error && error.code,
+        last_stage: error && error.stage ? error.stage : lastStage,
+        retry_skip_reason: error && error.retry_skip_reason,
       };
       if (error && error.prompt) {
         diagnostics.prompt_chars = String(error.prompt).length;
+      }
+      if (error && Number.isFinite(Number(error.attempt_elapsed_ms))) {
+        diagnostics.first_attempt_elapsed_ms = Number(error.attempt_elapsed_ms);
       }
       if (error && Object.prototype.hasOwnProperty.call(error, "retry_count")) {
         diagnostics.retry_count = error.retry_count;
       }
       if (error && Object.prototype.hasOwnProperty.call(error, "retry_prompt_chars")) {
         diagnostics.retry_prompt_chars = error.retry_prompt_chars;
+      }
+      if (error && Object.prototype.hasOwnProperty.call(error, "retry_elapsed_ms")) {
+        diagnostics.retry_elapsed_ms = error.retry_elapsed_ms;
+      }
+      if (error && Object.prototype.hasOwnProperty.call(error, "retry_last_stage")) {
+        diagnostics.retry_last_stage = error.retry_last_stage;
+      }
+      if (error && Object.prototype.hasOwnProperty.call(error, "retry_stdout_bytes")) {
+        diagnostics.retry_stdout_bytes = error.retry_stdout_bytes;
+      }
+      if (error && Object.prototype.hasOwnProperty.call(error, "retry_stderr_bytes")) {
+        diagnostics.retry_stderr_bytes = error.retry_stderr_bytes;
+      }
+      if (error && Number.isFinite(Number(error.stdout_bytes))) {
+        diagnostics.stdout_bytes = Number(error.stdout_bytes);
+      }
+      if (error && Number.isFinite(Number(error.stderr_bytes))) {
+        diagnostics.stderr_bytes = Number(error.stderr_bytes);
       }
       sendJson(res, 200, buildObserveResponse(reason, diagnostics));
     }

@@ -63,11 +63,26 @@ const DIAGNOSTIC_NUMBER_FIELDS = new Set([
   "first_attempt_timeout_ms",
   "prompt_chars",
   "initial_prompt_chars",
+  "first_attempt_elapsed_ms",
   "retry_count",
   "retry_prompt_chars",
+  "retry_elapsed_ms",
+  "retry_stdout_bytes",
+  "retry_stderr_bytes",
   "workspace_context_chars",
+  "stdout_bytes",
+  "stderr_bytes",
 ]);
-const DIAGNOSTIC_IDENTIFIER_FIELDS = new Set(["request_id", "reason_code", "attempt_mode", "error_code"]);
+const DIAGNOSTIC_IDENTIFIER_FIELDS = new Set([
+  "request_id",
+  "reason_code",
+  "attempt_mode",
+  "error_code",
+  "initial_error_code",
+  "last_stage",
+  "retry_last_stage",
+  "retry_skip_reason",
+]);
 const DIAGNOSTIC_FIELDS = [
   "request_id",
   "reason_code",
@@ -76,10 +91,20 @@ const DIAGNOSTIC_FIELDS = [
   "first_attempt_timeout_ms",
   "prompt_chars",
   "initial_prompt_chars",
+  "first_attempt_elapsed_ms",
   "retry_count",
   "retry_prompt_chars",
+  "retry_elapsed_ms",
+  "retry_stdout_bytes",
+  "retry_stderr_bytes",
   "workspace_context_chars",
+  "stdout_bytes",
+  "stderr_bytes",
   "error_code",
+  "initial_error_code",
+  "last_stage",
+  "retry_last_stage",
+  "retry_skip_reason",
 ];
 
 const normalizeDiagnosticNumber = (value) => {

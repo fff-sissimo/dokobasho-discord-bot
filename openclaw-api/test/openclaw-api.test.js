@@ -6,8 +6,13 @@ const os = require("node:os");
 const path = require("node:path");
 const { test } = require("node:test");
 
-const { DEFAULT_WORKSPACE_CONTEXT_MAX_CHARS, loadConfig } = require("../src/config");
-const { buildOpenClawArgs, buildOpenClawChildEnv, buildRequestScopedSessionId } = require("../src/openclaw-runner");
+const { DEFAULT_WORKSPACE_CONTEXT_MAX_CHARS, loadConfig, parseBoolean } = require("../src/config");
+const {
+  buildOpenClawArgs,
+  buildOpenClawChildEnv,
+  buildRequestScopedSessionId,
+  runOpenClawAgent,
+} = require("../src/openclaw-runner");
 const { buildMinimalRetryPayload, buildPromptPayload, createServer, isCompactFirstRequest } = require("../src/server");
 const {
   buildAgentPrompt,
@@ -64,6 +69,14 @@ test("health endpoint does not require auth", async () => {
     assert.equal(body.ok, true);
     assert.equal(body.service, "openclaw-api");
   });
+});
+
+test("trace logging config defaults off unless env enables it", () => {
+  assert.equal(parseBoolean("true"), true);
+  assert.equal(parseBoolean("1"), true);
+  assert.equal(parseBoolean("false"), false);
+  assert.equal(loadConfig({ OPENCLAW_API_KEY: "secret" }).traceLogs, false);
+  assert.equal(loadConfig({ OPENCLAW_API_KEY: "secret", OPENCLAW_TRACE_LOGS: "true" }).traceLogs, true);
 });
 
 test("discord respond requires bearer auth", async () => {
@@ -1130,6 +1143,8 @@ test("OpenClaw execution failure omits unsafe freeform error code diagnostics", 
       elapsed_ms: body.diagnostics.elapsed_ms,
       first_attempt_timeout_ms: baseConfig.firstAttemptTimeoutMs,
       prompt_chars: body.diagnostics.prompt_chars,
+      first_attempt_elapsed_ms: body.diagnostics.first_attempt_elapsed_ms,
+      last_stage: "openclaw_attempt_failed",
     });
     assert.ok(body.diagnostics.elapsed_ms >= 0);
     assert.ok(body.diagnostics.prompt_chars > 0);
@@ -1646,6 +1661,7 @@ test("skips context_overflow retry when the request deadline has too little time
     assert.equal(body.reason, "context_overflow");
     assert.equal(body.diagnostics.retry_count, 0);
     assert.equal(body.diagnostics.retry_prompt_chars, 0);
+    assert.equal(body.diagnostics.retry_skip_reason, "insufficient_time");
   });
 
   assert.equal(calls.length, 1);
@@ -1662,6 +1678,9 @@ test("keeps context_overflow as the response reason when retry execution times o
       }
       const error = new Error("retry command timed out with raw text");
       error.code = "OPENCLAW_TIMEOUT";
+      error.stage = "openclaw_timeout";
+      error.stdout_bytes = 12;
+      error.stderr_bytes = 34;
       throw error;
     },
   }, async (baseUrl) => {
@@ -1692,6 +1711,9 @@ test("keeps context_overflow as the response reason when retry execution times o
     assert.equal(body.diagnostics.error_code, "OPENCLAW_TIMEOUT");
     assert.equal(body.diagnostics.retry_count, 1);
     assert.ok(body.diagnostics.retry_prompt_chars > 0);
+    assert.equal(body.diagnostics.retry_last_stage, "openclaw_timeout");
+    assert.equal(body.diagnostics.retry_stdout_bytes, 12);
+    assert.equal(body.diagnostics.retry_stderr_bytes, 34);
     assert.doesNotMatch(JSON.stringify(body.diagnostics), /raw text/);
   });
 
@@ -1840,6 +1862,9 @@ test("keeps retry diagnostics when a first timeout retry also fails", async () =
       }
       const error = new Error("retry failed raw https://example.com");
       error.code = "OPENCLAW_EXIT";
+      error.stage = "openclaw_close";
+      error.stdout_bytes = 56;
+      error.stderr_bytes = 78;
       throw error;
     },
   }, async (baseUrl) => {
@@ -1871,6 +1896,9 @@ test("keeps retry diagnostics when a first timeout retry also fails", async () =
     assert.equal(body.diagnostics.error_code, "OPENCLAW_EXIT");
     assert.equal(body.diagnostics.retry_count, 1);
     assert.ok(body.diagnostics.retry_prompt_chars > 0);
+    assert.equal(body.diagnostics.retry_last_stage, "openclaw_close");
+    assert.equal(body.diagnostics.retry_stdout_bytes, 56);
+    assert.equal(body.diagnostics.retry_stderr_bytes, 78);
     assert.doesNotMatch(JSON.stringify(body.diagnostics), /example\.com/);
   });
 
@@ -1922,13 +1950,17 @@ test("OpenClaw failure observe response includes safe diagnostics from request m
     assert.deepEqual(Object.keys(body.diagnostics).sort(), [
       "attempt_mode",
       "elapsed_ms",
+      "first_attempt_elapsed_ms",
       "first_attempt_timeout_ms",
       "initial_prompt_chars",
+      "last_stage",
       "prompt_chars",
       "reason_code",
       "request_id",
       "retry_count",
+      "retry_elapsed_ms",
       "retry_prompt_chars",
+      "stdout_bytes",
       "workspace_context_chars",
     ].sort());
     assert.equal(body.diagnostics.request_id, "req_observe_diagnostics");
@@ -1937,9 +1969,13 @@ test("OpenClaw failure observe response includes safe diagnostics from request m
     assert.equal(body.diagnostics.first_attempt_timeout_ms, baseConfig.firstAttemptTimeoutMs);
     assert.equal(body.diagnostics.retry_count, 0);
     assert.equal(body.diagnostics.retry_prompt_chars, 0);
+    assert.equal(body.diagnostics.retry_elapsed_ms, 0);
     assert.equal(body.diagnostics.workspace_context_chars, "runtime context for diagnostics".length);
+    assert.equal(body.diagnostics.last_stage, "request_completed");
+    assert.ok(body.diagnostics.stdout_bytes > 0);
     assert.ok(body.diagnostics.prompt_chars > 0);
     assert.equal(body.diagnostics.initial_prompt_chars, body.diagnostics.prompt_chars);
+    assert.ok(body.diagnostics.first_attempt_elapsed_ms >= 0);
     assert.ok(body.diagnostics.elapsed_ms >= 0);
   });
 });
@@ -2069,6 +2105,136 @@ test("request completed log does not keep freeform reason text", async () => {
   assert.equal(completed.reason, "[freeform]");
 });
 
+test("trace logs expose request stage boundaries without raw prompt text", async () => {
+  const logs = [];
+  const calls = [];
+  await withServer({
+    config: { ...baseConfig, traceLogs: true },
+    logger: { info: (entry) => logs.push(entry), warn: () => {} },
+    runAgentCommand: async ({ message, traceLogs, requestId, attempt, attemptMode }) => {
+      calls.push({ message, traceLogs, requestId, attempt, attemptMode });
+      return JSON.stringify({
+        payloads: [
+          {
+            text: JSON.stringify({
+              schema_version: 1,
+              action: "reply",
+              body: "確認しました",
+              confidence: "high",
+            }),
+          },
+        ],
+      });
+    },
+  }, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/discord/respond`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer secret",
+      },
+      body: JSON.stringify({
+        request_id: "req_trace",
+        channel: { id: "1094907178671939654", type: "sandbox", registered: true },
+        message: {
+          id: "msg_trace",
+          author_id: "user_1",
+          content: "短い挨拶です。今の調子を一言で返してください。",
+          mentions_bot: true,
+          is_reply_to_bot: false,
+          mentions_everyone: false,
+          role_mentions: [],
+          attachments: [],
+          links: [],
+        },
+        context: {
+          recent_messages: [],
+          active_thread_age_minutes: 1,
+          has_promised_followup: false,
+          matched_followup_ids: [],
+        },
+      }),
+    });
+    assert.equal(response.status, 200);
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].traceLogs, true);
+  assert.equal(calls[0].requestId, "req_trace");
+  assert.equal(calls[0].attempt, "first");
+  assert.equal(calls[0].attemptMode, "compact_first");
+  const stages = logs.map((entry) => entry.stage).filter(Boolean);
+  assert.deepEqual(stages, [
+    "request_received",
+    "prompt_built",
+    "openclaw_attempt_start",
+    "openclaw_attempt_end",
+    "openclaw_parse_start",
+    "openclaw_parse_end",
+    "request_completed",
+  ]);
+  assert.ok(logs.every((entry) => entry.request_id === "req_trace"));
+  assert.ok(logs.some((entry) => entry.stage === "prompt_built" && entry.prompt_chars > 0));
+  assert.ok(!JSON.stringify(logs).includes("短い挨拶です"));
+});
+
+test("timeout diagnostics include last stage and retry skip reason", async () => {
+  await withServer({
+    config: {
+      ...baseConfig,
+      requestTimeoutMs: 800,
+      firstAttemptTimeoutMs: 750,
+      retryMinTimeoutMs: 1000,
+      traceLogs: true,
+    },
+    runAgentCommand: async () => {
+      const error = new Error("OpenClaw command timed out: timeoutMs=750");
+      error.code = "OPENCLAW_TIMEOUT";
+      error.stage = "openclaw_timeout";
+      error.stdout_bytes = 0;
+      error.stderr_bytes = 0;
+      throw error;
+    },
+  }, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/discord/respond`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer secret",
+      },
+      body: JSON.stringify({
+        request_id: "req_timeout_diag",
+        channel: { id: "1094907178671939654", type: "sandbox", registered: true },
+        message: {
+          id: "msg_timeout",
+          author_id: "user_1",
+          content: "短い挨拶です。今の調子を一言で返してください。",
+          mentions_bot: true,
+          is_reply_to_bot: false,
+          mentions_everyone: false,
+          role_mentions: [],
+          attachments: [],
+          links: [],
+        },
+        context: {
+          recent_messages: [],
+          active_thread_age_minutes: 1,
+          has_promised_followup: false,
+          matched_followup_ids: [],
+        },
+      }),
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.reason, "OPENCLAW_TIMEOUT");
+    assert.equal(body.diagnostics.last_stage, "openclaw_timeout");
+    assert.equal(body.diagnostics.retry_skip_reason, "insufficient_time");
+    assert.equal(body.diagnostics.error_code, "OPENCLAW_TIMEOUT");
+    assert.equal(body.diagnostics.stdout_bytes, 0);
+    assert.equal(body.diagnostics.stderr_bytes, 0);
+  });
+});
+
 test("buildOpenClawArgs uses local embedded agent by default", () => {
   assert.deepEqual(
     buildOpenClawArgs({
@@ -2166,6 +2332,66 @@ test("fixed scoped retry session id is separated from the base session", () => {
   );
 });
 
+test("OpenClaw runner trace logs child process timeout lifecycle", async () => {
+  const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-runner-trace-"));
+  const commandPath = path.join(workspaceDir, "openclaw-stub.js");
+  await fs.writeFile(
+    commandPath,
+    [
+      "#!/usr/bin/env node",
+      "setTimeout(() => {}, 5000);",
+      "",
+    ].join("\n"),
+    "utf8"
+  );
+  await fs.chmod(commandPath, 0o700);
+  const logs = [];
+  let closeLog;
+  const closeObserved = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("openclaw_close trace not observed")), 1000);
+    logs.onInfo = (entry) => {
+      logs.push(entry);
+      if (entry.stage === "openclaw_close") {
+        closeLog = entry;
+        clearTimeout(timer);
+        resolve();
+      }
+    };
+  });
+
+  await assert.rejects(
+    runOpenClawAgent({
+      config: {
+        ...baseConfig,
+        command: commandPath,
+        workspaceDir,
+        requestTimeoutMs: 50,
+        timeoutSeconds: 5,
+      },
+      message: JSON.stringify({ request_id: "req_runner_trace", content: "raw secret body" }),
+      timeoutMs: 50,
+      logger: { info: (entry) => logs.onInfo(entry) },
+      traceLogs: true,
+      requestId: "req_runner_trace",
+      channelId: "1094907178671939654",
+      attempt: "first",
+      attemptMode: "compact_first",
+    }),
+    /timed out/
+  );
+
+  const stages = logs.map((entry) => entry.stage);
+  assert.ok(stages.includes("openclaw_spawn_start"));
+  assert.ok(stages.includes("openclaw_spawned"));
+  assert.ok(stages.includes("openclaw_timeout_signal_sent"));
+  await closeObserved;
+  assert.equal(closeLog.close_code, -1);
+  assert.equal(closeLog.close_signal, "SIGTERM");
+  assert.equal(closeLog.timed_out, true);
+  assert.ok(logs.every((entry) => entry.request_id === "req_runner_trace"));
+  assert.ok(!JSON.stringify(logs).includes("raw secret body"));
+});
+
 test("OpenClaw child env keeps runtime secrets out of the agent process", () => {
   const childEnv = buildOpenClawChildEnv({
     HOME: "/root",
@@ -2192,6 +2418,7 @@ test("loadConfig defaults to request scoped sessions with fixed compatibility op
   assert.equal(config.timeoutSeconds, 120);
   assert.equal(config.requestTimeoutMs, 140000);
   assert.equal(config.retryMinTimeoutMs, 60000);
+  assert.equal(config.traceLogs, false);
   assert.equal(config.maxWorkspaceContextChars, 1200);
   assert.equal(config.promptFiles.includes("TOOLS.md"), false);
   assert.deepEqual(config.promptFiles, ["RUNTIME_PROMPT.md"]);

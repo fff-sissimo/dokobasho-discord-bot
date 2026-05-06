@@ -710,10 +710,18 @@ describe("fairy OpenClaw runtime", () => {
         first_attempt_timeout_ms: 75000,
         prompt_chars: "2048",
         initial_prompt_chars: 1024,
+        first_attempt_elapsed_ms: 75001,
         retry_count: 1,
         retry_prompt_chars: 512,
+        retry_elapsed_ms: 60001,
+        retry_stdout_bytes: 0,
+        retry_stderr_bytes: 128,
         workspace_context_chars: 4096,
         error_code: "OPENCLAW_EXIT",
+        initial_error_code: "OPENCLAW_TIMEOUT",
+        last_stage: "openclaw_timeout",
+        retry_last_stage: "openclaw_close",
+        retry_skip_reason: "insufficient_time",
         stdout: "raw stdout",
         prompt: "raw prompt",
         discord_body: "raw Discord body",
@@ -732,10 +740,18 @@ describe("fairy OpenClaw runtime", () => {
       first_attempt_timeout_ms: 75000,
       prompt_chars: 2048,
       initial_prompt_chars: 1024,
+      first_attempt_elapsed_ms: 75001,
       retry_count: 1,
       retry_prompt_chars: 512,
+      retry_elapsed_ms: 60001,
+      retry_stdout_bytes: 0,
+      retry_stderr_bytes: 128,
       workspace_context_chars: 4096,
       error_code: "OPENCLAW_EXIT",
+      initial_error_code: "OPENCLAW_TIMEOUT",
+      last_stage: "openclaw_timeout",
+      retry_last_stage: "openclaw_close",
+      retry_skip_reason: "insufficient_time",
     });
     expect(JSON.stringify(response.diagnostics)).not.toContain("raw stdout");
     expect(JSON.stringify(response.diagnostics)).not.toContain("https://example.com");
@@ -1528,7 +1544,13 @@ describe("fairy OpenClaw runtime", () => {
           elapsed_ms: 2001,
           first_attempt_timeout_ms: 75000,
           prompt_chars: 1234,
+          first_attempt_elapsed_ms: 75001,
+          retry_count: 1,
+          retry_prompt_chars: 555,
+          retry_elapsed_ms: 60001,
+          retry_last_stage: "openclaw_timeout",
           error_code: "OPENCLAW_EXIT",
+          last_stage: "openclaw_timeout",
           stdout: "raw stdout must not be shown",
           message: "https://example.com/raw",
         },
@@ -1563,7 +1585,7 @@ describe("fairy OpenClaw runtime", () => {
     expect(message.reply).toHaveBeenCalledWith({
       content:
         "-# OpenClaw 直接実行に失敗しました。時間をおいてもう一度試してください。\n" +
-        `-# 詳細: request_id=req_observe_timeout reason_code=${reason} attempt_mode=full_first elapsed_ms=2001 first_attempt_timeout_ms=75000 prompt_chars=1234 error_code=OPENCLAW_EXIT`,
+        `-# 詳細: request_id=req_observe_timeout reason_code=${reason} attempt_mode=full_first elapsed_ms=2001 first_attempt_timeout_ms=75000 prompt_chars=1234 first_attempt_elapsed_ms=75001 retry_count=1 retry_prompt_chars=555 retry_elapsed_ms=60001 error_code=OPENCLAW_EXIT last_stage=openclaw_timeout retry_last_stage=openclaw_timeout`,
       allowedMentions: SAFE_ALLOWED_MENTIONS,
     });
     expect(message.reply.mock.calls[0][0].content).not.toContain("raw stdout");
