@@ -1,12 +1,21 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const fs = require("node:fs/promises");
+const os = require("node:os");
+const path = require("node:path");
 const { test } = require("node:test");
 
 const { loadConfig } = require("../src/config");
 const { buildOpenClawArgs, buildOpenClawChildEnv, buildRequestScopedSessionId } = require("../src/openclaw-runner");
 const { createServer } = require("../src/server");
-const { buildAgentPrompt, buildObserveResponse, normalizeOpenClawResponse, parseAgentResponse } = require("../src/contracts");
+const {
+  buildAgentPrompt,
+  buildObserveResponse,
+  loadWorkspaceContext,
+  normalizeOpenClawResponse,
+  parseAgentResponse,
+} = require("../src/contracts");
 
 const baseConfig = {
   host: "127.0.0.1",
@@ -21,6 +30,7 @@ const baseConfig = {
   timeoutSeconds: 60,
   requestTimeoutMs: 1000,
   maxBodyBytes: 65536,
+  maxWorkspaceContextChars: 16000,
   sessionScope: "request",
   promptFiles: ["AGENTS.md"],
 };
@@ -334,6 +344,27 @@ test("agent prompt keeps draft-only boundaries for approval-gated operations", (
   assert.match(prompt, /approval\.mentions は常に空配列/);
 });
 
+test("workspace context is capped by configured prompt budget", async () => {
+  const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-context-"));
+  try {
+    await fs.writeFile(path.join(workspaceDir, "AGENTS.md"), "A".repeat(200), "utf8");
+    await fs.writeFile(path.join(workspaceDir, "TOOLS.md"), "B".repeat(200), "utf8");
+
+    const context = await loadWorkspaceContext({
+      workspaceDir,
+      promptFiles: ["AGENTS.md", "TOOLS.md"],
+      maxChars: 120,
+    });
+
+    assert.ok(context.length <= 120);
+    assert.match(context, /AGENTS\.md/);
+    assert.match(context, /truncated:workspace_context_budget/);
+    assert.doesNotMatch(context, /TOOLS\.md/);
+  } finally {
+    await fs.rm(workspaceDir, { recursive: true, force: true });
+  }
+});
+
 test("parses OpenClaw CLI payload text output", () => {
   const response = parseAgentResponse(JSON.stringify({
     payloads: [
@@ -511,6 +542,27 @@ test("falls back to safe reply when OpenClaw payload text is non-json", () => {
   assert.deepEqual(response.approval.mentions, []);
 });
 
+test("does not fall back to reply for OpenClaw context overflow text", () => {
+  for (const text of [
+    "Context overflow: prompt too large for the model. Try /reset (or /new) to start a fresh session, or use a larger-context model.",
+    "Error: maximum context length exceeded",
+    "Request failed: 500 internal server error",
+    "OpenClaw error: failed to generate response",
+    "status=503 Service Unavailable",
+    "502 Bad Gateway",
+  ]) {
+    const response = parseAgentResponse(JSON.stringify({
+      payloads: [
+        { text },
+      ],
+    }));
+
+    assert.equal(response.action, "observe");
+    assert.equal(response.reason, "invalid_openclaw_response");
+    assert.equal(response.body, "");
+  }
+});
+
 test("does not fall back to reply for non-payload status text", () => {
   const response = parseAgentResponse(JSON.stringify({
     type: "status",
@@ -637,6 +689,8 @@ test("loadConfig defaults to request scoped sessions with fixed compatibility op
   assert.equal(config.sessionScope, "request");
   assert.equal(config.timeoutSeconds, 120);
   assert.equal(config.requestTimeoutMs, 140000);
+  assert.equal(config.maxWorkspaceContextChars, 16000);
+  assert.equal(config.promptFiles.includes("TOOLS.md"), false);
   assert.equal(loadConfig({
     OPENCLAW_API_KEY: "secret",
     OPENCLAW_AGENT_SESSION_SCOPE: "fixed",

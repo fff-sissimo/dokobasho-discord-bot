@@ -4,10 +4,10 @@ const DEFAULT_PROMPT_FILES = [
   "AGENTS.md",
   "IDENTITY.md",
   "SOUL.md",
-  "TOOLS.md",
   "HEARTBEAT.md",
   "memory/README.md",
 ];
+const DEFAULT_WORKSPACE_CONTEXT_MAX_CHARS = 16000;
 
 const parsePositiveInt = (value, fallback) => {
   const parsed = Number(value);
@@ -42,6 +42,10 @@ const loadConfig = (env = process.env) => {
     timeoutSeconds: parsePositiveInt(env.OPENCLAW_AGENT_TIMEOUT_SECONDS, 120),
     requestTimeoutMs: parsePositiveInt(env.OPENCLAW_REQUEST_TIMEOUT_MS, 140000),
     maxBodyBytes: parsePositiveInt(env.OPENCLAW_API_MAX_BODY_BYTES, 65536),
+    maxWorkspaceContextChars: parsePositiveInt(
+      env.OPENCLAW_WORKSPACE_CONTEXT_MAX_CHARS,
+      DEFAULT_WORKSPACE_CONTEXT_MAX_CHARS
+    ),
     promptFiles: parsePromptFiles(env.OPENCLAW_PROMPT_FILES).length > 0
       ? parsePromptFiles(env.OPENCLAW_PROMPT_FILES)
       : DEFAULT_PROMPT_FILES,
@@ -60,6 +64,7 @@ const assertRuntimeConfig = (config) => {
 
 module.exports = {
   DEFAULT_PROMPT_FILES,
+  DEFAULT_WORKSPACE_CONTEXT_MAX_CHARS,
   assertRuntimeConfig,
   loadConfig,
   parsePositiveInt,

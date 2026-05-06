@@ -35,6 +35,9 @@ const DEFAULT_CHANNEL_REGISTRY = Object.freeze({
 const CHANNEL_REGISTRY_STATUSES = new Set(["verified", "pending", "known", "not-connected"]);
 const FOLLOWUP_STATUSES = new Set(["open", "checked", "closed"]);
 const FOLLOWUP_TEXT_MAX_LENGTH = 200;
+const OPENCLAW_CONTEXT_MAX_MESSAGES = 8;
+const OPENCLAW_CONTEXT_MAX_CHARS = 2000;
+const OPENCLAW_CONTEXT_ENTRY_MAX_CHARS = 500;
 const FOLLOWUP_KINDS = new Set([
   "explicit_request",
   "agreed_todo",
@@ -687,6 +690,25 @@ const normalizeContextEntries = (entries) => {
     }));
 };
 
+const capContextEntriesForPrompt = (entries) => {
+  let totalChars = 0;
+  const cappedEntries = [];
+  const source = Array.isArray(entries) ? entries.slice(-OPENCLAW_CONTEXT_MAX_MESSAGES).reverse() : [];
+  for (const entry of source) {
+    const remainingChars = OPENCLAW_CONTEXT_MAX_CHARS - totalChars;
+    if (remainingChars <= 0) break;
+    const content = String(entry.content || "").slice(0, Math.min(OPENCLAW_CONTEXT_ENTRY_MAX_CHARS, remainingChars));
+    totalChars += content.length;
+    cappedEntries.push({
+      message_id: entry.message_id,
+      author_id: entry.author_id,
+      content,
+      created_at: entry.created_at,
+    });
+  }
+  return cappedEntries.filter((entry) => entry.content).reverse();
+};
+
 const calculateActiveThreadAgeMinutes = ({ recentMessages, currentMessageId, currentCreatedAt }) => {
   const currentMs = Date.parse(currentCreatedAt);
   if (!Number.isFinite(currentMs)) return null;
@@ -793,7 +815,8 @@ const buildOpenClawPayload = ({
     normalizeIsoTimestamp(message && message.createdAt) ||
     normalizeIsoTimestamp(message && message.createdTimestamp) ||
     now;
-  const recentMessages = normalizeContextEntries(contextEntries);
+  const normalizedContextEntries = normalizeContextEntries(contextEntries);
+  const recentMessages = capContextEntriesForPrompt(normalizedContextEntries);
 
   return {
     schema_version: 1,
@@ -827,7 +850,7 @@ const buildOpenClawPayload = ({
     context: {
       recent_messages: recentMessages,
       active_thread_age_minutes: calculateActiveThreadAgeMinutes({
-        recentMessages,
+        recentMessages: normalizedContextEntries,
         currentMessageId: messageId,
         currentCreatedAt: messageCreatedAt,
       }),

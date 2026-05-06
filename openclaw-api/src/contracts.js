@@ -37,6 +37,7 @@ const VALID_FOLLOWUP_BASIS = new Set([
 ]);
 
 const normalizeString = (value) => String(value || "").replace(/\s+/g, " ").trim();
+const WORKSPACE_CONTEXT_TRUNCATED_MARKER = "\n[truncated:workspace_context_budget]";
 const normalizeAction = (value) => {
   const text = normalizeString(value)
     .toLowerCase()
@@ -160,22 +161,56 @@ const safeRelativePath = (filePath) => {
   return normalized;
 };
 
-const loadWorkspaceContext = async ({ workspaceDir, promptFiles }) => {
-  const sections = [];
+const fitTextToBudget = (text, maxChars) => {
+  const source = String(text || "");
+  const budget = Number(maxChars);
+  if (!Number.isFinite(budget) || budget <= 0 || source.length <= budget) return source;
+  if (budget <= WORKSPACE_CONTEXT_TRUNCATED_MARKER.length) return source.slice(0, budget);
+  return `${source.slice(0, budget - WORKSPACE_CONTEXT_TRUNCATED_MARKER.length)}${WORKSPACE_CONTEXT_TRUNCATED_MARKER}`;
+};
+
+const appendSectionWithinBudget = (output, section, maxChars) => {
+  const budget = Number(maxChars);
+  const separator = output ? "\n\n---\n\n" : "";
+  if (!Number.isFinite(budget) || budget <= 0) {
+    return {
+      output: `${output}${separator}${section}`,
+      truncated: false,
+    };
+  }
+  const remaining = budget - output.length - separator.length;
+  if (remaining <= 0) return { output, truncated: true };
+  const fitted = fitTextToBudget(section, remaining);
+  return {
+    output: `${output}${separator}${fitted}`,
+    truncated: fitted.length < section.length,
+  };
+};
+
+const loadWorkspaceContext = async ({ workspaceDir, promptFiles, maxChars }) => {
+  let output = "";
   for (const filePath of promptFiles) {
     const relativePath = safeRelativePath(filePath);
     if (!relativePath) continue;
     const absolutePath = path.join(workspaceDir, relativePath);
     try {
       const content = await fs.readFile(absolutePath, "utf8");
-      sections.push(`## ${relativePath}\n\n${content.trim()}`);
+      const next = appendSectionWithinBudget(output, `## ${relativePath}\n\n${content.trim()}`, maxChars);
+      output = next.output;
+      if (next.truncated) break;
     } catch (error) {
       if (error && error.code !== "ENOENT") {
-        sections.push(`## ${relativePath}\n\n[read_error:${error.code || "unknown"}]`);
+        const next = appendSectionWithinBudget(
+          output,
+          `## ${relativePath}\n\n[read_error:${error.code || "unknown"}]`,
+          maxChars
+        );
+        output = next.output;
+        if (next.truncated) break;
       }
     }
   }
-  return sections.join("\n\n---\n\n");
+  return output;
 };
 
 const buildAgentPrompt = ({ payload, workspaceContext }) => [
@@ -391,6 +426,12 @@ const isFallbackTextCandidate = (text) => {
   if (normalized.length > 1800) return false;
   if (normalized.startsWith("{") || normalized.startsWith("[")) return false;
   if (/(?:api[_-]?key|token|secret|password|passwd)\s*[:=]/i.test(normalized)) return false;
+  if (
+    /context overflow|prompt too large|larger-context model|try\s+\/(?:reset|new)\b/i.test(normalized) ||
+    /\b(?:error|exception|failed|failure)\b|request failed|maximum context length|context length exceeded|token limit|too many tokens|rate limit|(?:HTTP\s*)?(?:status\s*[=:]\s*)?5\d\d|service unavailable|bad gateway|gateway timeout/i.test(normalized)
+  ) {
+    return false;
+  }
   return true;
 };
 

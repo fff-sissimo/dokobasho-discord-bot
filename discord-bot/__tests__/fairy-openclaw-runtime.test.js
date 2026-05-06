@@ -201,6 +201,72 @@ describe("fairy OpenClaw runtime", () => {
     expect(payload.context.matched_followup_ids).toEqual([]);
   });
 
+  it("caps OpenClaw recent context entries by count and total chars", () => {
+    const allowedChannelIds = new Set(["1094907178671939654"]);
+    const contextEntries = Array.from({ length: 12 }, (_, index) => ({
+      message_id: `ctx_${index}`,
+      author_user_id: "user_1",
+      author_is_bot: false,
+      content: `${index}: ${"x".repeat(800)}`,
+      created_at: `2026-05-03T09:${String(index).padStart(2, "0")}:00.000Z`,
+    }));
+
+    const payload = buildOpenClawPayload({
+      eventType: "message_create",
+      guildId: "840827137451229205",
+      channel: { id: "1094907178671939654", name: "妖精さんより" },
+      message: {
+        id: "msg_1",
+        author: { id: "user_1", username: "user" },
+        channel: { id: "1094907178671939654", name: "妖精さんより" },
+        createdAt: new Date("2026-05-03T10:00:00.000Z"),
+        mentions: { everyone: false, roles: { map: () => [] } },
+        attachments: [],
+      },
+      content: "相談したいです",
+      mentionsBot: true,
+      allowedChannelIds,
+      contextEntries,
+    });
+
+    expect(payload.context.recent_messages.length).toBeLessThanOrEqual(8);
+    expect(payload.context.recent_messages.reduce((sum, entry) => sum + entry.content.length, 0))
+      .toBeLessThanOrEqual(2000);
+    expect(payload.context.recent_messages.every((entry) => entry.content.length <= 500)).toBe(true);
+  });
+
+  it("uses uncapped context entries for active thread age while sending capped recent messages", () => {
+    const allowedChannelIds = new Set(["1094907178671939654"]);
+    const contextEntries = Array.from({ length: 12 }, (_, index) => ({
+      message_id: `ctx_${index}`,
+      author_user_id: "user_1",
+      author_is_bot: false,
+      content: `${index}: ${"x".repeat(800)}`,
+      created_at: `2026-05-03T09:${String(index).padStart(2, "0")}:00.000Z`,
+    }));
+
+    const payload = buildOpenClawPayload({
+      eventType: "message_create",
+      guildId: "840827137451229205",
+      channel: { id: "1094907178671939654", name: "妖精さんより" },
+      message: {
+        id: "msg_1",
+        author: { id: "user_1", username: "user" },
+        channel: { id: "1094907178671939654", name: "妖精さんより" },
+        createdAt: new Date("2026-05-03T10:00:00.000Z"),
+        mentions: { everyone: false, roles: { map: () => [] } },
+        attachments: [],
+      },
+      content: "相談したいです",
+      mentionsBot: true,
+      allowedChannelIds,
+      contextEntries,
+    });
+
+    expect(payload.context.recent_messages.at(-1).message_id).toBe("ctx_11");
+    expect(payload.context.active_thread_age_minutes).toBe(49);
+  });
+
   it("uses the v1 channel registry for phase2 chat payloads", () => {
     const allowedChannelIds = new Set(["1094907178671939654", "840827137451229210"]);
     const payload = buildOpenClawPayload({

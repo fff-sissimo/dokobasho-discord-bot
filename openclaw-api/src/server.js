@@ -93,6 +93,7 @@ const createServer = ({
       const workspaceContext = await loadContext({
         workspaceDir: config.workspaceDir,
         promptFiles: config.promptFiles,
+        maxChars: config.maxWorkspaceContextChars,
       });
       const prompt = buildAgentPrompt({ payload, workspaceContext });
       const stdout = await runAgentCommand({ config, message: prompt });
