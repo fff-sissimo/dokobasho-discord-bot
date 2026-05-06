@@ -119,6 +119,16 @@ test("normalizes approval mentions to an empty array", () => {
   assert.deepEqual(response.approval.mentions, []);
 });
 
+test("normalizes safe OpenClaw action aliases to exact contract actions", () => {
+  assert.equal(normalizeOpenClawResponse({ action: "Reply", body: "ok" }).action, "reply");
+  assert.equal(normalizeOpenClawResponse({ action: "\\\"reply\\\"", body: "ok" }).action, "reply");
+  assert.equal(normalizeOpenClawResponse({ action: "no-op" }).action, "observe");
+  assert.equal(normalizeOpenClawResponse({ action: "publish-blocked" }).action, "publish_blocked");
+  assert.equal(normalizeOpenClawResponse({ action: "approval_required", body: "ok" }).action, "publish_blocked");
+  assert.equal(normalizeOpenClawResponse({ action: "respond", body: "ok" }).reason, "invalid_openclaw_action");
+  assert.equal(normalizeOpenClawResponse({ action: "\"message\"", body: "ok" }).reason, "invalid_openclaw_action");
+});
+
 test("normalizes followup state fields as arrays", () => {
   assert.deepEqual(
     normalizeOpenClawResponse({
@@ -304,6 +314,9 @@ test("agent prompt keeps URL, mention, and raw Discord body safety rules", () =>
   assert.match(prompt, /許可された mention はありません/);
   assert.match(prompt, /URL 本文やリンク先内容を自動取得・要約・記憶しない/);
   assert.match(prompt, /raw Discord 本文、秘密値、未加工の会話ログは保存・出力しない/);
+  assert.match(prompt, /respond, response, message, answer などの別名は使わず/);
+  assert.match(prompt, /bot への明示 mention/);
+  assert.match(prompt, /action: "reply"/);
 });
 
 test("agent prompt keeps draft-only boundaries for approval-gated operations", () => {
@@ -365,6 +378,148 @@ test("parses OpenClaw CLI payload when text contains fenced prompt examples", ()
   assert.equal(response.action, "reply");
   assert.equal(response.body, "疎通できています");
   assert.equal(response.confidence, "high");
+});
+
+test("parses final OpenClaw response after earlier status events", () => {
+  const response = parseAgentResponse([
+    JSON.stringify({ type: "status", message: "thinking" }),
+    JSON.stringify({
+      payloads: [
+        {
+          text: JSON.stringify({
+            schema_version: 1,
+            action: "reply",
+            body: "短く返します",
+            confidence: "high",
+          }),
+        },
+      ],
+    }),
+  ].join("\n"));
+
+  assert.equal(response.action, "reply");
+  assert.equal(response.body, "短く返します");
+});
+
+test("prefers the final valid OpenClaw response over earlier valid event JSON", () => {
+  const response = parseAgentResponse([
+    JSON.stringify({
+      schema_version: 1,
+      action: "observe",
+      body: "",
+      reason: "status_event",
+    }),
+    JSON.stringify({
+      schema_version: 1,
+      action: "reply",
+      body: "final response",
+      confidence: "high",
+    }),
+  ].join("\n"));
+
+  assert.equal(response.action, "reply");
+  assert.equal(response.body, "final response");
+});
+
+test("does not let wrapper action aliases override an inner non-posting response", () => {
+  const response = parseAgentResponse(JSON.stringify({
+    action: "message",
+    body: "outer wrapper text",
+    response: {
+      schema_version: 1,
+      action: "publish_blocked",
+      body: "",
+      reason: "approval required",
+      requires_approval: true,
+    },
+  }));
+
+  assert.equal(response.action, "publish_blocked");
+  assert.equal(response.reason, "approval required");
+  assert.equal(response.requires_approval, true);
+});
+
+test("does not adopt outer wrapper action when the inner response is invalid", () => {
+  const response = parseAgentResponse(JSON.stringify({
+    action: "reply",
+    body: "outer wrapper text",
+    response: {
+      body: "inner text without action",
+    },
+  }));
+
+  assert.equal(response.action, "observe");
+  assert.equal(response.reason, "invalid_openclaw_response");
+  assert.equal(response.body, "");
+});
+
+test("parses wrapped OpenClaw response objects", () => {
+  const nestedResponse = parseAgentResponse(JSON.stringify({
+    response: {
+      schema_version: 1,
+      action: "reply",
+      body: "response wrapper",
+    },
+  }));
+  assert.equal(nestedResponse.action, "reply");
+  assert.equal(nestedResponse.body, "response wrapper");
+
+  const choicesResponse = parseAgentResponse(JSON.stringify({
+    choices: [
+      {
+        message: {
+          content: JSON.stringify({
+            schema_version: 1,
+            action: "Reply",
+            body: "choices wrapper",
+          }),
+        },
+      },
+    ],
+  }));
+  assert.equal(choicesResponse.action, "reply");
+  assert.equal(choicesResponse.body, "choices wrapper");
+
+  const contentArrayResponse = parseAgentResponse(JSON.stringify({
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify({
+          schema_version: 1,
+          action: "\\\"reply\\\"",
+          body: "content wrapper",
+        }),
+      },
+    ],
+  }));
+  assert.equal(contentArrayResponse.action, "reply");
+  assert.equal(contentArrayResponse.body, "content wrapper");
+});
+
+test("falls back to safe reply when OpenClaw payload text is non-json", () => {
+  const response = parseAgentResponse(JSON.stringify({
+    payloads: [
+      {
+        text: "今日は軽めにいけそうです。",
+      },
+    ],
+  }));
+
+  assert.equal(response.action, "reply");
+  assert.equal(response.body, "今日は軽めにいけそうです。");
+  assert.equal(response.reason, "non_json_openclaw_text");
+  assert.deepEqual(response.approval.mentions, []);
+});
+
+test("does not fall back to reply for non-payload status text", () => {
+  const response = parseAgentResponse(JSON.stringify({
+    type: "status",
+    message: "thinking",
+  }));
+
+  assert.equal(response.action, "observe");
+  assert.equal(response.reason, "invalid_openclaw_response");
+  assert.equal(response.body, "");
 });
 
 test("OpenClaw execution failure becomes safe observe response", async () => {

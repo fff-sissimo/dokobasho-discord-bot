@@ -7,6 +7,21 @@ const POSTABLE_ACTIONS = new Set(["reply", "offer", "assist"]);
 const NON_POSTING_ACTIONS = new Set(["observe", "draft", "publish_blocked"]);
 const VALID_ACTIONS = new Set([...POSTABLE_ACTIONS, ...NON_POSTING_ACTIONS]);
 const VALID_CONFIDENCE = new Set(["low", "medium", "high"]);
+const ACTION_ALIASES = new Map([
+  ["ignore", "observe"],
+  ["silent", "observe"],
+  ["none", "observe"],
+  ["noop", "observe"],
+  ["no_op", "observe"],
+  ["no-op", "observe"],
+  ["draft_only", "draft"],
+  ["draft_reply", "draft"],
+  ["approval_required", "publish_blocked"],
+  ["needs_approval", "publish_blocked"],
+  ["blocked", "publish_blocked"],
+  ["block", "publish_blocked"],
+  ["publish-blocked", "publish_blocked"],
+]);
 const VALID_FOLLOWUP_KINDS = new Set([
   "explicit_request",
   "agreed_todo",
@@ -22,6 +37,13 @@ const VALID_FOLLOWUP_BASIS = new Set([
 ]);
 
 const normalizeString = (value) => String(value || "").replace(/\s+/g, " ").trim();
+const normalizeAction = (value) => {
+  const text = normalizeString(value)
+    .toLowerCase()
+    .replace(/^(?:\\?["'`])+|(?:\\?["'`])+$/g, "");
+  if (VALID_ACTIONS.has(text)) return text;
+  return ACTION_ALIASES.get(text) || "";
+};
 const hasOwn = (source, key) => Boolean(source && Object.prototype.hasOwnProperty.call(source, key));
 const pickOwn = (primary, key, fallback) => (hasOwn(primary, key) ? primary[key] : fallback && fallback[key]);
 const normalizeSafeIdentifier = (value) => {
@@ -111,8 +133,8 @@ const normalizeOpenClawResponse = (value) => {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return buildObserveResponse("invalid_openclaw_response");
   }
-  const action = String(value.action || "").trim();
-  if (!VALID_ACTIONS.has(action)) {
+  const action = normalizeAction(value.action);
+  if (!action) {
     return buildObserveResponse("invalid_openclaw_action");
   }
   return {
@@ -161,6 +183,8 @@ const buildAgentPrompt = ({ payload, workspaceContext }) => [
   "Discord へ直接投稿せず、必ず JSON だけを返してください。",
   "返却 JSON は schema_version, action, body, reason, confidence, memory_candidates, followup_candidates, checked_followup_ids, closed_followup_ids, requires_approval, approval を含めてください。",
   "action は observe, reply, offer, assist, draft, publish_blocked のどれかだけです。",
+  "action は必ず小文字 ASCII の exact value にしてください。respond, response, message, answer などの別名は使わず、返信する時は必ず action: \"reply\" にしてください。",
+  "bot への明示 mention、bot への reply、または「一言で返して」「挨拶して」のような直接依頼では、禁止要素がない限り action: \"reply\" で短く返してください。",
   "everyone/here、role mention、外部 URL、添付、公開告知、運営判断、承認が必要な内容は requires_approval を true にするか publish_blocked にしてください。",
   "approval.mentions は常に空配列にしてください。許可された mention はありません。",
   "外部 URL が含まれていても、URL 本文やリンク先内容を自動取得・要約・記憶しないでください。ユーザーが貼った URL は文字列として扱い、本文取得が必要なら確認してください。",
@@ -241,32 +265,198 @@ const parseJsonObject = (text, { preferLast = false } = {}) => {
   return null;
 };
 
-const extractAgentText = (result) => {
-  if (result && typeof result === "object" && !Array.isArray(result)) {
-    if (VALID_ACTIONS.has(String(result.action || "").trim())) return JSON.stringify(result);
-    if (Array.isArray(result.payloads)) {
-      const payload = result.payloads.find((item) => item && typeof item.text === "string" && item.text.trim());
-      if (payload) return payload.text;
-    }
-    for (const key of ["reply", "message", "content", "text", "output", "result"]) {
-      if (typeof result[key] === "string") return result[key];
-      if (result[key] && typeof result[key] === "object") {
-        const nested = extractAgentText(result[key]);
-        if (nested) return nested;
-      }
+const parseJsonObjects = (text, { preferLast = false } = {}) => {
+  const candidates = collectJsonObjectTexts(text);
+  const ordered = preferLast ? [...candidates].reverse() : candidates;
+  const parsed = [];
+  for (const candidate of ordered) {
+    try {
+      parsed.push(JSON.parse(candidate));
+    } catch {
+      // Try the next candidate.
     }
   }
-  return typeof result === "string" ? result : "";
+  return parsed;
+};
+
+const extractAgentTexts = (result) => {
+  const texts = [];
+  const addText = (value) => {
+    if (typeof value === "string" && value.trim()) texts.push(value);
+  };
+  const visit = (value, depth = 0) => {
+    if (!value || depth > 5) return;
+    if (typeof value === "string") {
+      addText(value);
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item, depth + 1);
+      return;
+    }
+    if (typeof value !== "object") return;
+
+    if (Array.isArray(value.payloads)) {
+      for (const payload of value.payloads) {
+        if (payload && typeof payload.text === "string") {
+          addText(payload.text);
+        } else {
+          visit(payload, depth + 1);
+        }
+      }
+    }
+    if (Array.isArray(value.choices)) {
+      for (const choice of value.choices) {
+        visit(choice && choice.message && choice.message.content, depth + 1);
+      }
+    }
+    if (Array.isArray(value.content)) {
+      for (const item of value.content) {
+        if (item && typeof item === "object" && typeof item.text === "string") addText(item.text);
+        else visit(item, depth + 1);
+      }
+    }
+    for (const key of [
+      "agent_response",
+      "answer",
+      "completion",
+      "content",
+      "data",
+      "final",
+      "message",
+      "output",
+      "reply",
+      "response",
+      "result",
+      "text",
+    ]) {
+      if (Object.prototype.hasOwnProperty.call(value, key)) {
+        visit(value[key], depth + 1);
+      }
+    }
+  };
+  visit(result);
+  return [...new Set(texts)];
+};
+
+const extractPayloadTexts = (result) => {
+  const texts = [];
+  const visit = (value, depth = 0) => {
+    if (!value || depth > 5) return;
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item, depth + 1);
+      return;
+    }
+    if (typeof value !== "object") return;
+
+    if (Array.isArray(value.payloads)) {
+      for (const payload of value.payloads) {
+        if (payload && typeof payload.text === "string" && payload.text.trim()) {
+          texts.push(payload.text);
+        }
+      }
+    }
+    for (const key of ["agent_response", "data", "final", "output", "response", "result"]) {
+      if (Object.prototype.hasOwnProperty.call(value, key)) {
+        visit(value[key], depth + 1);
+      }
+    }
+  };
+  visit(result);
+  return [...new Set(texts)];
+};
+
+const isParseFailureResponse = (response) =>
+  response &&
+  response.action === "observe" &&
+  ["invalid_openclaw_response", "invalid_openclaw_action", "unparseable_openclaw_output"].includes(response.reason);
+
+const buildTextFallbackResponse = (text) => ({
+  schema_version: 1,
+  action: "reply",
+  body: normalizeString(text).slice(0, 1800),
+  reason: "non_json_openclaw_text",
+  confidence: "low",
+  memory_candidates: [],
+  followup_candidates: [],
+  checked_followup_ids: [],
+  closed_followup_ids: [],
+  requires_approval: false,
+  approval: normalizeApproval({}),
+});
+
+const isFallbackTextCandidate = (text) => {
+  const normalized = normalizeString(text);
+  if (!normalized) return false;
+  if (normalized.length > 1800) return false;
+  if (normalized.startsWith("{") || normalized.startsWith("[")) return false;
+  if (/(?:api[_-]?key|token|secret|password|passwd)\s*[:=]/i.test(normalized)) return false;
+  return true;
+};
+
+const WRAPPER_KEYS = [
+  "agent_response",
+  "answer",
+  "completion",
+  "content",
+  "data",
+  "final",
+  "message",
+  "output",
+  "payload",
+  "payloads",
+  "reply",
+  "response",
+  "result",
+  "text",
+];
+
+const collectResponseCandidates = (value, output = [], depth = 0) => {
+  if (!value || depth > 5) return output;
+  if (typeof value === "string") {
+    for (const parsed of parseJsonObjects(value, { preferLast: true })) {
+      collectResponseCandidates(parsed, output, depth + 1);
+    }
+    return output;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectResponseCandidates(item, output, depth + 1);
+    return output;
+  }
+  if (typeof value !== "object") return output;
+
+  for (const text of extractAgentTexts(value)) {
+    collectResponseCandidates(text, output, depth + 1);
+  }
+  for (const key of WRAPPER_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(value, key)) {
+      collectResponseCandidates(value[key], output, depth + 1);
+    }
+  }
+  const hasWrapperKey = WRAPPER_KEYS.some((key) => Object.prototype.hasOwnProperty.call(value, key));
+  if (Object.prototype.hasOwnProperty.call(value, "action") && !hasWrapperKey) {
+    output.push(value);
+  }
+  return output;
 };
 
 const parseAgentResponse = (stdout) => {
-  const parsedStdout = parseJsonObject(stdout);
-  if (!parsedStdout) return buildObserveResponse("unparseable_openclaw_output");
-  const agentText = extractAgentText(parsedStdout);
-  if (!agentText) return normalizeOpenClawResponse(parsedStdout);
-  const parsedAgentText = parseJsonObject(agentText, { preferLast: true });
-  if (parsedAgentText) return normalizeOpenClawResponse(parsedAgentText);
-  return normalizeOpenClawResponse(parsedStdout);
+  const parsedStdout = parseJsonObjects(stdout, { preferLast: true });
+  if (parsedStdout.length === 0) return buildObserveResponse("unparseable_openclaw_output");
+  const normalized = [];
+  const fallbackTexts = [];
+  for (const value of parsedStdout) {
+    for (const candidate of collectResponseCandidates(value)) {
+      normalized.push(normalizeOpenClawResponse(candidate));
+    }
+    for (const text of extractPayloadTexts(value)) {
+      if (isFallbackTextCandidate(text)) fallbackTexts.push(text);
+    }
+  }
+  return normalized.find((response) => !isParseFailureResponse(response)) ||
+    (fallbackTexts.length > 0 ? buildTextFallbackResponse(fallbackTexts[0]) : null) ||
+    normalized[0] ||
+    buildObserveResponse("invalid_openclaw_response");
 };
 
 module.exports = {
