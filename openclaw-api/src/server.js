@@ -525,6 +525,8 @@ const createServer = ({
       let retryLastStage = "";
       let retryStdoutBytes = 0;
       let retryStderrBytes = 0;
+      let retryStderrLineCount = 0;
+      let retryStderrTailHash = "";
       try {
         if (compactFirst) {
           const compactPayload = buildMinimalRetryPayload(payload);
@@ -617,6 +619,10 @@ const createServer = ({
             retryStderrBytes = error && Number.isFinite(Number(error.stderr_bytes))
               ? Number(error.stderr_bytes)
               : 0;
+            retryStderrLineCount = error && Number.isFinite(Number(error.stderr_line_count))
+              ? Number(error.stderr_line_count)
+              : 0;
+            retryStderrTailHash = error && error.stderr_tail_hash ? String(error.stderr_tail_hash) : "";
           }
         }
       }
@@ -667,6 +673,10 @@ const createServer = ({
             retryStderrBytes = error && Number.isFinite(Number(error.stderr_bytes))
               ? Number(error.stderr_bytes)
               : 0;
+            retryStderrLineCount = error && Number.isFinite(Number(error.stderr_line_count))
+              ? Number(error.stderr_line_count)
+              : 0;
+            retryStderrTailHash = error && error.stderr_tail_hash ? String(error.stderr_tail_hash) : "";
             if (initialError && typeof initialError === "object") {
               initialError.retry_count = retryCount;
               initialError.retry_prompt_chars = retryPromptChars;
@@ -675,6 +685,8 @@ const createServer = ({
               initialError.retry_last_stage = retryLastStage;
               initialError.retry_stdout_bytes = retryStdoutBytes;
               initialError.retry_stderr_bytes = retryStderrBytes;
+              initialError.retry_stderr_line_count = retryStderrLineCount;
+              initialError.retry_stderr_tail_hash = retryStderrTailHash;
             }
             throw initialError;
           }
@@ -706,7 +718,9 @@ const createServer = ({
       if (retryCount > 0) {
         metrics.retry_stdout_bytes = retryStdoutBytes;
         metrics.retry_stderr_bytes = retryStderrBytes;
+        metrics.retry_stderr_line_count = retryStderrLineCount;
         if (retryLastStage) metrics.retry_last_stage = retryLastStage;
+        if (retryStderrTailHash) metrics.retry_stderr_tail_hash = retryStderrTailHash;
       }
       if (retryErrorCode) {
         metrics.error_code = retryErrorCode;
@@ -727,6 +741,8 @@ const createServer = ({
         retry_elapsed_ms: metrics.retry_elapsed_ms,
         retry_stdout_bytes: metrics.retry_stdout_bytes,
         retry_stderr_bytes: metrics.retry_stderr_bytes,
+        retry_stderr_line_count: metrics.retry_stderr_line_count,
+        retry_stderr_tail_hash: metrics.retry_stderr_tail_hash,
         attempt_mode: metrics.attempt_mode,
         first_attempt_timeout_ms: metrics.first_attempt_timeout_ms,
         workspace_context_chars: metrics.workspace_context_chars,
@@ -746,6 +762,16 @@ const createServer = ({
         code: error && error.code,
         elapsed_ms: Date.now() - requestStartedAt,
         stage: error && error.stage ? error.stage : lastStage,
+        stderr_bytes: error && Number.isFinite(Number(error.stderr_bytes)) ? Number(error.stderr_bytes) : 0,
+        stderr_line_count: error && Number.isFinite(Number(error.stderr_line_count))
+          ? Number(error.stderr_line_count)
+          : 0,
+        stderr_tail_hash: error && error.stderr_tail_hash ? error.stderr_tail_hash : "",
+        stderr_tail_safe: error && error.stderr_tail_safe ? error.stderr_tail_safe : "",
+        retry_stderr_line_count: error && Number.isFinite(Number(error.retry_stderr_line_count))
+          ? Number(error.retry_stderr_line_count)
+          : 0,
+        retry_stderr_tail_hash: error && error.retry_stderr_tail_hash ? error.retry_stderr_tail_hash : "",
         retry_skip_reason: error && error.retry_skip_reason ? error.retry_skip_reason : "",
       }, "[openclaw-api] request failed");
       const reason = error && error.code ? error.code : "openclaw_execution_failed";
@@ -760,6 +786,7 @@ const createServer = ({
         initial_error_code: error && error.code,
         last_stage: error && error.stage ? error.stage : lastStage,
         retry_skip_reason: error && error.retry_skip_reason,
+        stderr_tail_hash: error && error.stderr_tail_hash,
       };
       if (error && error.prompt) {
         diagnostics.prompt_chars = String(error.prompt).length;
@@ -785,11 +812,20 @@ const createServer = ({
       if (error && Object.prototype.hasOwnProperty.call(error, "retry_stderr_bytes")) {
         diagnostics.retry_stderr_bytes = error.retry_stderr_bytes;
       }
+      if (error && Object.prototype.hasOwnProperty.call(error, "retry_stderr_line_count")) {
+        diagnostics.retry_stderr_line_count = error.retry_stderr_line_count;
+      }
+      if (error && Object.prototype.hasOwnProperty.call(error, "retry_stderr_tail_hash")) {
+        diagnostics.retry_stderr_tail_hash = error.retry_stderr_tail_hash;
+      }
       if (error && Number.isFinite(Number(error.stdout_bytes))) {
         diagnostics.stdout_bytes = Number(error.stdout_bytes);
       }
       if (error && Number.isFinite(Number(error.stderr_bytes))) {
         diagnostics.stderr_bytes = Number(error.stderr_bytes);
+      }
+      if (error && Number.isFinite(Number(error.stderr_line_count))) {
+        diagnostics.stderr_line_count = Number(error.stderr_line_count);
       }
       sendJson(res, 200, buildObserveResponse(reason, diagnostics));
     }

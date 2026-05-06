@@ -716,7 +716,11 @@ describe("fairy OpenClaw runtime", () => {
         retry_elapsed_ms: 60001,
         retry_stdout_bytes: 0,
         retry_stderr_bytes: 128,
+        retry_stderr_line_count: 2,
+        retry_stderr_tail_hash: "abcdef1234567890",
         workspace_context_chars: 4096,
+        stderr_line_count: 3,
+        stderr_tail_hash: "0123456789abcdef",
         error_code: "OPENCLAW_EXIT",
         initial_error_code: "OPENCLAW_TIMEOUT",
         last_stage: "openclaw_timeout",
@@ -746,7 +750,11 @@ describe("fairy OpenClaw runtime", () => {
       retry_elapsed_ms: 60001,
       retry_stdout_bytes: 0,
       retry_stderr_bytes: 128,
+      retry_stderr_line_count: 2,
+      retry_stderr_tail_hash: "abcdef1234567890",
       workspace_context_chars: 4096,
+      stderr_line_count: 3,
+      stderr_tail_hash: "0123456789abcdef",
       error_code: "OPENCLAW_EXIT",
       initial_error_code: "OPENCLAW_TIMEOUT",
       last_stage: "openclaw_timeout",
@@ -1548,9 +1556,13 @@ describe("fairy OpenClaw runtime", () => {
           retry_count: 1,
           retry_prompt_chars: 555,
           retry_elapsed_ms: 60001,
+          retry_stderr_line_count: 2,
+          retry_stderr_tail_hash: "abcdef1234567890",
           retry_last_stage: "openclaw_timeout",
           error_code: "OPENCLAW_EXIT",
           last_stage: "openclaw_timeout",
+          stderr_line_count: 3,
+          stderr_tail_hash: "0123456789abcdef",
           stdout: "raw stdout must not be shown",
           message: "https://example.com/raw",
         },
@@ -1585,7 +1597,7 @@ describe("fairy OpenClaw runtime", () => {
     expect(message.reply).toHaveBeenCalledWith({
       content:
         "-# OpenClaw 直接実行に失敗しました。時間をおいてもう一度試してください。\n" +
-        `-# 詳細: request_id=req_observe_timeout reason_code=${reason} attempt_mode=full_first elapsed_ms=2001 first_attempt_timeout_ms=75000 prompt_chars=1234 first_attempt_elapsed_ms=75001 retry_count=1 retry_prompt_chars=555 retry_elapsed_ms=60001 error_code=OPENCLAW_EXIT last_stage=openclaw_timeout retry_last_stage=openclaw_timeout`,
+        `-# 詳細: request_id=req_observe_timeout reason_code=${reason} attempt_mode=full_first elapsed_ms=2001 first_attempt_timeout_ms=75000 prompt_chars=1234 first_attempt_elapsed_ms=75001 retry_count=1 retry_prompt_chars=555 retry_elapsed_ms=60001 retry_stderr_line_count=2 stderr_line_count=3 error_code=OPENCLAW_EXIT last_stage=openclaw_timeout retry_last_stage=openclaw_timeout stderr_tail_hash=0123456789abcdef retry_stderr_tail_hash=abcdef1234567890`,
       allowedMentions: SAFE_ALLOWED_MENTIONS,
     });
     expect(message.reply.mock.calls[0][0].content).not.toContain("raw stdout");

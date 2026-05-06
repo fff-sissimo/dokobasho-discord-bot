@@ -55,6 +55,8 @@ const DIAGNOSTIC_STRING_KEYS = new Set([
   "last_stage",
   "retry_last_stage",
   "retry_skip_reason",
+  "stderr_tail_hash",
+  "retry_stderr_tail_hash",
 ]);
 const DIAGNOSTIC_NUMBER_KEYS = new Set([
   "elapsed_ms",
@@ -67,9 +69,11 @@ const DIAGNOSTIC_NUMBER_KEYS = new Set([
   "retry_elapsed_ms",
   "retry_stdout_bytes",
   "retry_stderr_bytes",
+  "retry_stderr_line_count",
   "workspace_context_chars",
   "stdout_bytes",
   "stderr_bytes",
+  "stderr_line_count",
 ]);
 const SAFE_DIAGNOSTIC_VALUE_PATTERN = /^[A-Za-z0-9_.:-]+$/;
 
@@ -1131,14 +1135,18 @@ const buildDiagnosticsSummary = (diagnostics = {}) => {
     "retry_elapsed_ms",
     "retry_stdout_bytes",
     "retry_stderr_bytes",
+    "retry_stderr_line_count",
     "workspace_context_chars",
     "stdout_bytes",
     "stderr_bytes",
+    "stderr_line_count",
     "error_code",
     "initial_error_code",
     "last_stage",
     "retry_last_stage",
     "retry_skip_reason",
+    "stderr_tail_hash",
+    "retry_stderr_tail_hash",
   ]) {
     if (!Object.prototype.hasOwnProperty.call(diagnostics, key)) continue;
     parts.push(`${key}=${diagnostics[key]}`);

@@ -18,6 +18,37 @@ const extractRequestId = (message) => {
 const hashPrompt = (message) =>
   createHash("sha256").update(String(message || ""), "utf8").digest("hex").slice(0, 16);
 
+const hashDiagnosticText = (value) =>
+  createHash("sha256").update(String(value || ""), "utf8").digest("hex").slice(0, 16);
+
+const redactDiagnosticText = (value) => {
+  let text = String(value || "")
+    .replace(/\u001b\[[0-9;]*m/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!text) return "";
+  text = text
+    .replace(/https?:\/\/\S+/gi, "[url]")
+    .replace(/<(?:@!?|@&|#)\d+>/g, "[discord_ref]")
+    .replace(/((?:api[_-]?key|token|secret|password|passwd)\s*[:=])\s*\S+/gi, "$1[redacted]")
+    .replace(/(?:bearer|basic)\s+[a-z0-9._~+/=-]{8,}/gi, "[auth_redacted]")
+    .replace(/(?:(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|sk-proj-[A-Za-z0-9_-]+|sk-[A-Za-z0-9_-]+)/gi, "[token_redacted]")
+    .replace(/AKIA[0-9A-Z]{16}/g, "[aws_key_redacted]");
+  return text.slice(0, 500);
+};
+
+const buildStderrDiagnostics = (stderr) => {
+  const text = String(stderr || "");
+  const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const tailLines = lines.slice(-4);
+  const tail = tailLines.join(" | ");
+  return {
+    stderr_line_count: lines.length,
+    stderr_tail_hash: tail ? hashDiagnosticText(tail) : "",
+    stderr_tail_safe: redactDiagnosticText(tail),
+  };
+};
+
 const buildRequestScopedSessionId = ({ sessionId, sessionScope, requestId, message, sessionAttempt }) => {
   const baseSessionId = String(sessionId || "").trim();
   if (!baseSessionId) return "";
@@ -133,6 +164,7 @@ const runOpenClawAgent = ({
     let settled = false;
     let timedOut = false;
     let timer;
+    let killTimer;
 
     const fail = (error) => {
       if (settled) return;
@@ -144,6 +176,7 @@ const runOpenClawAgent = ({
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      clearTimeout(killTimer);
       resolve(value);
     };
 
@@ -182,6 +215,7 @@ const runOpenClawAgent = ({
     timer = setTimeout(() => {
       timedOut = true;
       const killSent = child.kill("SIGTERM");
+      const stderrDiagnostics = buildStderrDiagnostics(stderr);
       trace({
         stage: "openclaw_timeout_signal_sent",
         pid: child.pid || 0,
@@ -190,12 +224,30 @@ const runOpenClawAgent = ({
         duration_ms: Date.now() - startedAt,
         stdout_bytes: stdoutBytes,
         stderr_bytes: stderrBytes,
+        ...stderrDiagnostics,
       });
+      const killGraceMs = Number.isFinite(Number(config.killGraceMs)) && Number(config.killGraceMs) > 0
+        ? Math.floor(Number(config.killGraceMs))
+        : 10000;
+      killTimer = setTimeout(() => {
+        const sigkillSent = child.kill("SIGKILL");
+        trace({
+          stage: "openclaw_kill_signal_sent",
+          pid: child.pid || 0,
+          kill_signal: "SIGKILL",
+          kill_sent: sigkillSent,
+          duration_ms: Date.now() - startedAt,
+          stdout_bytes: stdoutBytes,
+          stderr_bytes: stderrBytes,
+          ...buildStderrDiagnostics(stderr),
+        });
+      }, killGraceMs);
       const error = new Error(`OpenClaw command timed out: timeoutMs=${effectiveTimeoutMs}`);
       error.code = "OPENCLAW_TIMEOUT";
       error.stage = "openclaw_timeout";
       error.stdout_bytes = stdoutBytes;
       error.stderr_bytes = stderrBytes;
+      Object.assign(error, stderrDiagnostics);
       fail(error);
     }, effectiveTimeoutMs);
 
@@ -236,6 +288,7 @@ const runOpenClawAgent = ({
       fail(error);
     });
     child.on("close", (code, signal) => {
+      clearTimeout(killTimer);
       const closeCode = code === null
         ? -1
         : Number.isFinite(Number(code)) ? Number(code) : -1;
@@ -248,6 +301,7 @@ const runOpenClawAgent = ({
         stdout_bytes: stdoutBytes,
         stderr_bytes: stderrBytes,
         timed_out: timedOut,
+        ...buildStderrDiagnostics(stderr),
       });
       if (settled) return;
       if (code !== 0) {
@@ -257,6 +311,7 @@ const runOpenClawAgent = ({
         error.stdout_bytes = stdoutBytes;
         error.stderr_bytes = stderrBytes;
         error.stderr = stderr.slice(-4000);
+        Object.assign(error, buildStderrDiagnostics(stderr));
         fail(error);
         return;
       }
@@ -268,5 +323,6 @@ module.exports = {
   buildOpenClawArgs,
   buildOpenClawChildEnv,
   buildRequestScopedSessionId,
+  buildStderrDiagnostics,
   runOpenClawAgent,
 };

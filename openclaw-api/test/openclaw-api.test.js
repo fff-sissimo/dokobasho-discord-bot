@@ -11,6 +11,7 @@ const {
   buildOpenClawArgs,
   buildOpenClawChildEnv,
   buildRequestScopedSessionId,
+  buildStderrDiagnostics,
   runOpenClawAgent,
 } = require("../src/openclaw-runner");
 const { buildMinimalRetryPayload, buildPromptPayload, createServer, isCompactFirstRequest } = require("../src/server");
@@ -39,6 +40,7 @@ const baseConfig = {
   requestTimeoutMs: 1000,
   firstAttemptTimeoutMs: 750,
   retryMinTimeoutMs: 150,
+  killGraceMs: 10000,
   maxBodyBytes: 65536,
   maxWorkspaceContextChars: 16000,
   sessionScope: "request",
@@ -305,6 +307,24 @@ test("invalid OpenClaw output becomes observe response", () => {
   assert.equal(response.reason, "unparseable_openclaw_output");
 });
 
+test("stderr diagnostics redact unsafe text while preserving a stable hash", () => {
+  const diagnostics = buildStderrDiagnostics([
+    "OpenClaw warning",
+    "Request failed at https://example.com/raw?token=secret",
+    "Authorization: Bearer abcdefghijklmnop",
+    "api_key=sk-proj-abcdef1234567890",
+  ].join("\n"));
+
+  assert.equal(diagnostics.stderr_line_count, 4);
+  assert.match(diagnostics.stderr_tail_hash, /^[0-9a-f]{16}$/);
+  assert.match(diagnostics.stderr_tail_safe, /\[url\]/);
+  assert.match(diagnostics.stderr_tail_safe, /\[auth_redacted\]/);
+  assert.match(diagnostics.stderr_tail_safe, /api_key=\[redacted\]/);
+  assert.doesNotMatch(diagnostics.stderr_tail_safe, /example\.com/);
+  assert.doesNotMatch(diagnostics.stderr_tail_safe, /abcdefghijklmnop/);
+  assert.doesNotMatch(diagnostics.stderr_tail_safe, /sk-proj-/);
+});
+
 test("normalizes diagnostics to whitelisted structured fields only", () => {
   assert.deepEqual(normalizeSafeDiagnostics({
     request_id: "req_1",
@@ -316,7 +336,11 @@ test("normalizes diagnostics to whitelisted structured fields only", () => {
     initial_prompt_chars: 140,
     retry_count: 1,
     retry_prompt_chars: 80,
+    retry_stderr_line_count: 2,
+    retry_stderr_tail_hash: "abcdef1234567890",
     workspace_context_chars: 40,
+    stderr_line_count: 3,
+    stderr_tail_hash: "0123456789abcdef",
     error_code: "OPENCLAW_TIMEOUT",
     stdout: "raw stdout",
     prompt: "raw prompt",
@@ -333,7 +357,11 @@ test("normalizes diagnostics to whitelisted structured fields only", () => {
     initial_prompt_chars: 140,
     retry_count: 1,
     retry_prompt_chars: 80,
+    retry_stderr_line_count: 2,
+    retry_stderr_tail_hash: "abcdef1234567890",
     workspace_context_chars: 40,
+    stderr_line_count: 3,
+    stderr_tail_hash: "0123456789abcdef",
     error_code: "OPENCLAW_TIMEOUT",
   });
 
@@ -1681,6 +1709,8 @@ test("keeps context_overflow as the response reason when retry execution times o
       error.stage = "openclaw_timeout";
       error.stdout_bytes = 12;
       error.stderr_bytes = 34;
+      error.stderr_line_count = 2;
+      error.stderr_tail_hash = "abcdef1234567890";
       throw error;
     },
   }, async (baseUrl) => {
@@ -1714,6 +1744,8 @@ test("keeps context_overflow as the response reason when retry execution times o
     assert.equal(body.diagnostics.retry_last_stage, "openclaw_timeout");
     assert.equal(body.diagnostics.retry_stdout_bytes, 12);
     assert.equal(body.diagnostics.retry_stderr_bytes, 34);
+    assert.equal(body.diagnostics.retry_stderr_line_count, 2);
+    assert.equal(body.diagnostics.retry_stderr_tail_hash, "abcdef1234567890");
     assert.doesNotMatch(JSON.stringify(body.diagnostics), /raw text/);
   });
 
@@ -1865,6 +1897,8 @@ test("keeps retry diagnostics when a first timeout retry also fails", async () =
       error.stage = "openclaw_close";
       error.stdout_bytes = 56;
       error.stderr_bytes = 78;
+      error.stderr_line_count = 3;
+      error.stderr_tail_hash = "0123456789abcdef";
       throw error;
     },
   }, async (baseUrl) => {
@@ -1899,6 +1933,8 @@ test("keeps retry diagnostics when a first timeout retry also fails", async () =
     assert.equal(body.diagnostics.retry_last_stage, "openclaw_close");
     assert.equal(body.diagnostics.retry_stdout_bytes, 56);
     assert.equal(body.diagnostics.retry_stderr_bytes, 78);
+    assert.equal(body.diagnostics.retry_stderr_line_count, 3);
+    assert.equal(body.diagnostics.retry_stderr_tail_hash, "0123456789abcdef");
     assert.doesNotMatch(JSON.stringify(body.diagnostics), /example\.com/);
   });
 
@@ -2339,6 +2375,7 @@ test("OpenClaw runner trace logs child process timeout lifecycle", async () => {
     commandPath,
     [
       "#!/usr/bin/env node",
+      "process.stderr.write('Request failed at https://example.com/raw token=abcdefsecret\\n');",
       "setTimeout(() => {}, 5000);",
       "",
     ].join("\n"),
@@ -2365,11 +2402,11 @@ test("OpenClaw runner trace logs child process timeout lifecycle", async () => {
         ...baseConfig,
         command: commandPath,
         workspaceDir,
-        requestTimeoutMs: 50,
+        requestTimeoutMs: 250,
         timeoutSeconds: 5,
       },
       message: JSON.stringify({ request_id: "req_runner_trace", content: "raw secret body" }),
-      timeoutMs: 50,
+      timeoutMs: 250,
       logger: { info: (entry) => logs.onInfo(entry) },
       traceLogs: true,
       requestId: "req_runner_trace",
@@ -2388,6 +2425,12 @@ test("OpenClaw runner trace logs child process timeout lifecycle", async () => {
   assert.equal(closeLog.close_code, -1);
   assert.equal(closeLog.close_signal, "SIGTERM");
   assert.equal(closeLog.timed_out, true);
+  const timeoutLog = logs.find((entry) => entry.stage === "openclaw_timeout_signal_sent");
+  assert.equal(timeoutLog.stderr_line_count, 1);
+  assert.match(timeoutLog.stderr_tail_hash, /^[0-9a-f]{16}$/);
+  assert.match(timeoutLog.stderr_tail_safe, /\[url\]/);
+  assert.doesNotMatch(timeoutLog.stderr_tail_safe, /example\.com/);
+  assert.doesNotMatch(timeoutLog.stderr_tail_safe, /abcdefsecret/);
   assert.ok(logs.every((entry) => entry.request_id === "req_runner_trace"));
   assert.ok(!JSON.stringify(logs).includes("raw secret body"));
 });
@@ -2418,6 +2461,7 @@ test("loadConfig defaults to request scoped sessions with fixed compatibility op
   assert.equal(config.timeoutSeconds, 120);
   assert.equal(config.requestTimeoutMs, 140000);
   assert.equal(config.retryMinTimeoutMs, 60000);
+  assert.equal(config.killGraceMs, 10000);
   assert.equal(config.traceLogs, false);
   assert.equal(config.maxWorkspaceContextChars, 1200);
   assert.equal(config.promptFiles.includes("TOOLS.md"), false);

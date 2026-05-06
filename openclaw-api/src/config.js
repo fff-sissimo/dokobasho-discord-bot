@@ -6,6 +6,7 @@ const DEFAULT_PROMPT_FILES = [
 const DEFAULT_WORKSPACE_CONTEXT_MAX_CHARS = 1200;
 const DEFAULT_RETRY_MIN_TIMEOUT_MS = 60000;
 const DEFAULT_FIRST_ATTEMPT_TIMEOUT_MS = 75000;
+const DEFAULT_KILL_GRACE_MS = 10000;
 
 const parsePositiveInt = (value, fallback) => {
   const parsed = Number(value);
@@ -49,6 +50,7 @@ const loadConfig = (env = process.env) => {
       DEFAULT_FIRST_ATTEMPT_TIMEOUT_MS
     ),
     retryMinTimeoutMs: parsePositiveInt(env.OPENCLAW_RETRY_MIN_TIMEOUT_MS, DEFAULT_RETRY_MIN_TIMEOUT_MS),
+    killGraceMs: parsePositiveInt(env.OPENCLAW_KILL_GRACE_MS, DEFAULT_KILL_GRACE_MS),
     traceLogs: parseBoolean(env.OPENCLAW_TRACE_LOGS, false),
     maxBodyBytes: parsePositiveInt(env.OPENCLAW_API_MAX_BODY_BYTES, 65536),
     maxWorkspaceContextChars: parsePositiveInt(
@@ -73,6 +75,7 @@ const assertRuntimeConfig = (config) => {
 
 module.exports = {
   DEFAULT_FIRST_ATTEMPT_TIMEOUT_MS,
+  DEFAULT_KILL_GRACE_MS,
   DEFAULT_PROMPT_FILES,
   DEFAULT_RETRY_MIN_TIMEOUT_MS,
   DEFAULT_WORKSPACE_CONTEXT_MAX_CHARS,
