@@ -310,6 +310,23 @@ const buildAgentPrompt = ({ payload, workspaceContext }) => [
   "```",
 ].join("\n");
 
+const buildRetryAgentPrompt = ({ payload }) => [
+  "あなたは Discord 上の `どこばしょのようせい` の OpenClaw retry 判断 API です。",
+  "前回は context overflow でした。Runtime files と workspace context は使わず、この Discord payload だけで判断してください。",
+  "Discord へ直接投稿せず、必ず JSON だけを返してください。",
+  "返却 JSON は schema_version, action, body, reason, confidence, memory_candidates, followup_candidates, checked_followup_ids, closed_followup_ids, requires_approval, approval を含めてください。",
+  "action は observe, reply, offer, assist, draft, publish_blocked のどれかだけです。",
+  "bot への明示 mention、bot への reply、または短い直接依頼では、禁止要素がない限り action: \"reply\" で短く返してください。",
+  "everyone/here、role mention、外部 URL、添付、公開告知、運営判断、承認が必要な内容は requires_approval を true にするか publish_blocked にしてください。",
+  "approval.mentions は常に空配列にしてください。外部 URL は自動取得しないでください。",
+  "raw Discord 本文、秘密値、未加工の会話ログは保存・出力しないでください。",
+  "",
+  "# Discord payload",
+  "```json",
+  JSON.stringify(payload),
+  "```",
+].join("\n");
+
 const collectJsonObjectTexts = (text) => {
   const source = String(text || "").trim();
   const candidates = [];
@@ -667,6 +684,7 @@ const parseAgentResponse = (stdout) => {
 module.exports = {
   buildAgentPrompt,
   buildObserveResponse,
+  buildRetryAgentPrompt,
   loadWorkspaceContext,
   normalizeOpenClawResponse,
   normalizeSafeDiagnostics,

@@ -12,6 +12,7 @@ const { buildMinimalRetryPayload, buildPromptPayload, createServer } = require("
 const {
   buildAgentPrompt,
   buildObserveResponse,
+  buildRetryAgentPrompt,
   loadWorkspaceContext,
   normalizeOpenClawResponse,
   normalizeSafeDiagnostics,
@@ -474,6 +475,32 @@ test("agent prompt keeps draft-only boundaries for approval-gated operations", (
   assert.match(prompt, /公開告知、運営判断、承認が必要な内容/);
   assert.match(prompt, /requires_approval を true にするか publish_blocked/);
   assert.match(prompt, /approval\.mentions は常に空配列/);
+});
+
+test("retry agent prompt stays short and excludes runtime context sections", () => {
+  const payload = buildMinimalRetryPayload({
+    request_id: "req_retry_prompt",
+    channel: { id: "channel_1", type: "sandbox", registered: true },
+    message: {
+      id: "msg_1",
+      author_id: "user_1",
+      content: "live smoke S-1: 短い挨拶です。今の調子を一言で返してください。",
+      mentions_bot: true,
+    },
+    context: { recent_messages: [] },
+  });
+  const normalPrompt = buildAgentPrompt({
+    workspaceContext: "runtime context".repeat(100),
+    payload,
+  });
+  const retryPrompt = buildRetryAgentPrompt({ payload });
+
+  assert.ok(retryPrompt.length < normalPrompt.length);
+  assert.match(retryPrompt, /context overflow/);
+  assert.match(retryPrompt, /# Discord payload/);
+  assert.doesNotMatch(retryPrompt, /# Runtime files/);
+  assert.doesNotMatch(retryPrompt, /runtime context/);
+  assert.doesNotMatch(retryPrompt, /\(no workspace context loaded\)/);
 });
 
 test("workspace context is capped by configured prompt budget", async () => {
@@ -1269,14 +1296,18 @@ test("retries once with a minimal prompt when OpenClaw returns context_overflow"
   await withServer({
     logger: { info: (entry) => logs.push(entry), warn: () => {} },
     loadContext: async () => "x".repeat(1200),
-    runAgentCommand: async ({ message, timeoutMs }) => {
-      calls.push({ message, timeoutMs });
+    runAgentCommand: async ({ message, timeoutMs, sessionAttempt }) => {
+      calls.push({ message, timeoutMs, sessionAttempt });
       if (calls.length === 1) {
         assert.match(message, /raw recent content/);
+        assert.equal(sessionAttempt, undefined);
         return "Context overflow: prompt too large for the model.";
       }
       assert.doesNotMatch(message, /raw recent content/);
-      assert.match(message, /\(no workspace context loaded\)/);
+      assert.doesNotMatch(message, /# Runtime files/);
+      assert.doesNotMatch(message, /\(no workspace context loaded\)/);
+      assert.match(message, /前回は context overflow/);
+      assert.equal(sessionAttempt, "retry-1");
       return JSON.stringify({
         payloads: [
           {
@@ -1331,6 +1362,8 @@ test("retries once with a minimal prompt when OpenClaw returns context_overflow"
   assert.ok(calls[0].timeoutMs <= baseConfig.requestTimeoutMs);
   assert.ok(calls[1].timeoutMs <= calls[0].timeoutMs);
   assert.ok(calls[1].message.length < calls[0].message.length);
+  assert.equal(calls[0].sessionAttempt, undefined);
+  assert.equal(calls[1].sessionAttempt, "retry-1");
   const completed = logs.find((entry) => entry && entry.request_id === "req_retry_success");
   assert.equal(completed.retry_count, 1);
   assert.ok(completed.initial_prompt_chars > completed.retry_prompt_chars);
@@ -1414,8 +1447,8 @@ test("keeps context_overflow as the response reason when retry execution times o
   const calls = [];
   await withServer({
     config: { ...baseConfig, requestTimeoutMs: 1000, retryMinTimeoutMs: 150 },
-    runAgentCommand: async ({ message, timeoutMs }) => {
-      calls.push({ message, timeoutMs });
+    runAgentCommand: async ({ message, timeoutMs, sessionAttempt }) => {
+      calls.push({ message, timeoutMs, sessionAttempt });
       if (calls.length === 1) {
         return "Context overflow: prompt too large for the model.";
       }
@@ -1456,7 +1489,9 @@ test("keeps context_overflow as the response reason when retry execution times o
 
   assert.equal(calls.length, 2);
   assert.ok(calls[1].timeoutMs <= calls[0].timeoutMs);
-  assert.match(calls[1].message, /\(no workspace context loaded\)/);
+  assert.equal(calls[0].sessionAttempt, undefined);
+  assert.equal(calls[1].sessionAttempt, "retry-1");
+  assert.doesNotMatch(calls[1].message, /# Runtime files/);
 });
 
 test("OpenClaw failure observe response includes safe diagnostics from request metrics", async () => {
@@ -1688,6 +1723,26 @@ test("request scoped session id uses request id without embedding raw prompt con
   assert.doesNotMatch(sessionId, /secret raw discord body/);
 });
 
+test("request scoped retry session id appends a safe attempt suffix", () => {
+  const sessionId = buildRequestScopedSessionId({
+    sessionId: "dokobasho-fairy-discord-v1",
+    sessionScope: "request",
+    message: [
+      "# Discord payload",
+      "```json",
+      JSON.stringify({
+        request_id: "req:abc 123",
+        content: "secret raw discord body",
+      }),
+      "```",
+    ].join("\n"),
+    sessionAttempt: "retry 1",
+  });
+
+  assert.equal(sessionId, "dokobasho-fairy-discord-v1-req-req:abc-123-retry-1");
+  assert.doesNotMatch(sessionId, /secret raw discord body/);
+});
+
 test("request scoped session id falls back to a prompt hash and fixed scope keeps base id", () => {
   const scoped = buildRequestScopedSessionId({
     sessionId: "base-session",
@@ -1705,6 +1760,19 @@ test("request scoped session id falls back to a prompt hash and fixed scope keep
       message: "prompt",
     }),
     "base-session"
+  );
+});
+
+test("fixed scoped retry session id is separated from the base session", () => {
+  assert.equal(
+    buildRequestScopedSessionId({
+      sessionId: "base-session",
+      sessionScope: "fixed",
+      requestId: "req_1",
+      message: "prompt with secret value",
+      sessionAttempt: "retry-1",
+    }),
+    "base-session-retry-1"
   );
 });
 

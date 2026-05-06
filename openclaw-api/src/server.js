@@ -6,6 +6,7 @@ const { assertRuntimeConfig, loadConfig } = require("./config");
 const {
   buildAgentPrompt,
   buildObserveResponse,
+  buildRetryAgentPrompt,
   loadWorkspaceContext,
   normalizeSafeDiagnostics,
   parseAgentResponse,
@@ -230,12 +231,14 @@ const executeOpenClawPrompt = async ({
   runAgentCommand,
   projectPayload = true,
   timeoutMs,
+  promptBuilder = buildAgentPrompt,
+  sessionAttempt,
 }) => {
   const promptPayload = projectPayload ? buildPromptPayload(payload) : payload;
-  const prompt = buildAgentPrompt({ payload: promptPayload, workspaceContext });
+  const prompt = promptBuilder({ payload: promptPayload, workspaceContext });
   let stdout;
   try {
-    stdout = await runAgentCommand({ config, message: prompt, timeoutMs });
+    stdout = await runAgentCommand({ config, message: prompt, timeoutMs, sessionAttempt });
   } catch (error) {
     if (error && typeof error === "object") {
       error.prompt = prompt;
@@ -328,6 +331,8 @@ const createServer = ({
               runAgentCommand,
               projectPayload: false,
               timeoutMs: retryTimeoutMs,
+              promptBuilder: buildRetryAgentPrompt,
+              sessionAttempt: "retry-1",
             });
             retryPromptChars = result.prompt.length;
           } catch (error) {

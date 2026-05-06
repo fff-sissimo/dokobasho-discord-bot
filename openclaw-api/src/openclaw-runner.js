@@ -18,12 +18,17 @@ const extractRequestId = (message) => {
 const hashPrompt = (message) =>
   createHash("sha256").update(String(message || ""), "utf8").digest("hex").slice(0, 16);
 
-const buildRequestScopedSessionId = ({ sessionId, sessionScope, requestId, message }) => {
+const buildRequestScopedSessionId = ({ sessionId, sessionScope, requestId, message, sessionAttempt }) => {
   const baseSessionId = String(sessionId || "").trim();
-  if (!baseSessionId || sessionScope === "fixed") return baseSessionId;
+  if (!baseSessionId) return "";
+  const attemptSegment = sanitizeSessionSegment(sessionAttempt);
+  if (sessionScope === "fixed") {
+    return attemptSegment ? `${baseSessionId}-${attemptSegment}` : baseSessionId;
+  }
   const requestSegment = sanitizeSessionSegment(requestId || extractRequestId(message));
   const scopedSegment = requestSegment || `prompt-${hashPrompt(message)}`;
-  return `${baseSessionId}-req-${scopedSegment}`;
+  const requestScopedSessionId = `${baseSessionId}-req-${scopedSegment}`;
+  return attemptSegment ? `${requestScopedSessionId}-${attemptSegment}` : requestScopedSessionId;
 };
 
 const buildOpenClawArgs = ({ agentMode, agentId, sessionId, thinking, timeoutSeconds, message }) => {
@@ -56,7 +61,7 @@ const buildOpenClawChildEnv = (sourceEnv = process.env) =>
       .filter(([, value]) => value !== undefined && value !== null && String(value).trim() !== "")
   );
 
-const runOpenClawAgent = ({ config, message, timeoutMs }) =>
+const runOpenClawAgent = ({ config, message, timeoutMs, sessionAttempt }) =>
   new Promise((resolve, reject) => {
     const effectiveTimeoutMs = Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0
       ? Math.floor(Number(timeoutMs))
@@ -75,6 +80,7 @@ const runOpenClawAgent = ({ config, message, timeoutMs }) =>
         sessionId: config.sessionId,
         sessionScope: config.sessionScope,
         message,
+        sessionAttempt,
       }),
       thinking: config.thinking,
       timeoutSeconds: effectiveTimeoutSeconds,
