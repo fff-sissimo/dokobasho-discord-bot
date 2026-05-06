@@ -195,18 +195,23 @@ const appendSectionWithinBudget = (output, section, maxChars) => {
   };
 };
 
-const loadWorkspaceContext = async ({ workspaceDir, promptFiles, maxChars }) => {
+const loadWorkspaceContext = async ({ workspaceDir, promptFiles, maxChars, required = false }) => {
   let output = "";
+  let loadedFiles = 0;
   for (const filePath of promptFiles) {
     const relativePath = safeRelativePath(filePath);
     if (!relativePath) continue;
     const absolutePath = path.join(workspaceDir, relativePath);
     try {
       const content = await fs.readFile(absolutePath, "utf8");
+      loadedFiles += 1;
       const next = appendSectionWithinBudget(output, `## ${relativePath}\n\n${content.trim()}`, maxChars);
       output = next.output;
       if (next.truncated) break;
     } catch (error) {
+      if (required && error && error.code === "ENOENT") {
+        throw error;
+      }
       if (error && error.code !== "ENOENT") {
         const next = appendSectionWithinBudget(
           output,
@@ -217,6 +222,11 @@ const loadWorkspaceContext = async ({ workspaceDir, promptFiles, maxChars }) => 
         if (next.truncated) break;
       }
     }
+  }
+  if (required && loadedFiles === 0) {
+    const error = new Error("required workspace context was not loaded");
+    error.code = "OPENCLAW_WORKSPACE_CONTEXT_MISSING";
+    throw error;
   }
   return output;
 };
@@ -236,14 +246,8 @@ const buildAgentPrompt = ({ payload, workspaceContext }) => [
   "followup_candidates[].metadata.kind は explicit_request, agreed_todo, formal_quest, creation_continuation, test_only のどれかです。test_only はテスト fixture 以外では使わないでください。",
   "followup_candidates[].metadata.basis は explicit_user_request, agreed_in_thread, due_followup, unknown のどれかです。assignee_member_id と source_followup_id は分かる場合だけ ID 文字列を入れてください。",
   "due followup を一度確認したら checked_followup_ids、完了・不要・取り下げなら closed_followup_ids に ID だけを入れ、raw 本文は入れないでください。",
-  "channel.type が chat の場合、場が自然に流れている通常会話は observe を既定にし、明示 mention、bot への reply、または直接聞かれた時だけ短く返してください。",
-  "chat で active_thread_age_minutes が 30 を超える場合は、明示 mention、reply、約束済み followup がない限り前の会話を勝手に再開しないでください。",
-  "",
-  "# Channel policy",
-  "- board: current request only です。proactive な再開・追いかけ・後日の持ち出しはしないでください。未採用アイデア、雑な案、検討中の断片を stable memory にしないでください。project として継続扱いにする前に、必ず project 昇格の確認を挟んでください。",
-  "- project: active thread は 24h です。active_thread_age_minutes が 1440 以下なら続きとして扱えます。proactive window は 6h で、active_thread_age_minutes が 360 以下かつ約束済み followup がある場合だけ offer/assist を検討できます。24h を超えたら、続き扱いにする前に確認してください。",
-  "- creation: 本人が求めた相談・壁打ち・制作支援だけに応答してください。active thread 内でも、依頼や明示的な続行合図なしに自発会話を始めることは基本しないでください。",
-  "- ops: 原則として送信しないでください。公開告知、運営判断、チャンネル方針、外部向け文面は draft、publish_blocked、または requires_approval: true にしてください。",
+  "人格、channel policy、active thread、memory/followup の運用詳細は Runtime files を常設方針として扱ってください。",
+  "channel.type、active_thread_age_minutes、mentions_bot、is_reply_to_bot、followup refs は Discord payload の構造化値を使って判断してください。",
   "",
   "# Runtime files",
   workspaceContext || "(no workspace context loaded)",

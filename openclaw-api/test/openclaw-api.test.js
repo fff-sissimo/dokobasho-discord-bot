@@ -8,7 +8,7 @@ const { test } = require("node:test");
 
 const { DEFAULT_WORKSPACE_CONTEXT_MAX_CHARS, loadConfig } = require("../src/config");
 const { buildOpenClawArgs, buildOpenClawChildEnv, buildRequestScopedSessionId } = require("../src/openclaw-runner");
-const { buildMinimalRetryPayload, createServer } = require("../src/server");
+const { buildMinimalRetryPayload, buildPromptPayload, createServer } = require("../src/server");
 const {
   buildAgentPrompt,
   buildObserveResponse,
@@ -288,15 +288,16 @@ test("invalid OpenClaw output becomes observe response", () => {
 
 test("agent prompt includes phase2 chat restraint rules", () => {
   const prompt = buildAgentPrompt({
-    workspaceContext: "runtime context",
+    workspaceContext: "runtime context\nchat は active thread 30分。30分を超えたら勝手に再開しない。",
     payload: {
       channel: { id: "840827137451229210", type: "chat" },
       context: { active_thread_age_minutes: 31 },
     },
   });
 
-  assert.match(prompt, /channel\.type が chat/);
-  assert.match(prompt, /active_thread_age_minutes が 30 を超える/);
+  assert.match(prompt, /channel\.type/);
+  assert.match(prompt, /active_thread_age_minutes/);
+  assert.match(prompt, /Runtime files を常設方針/);
   assert.match(prompt, /checked_followup_ids/);
   assert.match(prompt, /closed_followup_ids/);
   assert.match(prompt, /metadata\.kind/);
@@ -381,26 +382,26 @@ test("agent prompt stays under the OpenClaw live-smoke budget for capped context
 
 test("agent prompt includes channel active thread and output policies", () => {
   const prompt = buildAgentPrompt({
-    workspaceContext: "runtime context",
+    workspaceContext: [
+      "runtime context",
+      "board は current request only。未採用アイデアを stable memory にしない。",
+      "project は active thread 24h。proactive は6h以内かつ約束済み followup がある場合だけ。",
+      "creation は本人が求めた相談だけに応答する。",
+      "ops、公開告知、運営判断、外部向け文面は自動投稿しない。",
+    ].join("\n"),
     payload: {
       channel: { id: "840827137451229210", type: "board" },
       context: { active_thread_age_minutes: 31 },
     },
   });
 
-  assert.match(prompt, /board: current request only/);
-  assert.match(prompt, /proactive な再開/);
+  assert.match(prompt, /board は current request only/);
   assert.match(prompt, /未採用アイデア.*stable memory/);
-  assert.match(prompt, /project 昇格の確認/);
-  assert.match(prompt, /project: active thread は 24h/);
-  assert.match(prompt, /proactive window は 6h/);
-  assert.match(prompt, /active_thread_age_minutes が 1440/);
-  assert.match(prompt, /active_thread_age_minutes が 360/);
-  assert.match(prompt, /creation: 本人が求めた相談/);
-  assert.match(prompt, /自発会話を始めることは基本しない/);
-  assert.match(prompt, /ops: 原則として送信しない/);
-  assert.match(prompt, /公開告知、運営判断/);
-  assert.match(prompt, /draft、publish_blocked、または requires_approval: true/);
+  assert.match(prompt, /project は active thread 24h/);
+  assert.match(prompt, /proactive は6h/);
+  assert.match(prompt, /creation は本人が求めた相談/);
+  assert.match(prompt, /ops、公開告知、運営判断/);
+  assert.match(prompt, /自動投稿しない/);
 });
 
 test("agent prompt keeps URL, mention, and raw Discord body safety rules", () => {
@@ -431,8 +432,8 @@ test("agent prompt keeps draft-only boundaries for approval-gated operations", (
   });
 
   assert.match(prompt, /Discord へ直接投稿せず、必ず JSON だけを返してください/);
-  assert.match(prompt, /公開告知、運営判断、チャンネル方針、外部向け文面は draft/);
-  assert.match(prompt, /publish_blocked、または requires_approval: true/);
+  assert.match(prompt, /公開告知、運営判断、承認が必要な内容/);
+  assert.match(prompt, /requires_approval を true にするか publish_blocked/);
   assert.match(prompt, /approval\.mentions は常に空配列/);
 });
 
@@ -1055,6 +1056,134 @@ test("minimal retry payload keeps only current-message decision fields", () => {
   assert.deepEqual(payload.message.links, [{ present: true }]);
 });
 
+test("normal prompt payload removes raw display, links, and empty memory while preserving needed context", () => {
+  const payload = buildPromptPayload({
+    request_id: "req_normal_projection",
+    channel: {
+      id: "channel_1",
+      name: "raw channel name",
+      type: "chat",
+      registered: true,
+      thread_id: "thread_1",
+    },
+    message: {
+      id: "msg_1",
+      author_id: "user_1",
+      author_display_name: "raw display",
+      content: "さっきの https://example.com/raw-path の続きで短く返してください",
+      mentions_bot: true,
+      is_reply_to_bot: false,
+      links: ["https://example.com/raw-path"],
+      attachments: [{ id: "att_1", name: "raw filename.png", content_type: "image/png", size: 42 }],
+    },
+    context: {
+      recent_messages: [
+        { message_id: "ctx_1", author_id: "user_1", content: `前のURL https://example.com/${"x".repeat(300)}`, created_at: "2026-05-06T06:39:00.000Z" },
+      ],
+      active_thread_age_minutes: 3,
+      has_promised_followup: false,
+      matched_followup_ids: [],
+    },
+    memory: { member_ids: [] },
+  });
+
+  assert.equal(payload.channel.name, undefined);
+  assert.equal(payload.message.author_display_name, undefined);
+  assert.match(payload.message.content, /\[external_url\]/);
+  assert.doesNotMatch(payload.message.content, /https:\/\/example\.com/);
+  assert.deepEqual(payload.message.links, [{ present: true }]);
+  assert.equal(payload.message.attachments[0].name, undefined);
+  assert.equal(payload.memory, undefined);
+  assert.equal(payload.context.recent_messages.length, 1);
+  assert.ok(payload.context.recent_messages[0].content.length <= 200);
+  assert.match(payload.context.recent_messages[0].content, /\[external_url\]/);
+  assert.doesNotMatch(payload.context.recent_messages[0].content, /https:\/\/example\.com/);
+});
+
+test("normal prompt payload drops recent context for self-contained direct smoke requests", () => {
+  const payload = buildPromptPayload({
+    request_id: "req_smoke_projection",
+    channel: { id: "channel_1", type: "sandbox", registered: true },
+    message: {
+      id: "msg_1",
+      author_id: "user_1",
+      content: "live smoke S-1: 短い挨拶です。今の調子を一言で返してください。",
+      mentions_bot: true,
+    },
+    context: {
+      recent_messages: [
+        { message_id: "ctx_1", author_id: "user_1", content: "previous context", created_at: "2026-05-06T06:39:00.000Z" },
+      ],
+      has_promised_followup: false,
+      matched_followup_ids: [],
+    },
+  });
+
+  assert.deepEqual(payload.context.recent_messages, []);
+});
+
+test("normal prompt payload does not treat words containing ping as self-contained ping requests", () => {
+  const payload = buildPromptPayload({
+    request_id: "req_typing_projection",
+    channel: { id: "channel_1", type: "sandbox", registered: true },
+    message: {
+      id: "msg_1",
+      author_id: "user_1",
+      content: "typing の件を短く返してください。",
+      mentions_bot: true,
+    },
+    context: {
+      recent_messages: [
+        { message_id: "ctx_1", author_id: "user_1", content: "typing context", created_at: "2026-05-06T06:39:00.000Z" },
+      ],
+      has_promised_followup: false,
+      matched_followup_ids: [],
+    },
+  });
+
+  assert.equal(payload.context.recent_messages.length, 1);
+});
+
+test("normal prompt payload keeps recent context for bot replies even when short", () => {
+  const payload = buildPromptPayload({
+    request_id: "req_reply_projection",
+    channel: { id: "channel_1", type: "sandbox", registered: true },
+    message: {
+      id: "msg_1",
+      author_id: "user_1",
+      content: "一言で返してください。",
+      mentions_bot: false,
+      is_reply_to_bot: true,
+    },
+    context: {
+      recent_messages: [
+        { message_id: "ctx_1", author_id: "user_1", content: "reply antecedent context", created_at: "2026-05-06T06:39:00.000Z" },
+      ],
+      has_promised_followup: false,
+      matched_followup_ids: [],
+    },
+  });
+
+  assert.equal(payload.context.recent_messages.length, 1);
+});
+
+test("required workspace context fails when default prompt file is missing", async () => {
+  const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-missing-context-"));
+  try {
+    await assert.rejects(
+      () => loadWorkspaceContext({
+        workspaceDir,
+        promptFiles: ["RUNTIME_PROMPT.md"],
+        maxChars: 1200,
+        required: true,
+      }),
+      /ENOENT|required workspace context/
+    );
+  } finally {
+    await fs.rm(workspaceDir, { recursive: true, force: true });
+  }
+});
+
 test("retries once with a minimal prompt when OpenClaw returns context_overflow", async () => {
   const calls = [];
   const logs = [];
@@ -1095,7 +1224,7 @@ test("retries once with a minimal prompt when OpenClaw returns context_overflow"
         message: {
           id: "msg_1",
           author_id: "user_1",
-          content: "live smoke S-1: 短い挨拶です。今の調子を一言で返してください。",
+          content: "さっきの話の続きで短く返してください。",
           mentions_bot: true,
           is_reply_to_bot: false,
           mentions_everyone: false,
@@ -1378,6 +1507,7 @@ test("loadConfig defaults to request scoped sessions with fixed compatibility op
   assert.equal(config.requestTimeoutMs, 140000);
   assert.equal(config.maxWorkspaceContextChars, 1200);
   assert.equal(config.promptFiles.includes("TOOLS.md"), false);
+  assert.deepEqual(config.promptFiles, ["RUNTIME_PROMPT.md"]);
   assert.equal(loadConfig({
     OPENCLAW_API_KEY: "secret",
     OPENCLAW_AGENT_SESSION_SCOPE: "fixed",

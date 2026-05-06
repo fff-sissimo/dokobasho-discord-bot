@@ -1,11 +1,7 @@
 "use strict";
 
 const DEFAULT_PROMPT_FILES = [
-  "AGENTS.md",
-  "IDENTITY.md",
-  "SOUL.md",
-  "HEARTBEAT.md",
-  "memory/README.md",
+  "RUNTIME_PROMPT.md",
 ];
 const DEFAULT_WORKSPACE_CONTEXT_MAX_CHARS = 1200;
 

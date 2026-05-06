@@ -84,6 +84,8 @@ const safeLogText = (value, { maxLength = 120 } = {}) => {
 };
 
 const RETRY_MESSAGE_CONTENT_MAX_CHARS = 500;
+const NORMAL_MESSAGE_CONTENT_MAX_CHARS = 1000;
+const NORMAL_RECENT_MESSAGE_CONTENT_MAX_CHARS = 200;
 const RETRY_LIST_MAX_ITEMS = 5;
 const RETRY_IDENTIFIER_MAX_CHARS = 80;
 
@@ -112,7 +114,37 @@ const normalizeRetryLinks = (value) =>
       present: Boolean(String(link || "").trim()),
     }));
 
-const buildMinimalRetryPayload = (payload) => {
+const redactPromptText = (value) =>
+  String(value || "").replace(/https?:\/\/\S+/gi, "[external_url]");
+
+const normalizePromptRecentMessages = (value) =>
+  (Array.isArray(value) ? value : [])
+    .slice(0, RETRY_LIST_MAX_ITEMS)
+    .map((message) => {
+      const source = message && typeof message === "object" && !Array.isArray(message) ? message : {};
+      return {
+        message_id: String(source.message_id || "").trim().slice(0, RETRY_IDENTIFIER_MAX_CHARS),
+        author_id: String(source.author_id || "").trim().slice(0, RETRY_IDENTIFIER_MAX_CHARS),
+        content: redactPromptText(source.content).slice(0, NORMAL_RECENT_MESSAGE_CONTENT_MAX_CHARS),
+        created_at: String(source.created_at || "").trim().slice(0, RETRY_IDENTIFIER_MAX_CHARS),
+      };
+    })
+    .filter((message) => message.message_id && message.author_id && message.content);
+
+const isSelfContainedDirectRequest = ({ message, context }) => {
+  const content = String(message.content || "");
+  if (!(message.mentions_bot || message.is_reply_to_bot)) return false;
+  if (message.is_reply_to_bot) return false;
+  if (content.length > 220) return false;
+  if (context.has_promised_followup) return false;
+  if (Array.isArray(context.matched_followup_ids) && context.matched_followup_ids.length > 0) return false;
+  if (/(?:さっき|前(?:の|回)?|上(?:の)?|これ|それ|あれ|この|その|続き|文脈|話題|どう思う)/.test(content)) {
+    return false;
+  }
+  return /live smoke/i.test(content) || /(?:^|[^A-Za-z])ping(?:$|[^A-Za-z])/i.test(content);
+};
+
+const buildPromptPayload = (payload, { mode = "normal" } = {}) => {
   const source = payload && typeof payload === "object" && !Array.isArray(payload) ? payload : {};
   const channel = source.channel && typeof source.channel === "object" && !Array.isArray(source.channel)
     ? source.channel
@@ -123,6 +155,28 @@ const buildMinimalRetryPayload = (payload) => {
   const context = source.context && typeof source.context === "object" && !Array.isArray(source.context)
     ? source.context
     : {};
+  const contentMaxChars = mode === "retry" ? RETRY_MESSAGE_CONTENT_MAX_CHARS : NORMAL_MESSAGE_CONTENT_MAX_CHARS;
+  const projectedMessage = {
+    id: String(message.id || "").trim(),
+    author_id: String(message.author_id || "").trim(),
+    content: redactPromptText(message.content).slice(0, contentMaxChars),
+    created_at: String(message.created_at || "").trim(),
+    is_reply_to_bot: Boolean(message.is_reply_to_bot),
+    mentions_bot: Boolean(message.mentions_bot),
+    mentions_everyone: Boolean(message.mentions_everyone),
+    role_mentions: normalizeRetryIdentifierList(message.role_mentions),
+    attachments: normalizeRetryAttachments(message.attachments),
+    links: normalizeRetryLinks(message.links),
+  };
+  const projectedContext = {
+    recent_messages: [],
+    active_thread_age_minutes: context.active_thread_age_minutes ?? null,
+    has_promised_followup: Boolean(context.has_promised_followup),
+    matched_followup_ids: normalizeRetryIdentifierList(context.matched_followup_ids),
+  };
+  if (mode !== "retry" && !isSelfContainedDirectRequest({ message: projectedMessage, context: projectedContext })) {
+    projectedContext.recent_messages = normalizePromptRecentMessages(context.recent_messages);
+  }
   return {
     request_id: String(source.request_id || "").trim(),
     schema_version: 1,
@@ -134,30 +188,20 @@ const buildMinimalRetryPayload = (payload) => {
       id: String(channel.id || "").trim(),
       type: String(channel.type || "").trim(),
       registered: Boolean(channel.registered),
+      thread_id: String(channel.thread_id || "").trim(),
+      parent_channel_id: String(channel.parent_channel_id || "").trim(),
+      category_id: String(channel.category_id || "").trim(),
     },
-    message: {
-      id: String(message.id || "").trim(),
-      author_id: String(message.author_id || "").trim(),
-      content: String(message.content || "").slice(0, RETRY_MESSAGE_CONTENT_MAX_CHARS),
-      created_at: String(message.created_at || "").trim(),
-      is_reply_to_bot: Boolean(message.is_reply_to_bot),
-      mentions_bot: Boolean(message.mentions_bot),
-      mentions_everyone: Boolean(message.mentions_everyone),
-      role_mentions: normalizeRetryIdentifierList(message.role_mentions),
-      attachments: normalizeRetryAttachments(message.attachments),
-      links: normalizeRetryLinks(message.links),
-    },
-    context: {
-      recent_messages: [],
-      active_thread_age_minutes: context.active_thread_age_minutes ?? null,
-      has_promised_followup: Boolean(context.has_promised_followup),
-      matched_followup_ids: normalizeRetryIdentifierList(context.matched_followup_ids),
-    },
+    message: projectedMessage,
+    context: projectedContext,
   };
 };
 
-const executeOpenClawPrompt = async ({ config, payload, workspaceContext, runAgentCommand }) => {
-  const prompt = buildAgentPrompt({ payload, workspaceContext });
+const buildMinimalRetryPayload = (payload) => buildPromptPayload(payload, { mode: "retry" });
+
+const executeOpenClawPrompt = async ({ config, payload, workspaceContext, runAgentCommand, projectPayload = true }) => {
+  const promptPayload = projectPayload ? buildPromptPayload(payload) : payload;
+  const prompt = buildAgentPrompt({ payload: promptPayload, workspaceContext });
   const stdout = await runAgentCommand({ config, message: prompt });
   return {
     prompt,
@@ -208,6 +252,7 @@ const createServer = ({
         workspaceDir: config.workspaceDir,
         promptFiles: config.promptFiles,
         maxChars: config.maxWorkspaceContextChars,
+        required: true,
       });
       let result = await executeOpenClawPrompt({ config, payload, workspaceContext, runAgentCommand });
       const initialPromptChars = result.prompt.length;
@@ -220,6 +265,7 @@ const createServer = ({
           payload: retryPayload,
           workspaceContext: "",
           runAgentCommand,
+          projectPayload: false,
         });
         retryCount = 1;
         retryPromptChars = result.prompt.length;
@@ -273,6 +319,7 @@ if (require.main === module) {
 
 module.exports = {
   buildMinimalRetryPayload,
+  buildPromptPayload,
   createServer,
   readJsonBody,
 };
