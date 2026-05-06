@@ -4,7 +4,7 @@ const { randomUUID } = require("node:crypto");
 const fs = require("node:fs/promises");
 const path = require("node:path");
 
-const DEFAULT_OPENCLAW_TIMEOUT_MS = 85000;
+const DEFAULT_OPENCLAW_TIMEOUT_MS = 150000;
 const DEFAULT_OPENCLAW_STATE_DIR = "/var/lib/dokobasho/fairy-openclaw-state";
 const DISCORD_BOT_REPO_ROOT = path.resolve(__dirname, "..");
 const WORKSPACE_REPO_ROOT = path.resolve(__dirname, "../..");
@@ -936,6 +936,7 @@ const validateOpenClawResponse = (response) => {
     schema_version: response.schema_version,
     action,
     body: normalizeMessageContent(response.body),
+    reason: normalizeMessageContent(response.reason),
     requires_approval: Boolean(response.requires_approval),
     approval: response.approval && typeof response.approval === "object" ? response.approval : {},
     followup_candidates: normalizeFollowupCandidates(response.followup_candidates),
@@ -1016,6 +1017,18 @@ const runOutboundGate = ({ response, channelId, allowedChannelIds, payload, chan
 
 const buildSafeFailureMessage = () => "-# OpenClaw 直接実行に失敗しました。時間をおいてもう一度試してください。";
 const buildGateBlockedMessage = () => "-# 今回は自動送信せず止めました。";
+const OPENCLAW_FAILURE_OBSERVE_REASONS = new Set([
+  "OPENCLAW_TIMEOUT",
+  "OPENCLAW_EXIT",
+  "openclaw_execution_failed",
+  "invalid_openclaw_response",
+  "invalid_openclaw_action",
+  "unparseable_openclaw_output",
+]);
+const isOpenClawFailureObserve = (response) =>
+  response &&
+  response.action === "observe" &&
+  OPENCLAW_FAILURE_OBSERVE_REASONS.has(String(response.reason || ""));
 const MESSAGE_VISIBLE_GATE_REASONS = new Set([
   "blocked_mention",
   "external_link",
@@ -1102,6 +1115,10 @@ const createOpenClawInteractionHandler = ({
         channelMetadata: payload.channel,
       });
       if (!gate.ok) {
+        if (isOpenClawFailureObserve(response)) {
+          await interaction.editReply({ content: buildSafeFailureMessage(), allowedMentions: SAFE_ALLOWED_MENTIONS });
+          return { handled: true, requestId: payload.request_id, payload, response, gate };
+        }
         await interaction.editReply({ content: buildGateBlockedMessage(), allowedMentions: SAFE_ALLOWED_MENTIONS });
         return { handled: true, requestId: payload.request_id, payload, response, gate };
       }
@@ -1183,6 +1200,20 @@ const createOpenClawMessageHandler = ({
         channelMetadata: payload.channel,
       });
       if (!gate.ok) {
+        if (isOpenClawFailureObserve(response) && isExplicitMessageTrigger(runtimeOptions.messageTriggerSource)) {
+          const sentMessage = await message.reply({
+            content: buildSafeFailureMessage(),
+            allowedMentions: SAFE_ALLOWED_MENTIONS,
+          });
+          return {
+            handled: true,
+            requestId: payload.request_id,
+            payload,
+            response,
+            gate,
+            replyMessageId: sentMessage && sentMessage.id,
+          };
+        }
         if (
           shouldReplyWithGateBlockedMessage(gate.reason) &&
           isExplicitMessageTrigger(runtimeOptions.messageTriggerSource)

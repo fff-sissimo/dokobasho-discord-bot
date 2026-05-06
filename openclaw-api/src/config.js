@@ -39,8 +39,8 @@ const loadConfig = (env = process.env) => {
       ? "fixed"
       : "request",
     thinking: String(env.OPENCLAW_AGENT_THINKING || "low").trim(),
-    timeoutSeconds: parsePositiveInt(env.OPENCLAW_AGENT_TIMEOUT_SECONDS, 60),
-    requestTimeoutMs: parsePositiveInt(env.OPENCLAW_REQUEST_TIMEOUT_MS, 70000),
+    timeoutSeconds: parsePositiveInt(env.OPENCLAW_AGENT_TIMEOUT_SECONDS, 120),
+    requestTimeoutMs: parsePositiveInt(env.OPENCLAW_REQUEST_TIMEOUT_MS, 140000),
     maxBodyBytes: parsePositiveInt(env.OPENCLAW_API_MAX_BODY_BYTES, 65536),
     promptFiles: parsePromptFiles(env.OPENCLAW_PROMPT_FILES).length > 0
       ? parsePromptFiles(env.OPENCLAW_PROMPT_FILES)

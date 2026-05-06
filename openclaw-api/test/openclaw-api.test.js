@@ -478,7 +478,10 @@ test("OpenClaw child env keeps runtime secrets out of the agent process", () => 
 });
 
 test("loadConfig defaults to request scoped sessions with fixed compatibility opt-out", () => {
-  assert.equal(loadConfig({ OPENCLAW_API_KEY: "secret" }).sessionScope, "request");
+  const config = loadConfig({ OPENCLAW_API_KEY: "secret" });
+  assert.equal(config.sessionScope, "request");
+  assert.equal(config.timeoutSeconds, 120);
+  assert.equal(config.requestTimeoutMs, 140000);
   assert.equal(loadConfig({
     OPENCLAW_API_KEY: "secret",
     OPENCLAW_AGENT_SESSION_SCOPE: "fixed",

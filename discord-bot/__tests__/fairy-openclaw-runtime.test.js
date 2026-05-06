@@ -81,15 +81,15 @@ describe("fairy OpenClaw runtime", () => {
   });
 
   it("uses runtime volume state dir by default and allows absolute FAIRY_OPENCLAW_STATE_DIR override", () => {
-    expect(
-      createOpenClawRuntimeConfig({
-        FAIRY_RUNTIME_MODE: "openclaw",
-        OPENCLAW_API_BASE_URL: "https://openclaw.example/discord/respond",
-        OPENCLAW_API_KEY: "key",
-        GUILD_ID: "guild_1",
-        FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS: "1094907178671939654",
-      }).stateDir
-    ).toBe(DEFAULT_OPENCLAW_STATE_DIR);
+    const defaultConfig = createOpenClawRuntimeConfig({
+      FAIRY_RUNTIME_MODE: "openclaw",
+      OPENCLAW_API_BASE_URL: "https://openclaw.example/discord/respond",
+      OPENCLAW_API_KEY: "key",
+      GUILD_ID: "guild_1",
+      FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS: "1094907178671939654",
+    });
+    expect(defaultConfig.stateDir).toBe(DEFAULT_OPENCLAW_STATE_DIR);
+    expect(defaultConfig.timeoutMs).toBe(150000);
 
     expect(
       createOpenClawRuntimeConfig({
@@ -1330,6 +1330,48 @@ describe("fairy OpenClaw runtime", () => {
     expect(result.handled).toBe(true);
     expect(result.gate.reason).toBe("non_posting_action:observe");
     expect(message.reply).not.toHaveBeenCalled();
+  });
+
+  it("replies with a safe failure message when OpenClaw execution timeout is normalized to observe", async () => {
+    const openClawClient = {
+      execute: jest.fn().mockResolvedValue({
+        schema_version: 1,
+        action: "observe",
+        body: "",
+        reason: "OPENCLAW_TIMEOUT",
+        requires_approval: false,
+      }),
+    };
+    const handler = createOpenClawMessageHandler({
+      openClawClient,
+      allowedChannelIds: ["1094907178671939654"],
+      guildId: "840827137451229205",
+      contextEntriesSource: async () => [],
+      requestIdFactory: () => "req_observe_timeout",
+    });
+    const message = {
+      id: "msg_observe_timeout",
+      content: "<@bot_1> 見て",
+      channelId: "1094907178671939654",
+      guildId: "840827137451229205",
+      createdAt: new Date("2026-05-03T10:00:00.000Z"),
+      author: { id: "user_1", bot: false, username: "user" },
+      client: { user: { id: "bot_1" } },
+      channel: { id: "1094907178671939654", name: "妖精さんより", sendTyping: jest.fn().mockResolvedValue(undefined) },
+      mentions: { everyone: false, roles: { map: () => [] } },
+      attachments: [],
+      reply: jest.fn().mockResolvedValue({ id: "reply_observe_timeout" }),
+    };
+
+    const result = await handler(message, { messageTriggerSource: "mention" });
+
+    expect(result.handled).toBe(true);
+    expect(result.gate.reason).toBe("non_posting_action:observe");
+    expect(result.replyMessageId).toBe("reply_observe_timeout");
+    expect(message.reply).toHaveBeenCalledWith({
+      content: "-# OpenClaw 直接実行に失敗しました。時間をおいてもう一度試してください。",
+      allowedMentions: SAFE_ALLOWED_MENTIONS,
+    });
   });
 
   it("does not call OpenClaw or reply outside verified channels", async () => {
