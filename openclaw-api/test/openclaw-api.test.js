@@ -8,9 +8,10 @@ const { test } = require("node:test");
 
 const { DEFAULT_WORKSPACE_CONTEXT_MAX_CHARS, loadConfig } = require("../src/config");
 const { buildOpenClawArgs, buildOpenClawChildEnv, buildRequestScopedSessionId } = require("../src/openclaw-runner");
-const { buildMinimalRetryPayload, buildPromptPayload, createServer } = require("../src/server");
+const { buildMinimalRetryPayload, buildPromptPayload, createServer, isCompactFirstRequest } = require("../src/server");
 const {
   buildAgentPrompt,
+  buildCompactAgentPrompt,
   buildObserveResponse,
   buildRetryAgentPrompt,
   loadWorkspaceContext,
@@ -31,6 +32,7 @@ const baseConfig = {
   thinking: "low",
   timeoutSeconds: 60,
   requestTimeoutMs: 1000,
+  firstAttemptTimeoutMs: 750,
   retryMinTimeoutMs: 150,
   maxBodyBytes: 65536,
   maxWorkspaceContextChars: 16000,
@@ -294,7 +296,9 @@ test("normalizes diagnostics to whitelisted structured fields only", () => {
   assert.deepEqual(normalizeSafeDiagnostics({
     request_id: "req_1",
     reason_code: "context_overflow",
+    attempt_mode: "full_first",
     elapsed_ms: 12.9,
+    first_attempt_timeout_ms: 75000,
     prompt_chars: "120",
     initial_prompt_chars: 140,
     retry_count: 1,
@@ -309,7 +313,9 @@ test("normalizes diagnostics to whitelisted structured fields only", () => {
   }), {
     request_id: "req_1",
     reason_code: "context_overflow",
+    attempt_mode: "full_first",
     elapsed_ms: 12,
+    first_attempt_timeout_ms: 75000,
     prompt_chars: 120,
     initial_prompt_chars: 140,
     retry_count: 1,
@@ -501,6 +507,30 @@ test("retry agent prompt stays short and excludes runtime context sections", () 
   assert.doesNotMatch(retryPrompt, /# Runtime files/);
   assert.doesNotMatch(retryPrompt, /runtime context/);
   assert.doesNotMatch(retryPrompt, /\(no workspace context loaded\)/);
+});
+
+test("compact agent prompt stays short and keeps direct-response safety rules", () => {
+  const payload = buildMinimalRetryPayload({
+    request_id: "req_compact_prompt",
+    channel: { id: "channel_1", type: "sandbox", registered: true },
+    message: {
+      id: "msg_1",
+      author_id: "user_1",
+      content: "ping 一言で返してください",
+      mentions_bot: true,
+    },
+    context: { recent_messages: [{ message_id: "ctx_1", author_id: "user_1", content: "old" }] },
+  });
+  const compactPrompt = buildCompactAgentPrompt({ payload });
+
+  assert.match(compactPrompt, /必ず JSON だけ/);
+  assert.match(compactPrompt, /approval\.mentions は常に空配列/);
+  assert.match(compactPrompt, /外部 URL は自動取得しない/);
+  assert.match(compactPrompt, /raw Discord 本文、秘密値/);
+  assert.match(compactPrompt, /# Discord payload/);
+  assert.doesNotMatch(compactPrompt, /# Runtime files/);
+  assert.doesNotMatch(compactPrompt, /"recent_messages":\[\{/);
+  assert.ok(compactPrompt.length < 1800);
 });
 
 test("workspace context is capped by configured prompt budget", async () => {
@@ -1063,7 +1093,9 @@ test("OpenClaw execution failure becomes safe observe response", async () => {
     assert.equal(body.reason, "OPENCLAW_TIMEOUT");
     assert.equal(body.diagnostics.request_id, "req_2");
     assert.equal(body.diagnostics.reason_code, "OPENCLAW_TIMEOUT");
+    assert.equal(body.diagnostics.attempt_mode, "full_first");
     assert.equal(body.diagnostics.error_code, "OPENCLAW_TIMEOUT");
+    assert.equal(body.diagnostics.first_attempt_timeout_ms, baseConfig.firstAttemptTimeoutMs);
     assert.ok(body.diagnostics.prompt_chars > 0);
     assert.ok(body.diagnostics.elapsed_ms >= 0);
   });
@@ -1094,7 +1126,9 @@ test("OpenClaw execution failure omits unsafe freeform error code diagnostics", 
     assert.equal(body.reason, "timeout with spaces");
     assert.deepEqual(body.diagnostics, {
       request_id: "req_unsafe_error_code",
+      attempt_mode: "full_first",
       elapsed_ms: body.diagnostics.elapsed_ms,
+      first_attempt_timeout_ms: baseConfig.firstAttemptTimeoutMs,
       prompt_chars: body.diagnostics.prompt_chars,
     });
     assert.ok(body.diagnostics.elapsed_ms >= 0);
@@ -1273,6 +1307,64 @@ test("normal prompt payload keeps recent context for bot replies even when short
   assert.equal(payload.context.recent_messages.length, 1);
 });
 
+test("compact-first classification only accepts self-contained direct smoke requests", () => {
+  const basePayload = {
+    request_id: "req_compact",
+    channel: { id: "channel_1", type: "sandbox", registered: true },
+    message: {
+      id: "msg_1",
+      author_id: "user_1",
+      content: "live smoke S-1: 短い挨拶です。今の調子を一言で返してください。",
+      mentions_bot: true,
+      is_reply_to_bot: false,
+      mentions_everyone: false,
+      role_mentions: [],
+      attachments: [],
+      links: [],
+    },
+    context: {
+      recent_messages: [{ message_id: "ctx_1", author_id: "user_1", content: "old" }],
+      has_promised_followup: false,
+      matched_followup_ids: [],
+    },
+  };
+
+  assert.equal(isCompactFirstRequest(basePayload), true);
+  assert.equal(isCompactFirstRequest({ ...basePayload, message: { ...basePayload.message, content: "ping" } }), true);
+  assert.equal(
+    isCompactFirstRequest({ ...basePayload, message: { ...basePayload.message, content: "挨拶してください" } }),
+    true
+  );
+  assert.equal(
+    isCompactFirstRequest({ ...basePayload, message: { ...basePayload.message, content: "一言で返してください。" } }),
+    false
+  );
+  assert.equal(
+    isCompactFirstRequest({
+      ...basePayload,
+      message: { ...basePayload.message, content: "一言で返してください。" },
+      context: { ...basePayload.context, recent_messages: [] },
+    }),
+    true
+  );
+  assert.equal(
+    isCompactFirstRequest({ ...basePayload, message: { ...basePayload.message, content: "さっきの続きで一言で返して" } }),
+    false
+  );
+  for (const content of ["先ほどの件を一言で返してください", "先程の件を一言で返してください", "上記について一言で返して", "以前の話を一言で返して", "直前の件を一言で返して", "今の件を一言で返して"]) {
+    assert.equal(isCompactFirstRequest({ ...basePayload, message: { ...basePayload.message, content } }), false);
+  }
+  assert.equal(isCompactFirstRequest({ ...basePayload, message: { ...basePayload.message, is_reply_to_bot: true } }), false);
+  assert.equal(isCompactFirstRequest({ ...basePayload, message: { ...basePayload.message, links: ["https://example.com"] } }), false);
+  assert.equal(isCompactFirstRequest({ ...basePayload, message: { ...basePayload.message, attachments: [{ id: "a1" }] } }), false);
+  assert.equal(isCompactFirstRequest({ ...basePayload, message: { ...basePayload.message, content: "@everyone ping" } }), false);
+  assert.equal(isCompactFirstRequest({ ...basePayload, message: { ...basePayload.message, role_mentions: ["role_1"] } }), false);
+  assert.equal(
+    isCompactFirstRequest({ ...basePayload, context: { ...basePayload.context, matched_followup_ids: ["due_1"] } }),
+    false
+  );
+});
+
 test("required workspace context fails when default prompt file is missing", async () => {
   const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-missing-context-"));
   try {
@@ -1288,6 +1380,122 @@ test("required workspace context fails when default prompt file is missing", asy
   } finally {
     await fs.rm(workspaceDir, { recursive: true, force: true });
   }
+});
+
+test("compact-first direct smoke skips workspace context and uses the short prompt on the first attempt", async () => {
+  const calls = [];
+  await withServer({
+    config: { ...baseConfig, firstAttemptTimeoutMs: 321 },
+    loadContext: async () => {
+      throw new Error("compact-first must not load context");
+    },
+    runAgentCommand: async ({ message, timeoutMs, sessionAttempt }) => {
+      calls.push({ message, timeoutMs, sessionAttempt });
+      return JSON.stringify({
+        payloads: [
+          {
+            text: JSON.stringify({
+              schema_version: 1,
+              action: "reply",
+              body: "調子はよさそうです。",
+              confidence: "high",
+            }),
+          },
+        ],
+      });
+    },
+  }, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/discord/respond`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer secret",
+      },
+      body: JSON.stringify({
+        request_id: "req_compact_first",
+        channel: { id: "1094907178671939654", type: "sandbox", registered: true },
+        message: {
+          id: "msg_1",
+          author_id: "user_1",
+          content: "live smoke S-1: 短い挨拶です。今の調子を一言で返してください。",
+          mentions_bot: true,
+          is_reply_to_bot: false,
+          mentions_everyone: false,
+          role_mentions: [],
+          attachments: [],
+          links: [],
+        },
+        context: {
+          recent_messages: [{ message_id: "ctx_1", author_id: "user_1", content: "raw recent content" }],
+          has_promised_followup: false,
+          matched_followup_ids: [],
+        },
+      }),
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.action, "reply");
+    assert.equal(body.body, "調子はよさそうです。");
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].timeoutMs, 321);
+  assert.equal(calls[0].sessionAttempt, undefined);
+  assert.match(calls[0].message, /compact 判断 API/);
+  assert.doesNotMatch(calls[0].message, /# Runtime files/);
+  assert.doesNotMatch(calls[0].message, /raw recent content/);
+});
+
+test("full first attempt is capped and reports safe attempt diagnostics", async () => {
+  const calls = [];
+  await withServer({
+    config: { ...baseConfig, firstAttemptTimeoutMs: 250 },
+    loadContext: async () => "runtime context",
+    runAgentCommand: async ({ message, timeoutMs }) => {
+      calls.push({ message, timeoutMs });
+      return JSON.stringify({
+        payloads: [
+          {
+            text: JSON.stringify({
+              schema_version: 1,
+              action: "observe",
+              body: "",
+              reason: "openclaw_error_text",
+            }),
+          },
+        ],
+      });
+    },
+  }, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/discord/respond`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer secret",
+      },
+      body: JSON.stringify({
+        request_id: "req_first_cap",
+        channel: { id: "1094907178671939654", type: "sandbox", registered: true },
+        message: {
+          id: "msg_1",
+          author_id: "user_1",
+          content: "さっきの続きで一言で返してください。",
+          mentions_bot: true,
+        },
+        context: { recent_messages: [] },
+      }),
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.action, "observe");
+    assert.equal(body.reason, "openclaw_error_text");
+    assert.equal(body.diagnostics.attempt_mode, "full_first");
+    assert.equal(body.diagnostics.first_attempt_timeout_ms, 250);
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].timeoutMs, 250);
+  assert.match(calls[0].message, /# Runtime files/);
 });
 
 test("retries once with a minimal prompt when OpenClaw returns context_overflow", async () => {
@@ -1359,8 +1567,8 @@ test("retries once with a minimal prompt when OpenClaw returns context_overflow"
   });
 
   assert.equal(calls.length, 2);
-  assert.ok(calls[0].timeoutMs <= baseConfig.requestTimeoutMs);
-  assert.ok(calls[1].timeoutMs <= calls[0].timeoutMs);
+  assert.ok(calls[0].timeoutMs <= baseConfig.firstAttemptTimeoutMs);
+  assert.ok(calls[1].timeoutMs <= baseConfig.requestTimeoutMs);
   assert.ok(calls[1].message.length < calls[0].message.length);
   assert.equal(calls[0].sessionAttempt, undefined);
   assert.equal(calls[1].sessionAttempt, "retry-1");
@@ -1488,7 +1696,185 @@ test("keeps context_overflow as the response reason when retry execution times o
   });
 
   assert.equal(calls.length, 2);
-  assert.ok(calls[1].timeoutMs <= calls[0].timeoutMs);
+  assert.ok(calls[0].timeoutMs <= baseConfig.firstAttemptTimeoutMs);
+  assert.ok(calls[1].timeoutMs >= baseConfig.retryMinTimeoutMs);
+  assert.equal(calls[0].sessionAttempt, undefined);
+  assert.equal(calls[1].sessionAttempt, "retry-1");
+  assert.doesNotMatch(calls[1].message, /# Runtime files/);
+});
+
+test("retries with a compact prompt when the full first attempt times out with enough time left", async () => {
+  const calls = [];
+  await withServer({
+    config: { ...baseConfig, requestTimeoutMs: 1000, firstAttemptTimeoutMs: 200, retryMinTimeoutMs: 150 },
+    loadContext: async () => "runtime context".repeat(50),
+    runAgentCommand: async ({ message, timeoutMs, sessionAttempt }) => {
+      calls.push({ message, timeoutMs, sessionAttempt });
+      if (calls.length === 1) {
+        const error = new Error("first attempt timed out");
+        error.code = "OPENCLAW_TIMEOUT";
+        throw error;
+      }
+      return JSON.stringify({
+        payloads: [
+          {
+            text: JSON.stringify({
+              schema_version: 1,
+              action: "reply",
+              body: "短く返します。",
+              confidence: "high",
+            }),
+          },
+        ],
+      });
+    },
+  }, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/discord/respond`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer secret",
+      },
+      body: JSON.stringify({
+        request_id: "req_first_timeout_retry",
+        channel: { id: "1094907178671939654", type: "sandbox", registered: true },
+        message: {
+          id: "msg_1",
+          author_id: "user_1",
+          content: "さっきの続きで一言で返してください。",
+          mentions_bot: true,
+          is_reply_to_bot: false,
+        },
+        context: { recent_messages: [{ message_id: "ctx_1", author_id: "user_1", content: "raw recent content" }] },
+      }),
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.action, "reply");
+    assert.equal(body.body, "短く返します。");
+  });
+
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].timeoutMs, 200);
+  assert.match(calls[0].message, /# Runtime files/);
+  assert.equal(calls[0].sessionAttempt, undefined);
+  assert.ok(calls[1].timeoutMs >= baseConfig.retryMinTimeoutMs);
+  assert.equal(calls[1].sessionAttempt, "retry-1");
+  assert.doesNotMatch(calls[1].message, /# Runtime files/);
+  assert.doesNotMatch(calls[1].message, /raw recent content/);
+});
+
+test("retries with a compact prompt when the full first attempt exits before the client timeout", async () => {
+  const calls = [];
+  await withServer({
+    config: { ...baseConfig, requestTimeoutMs: 1000, firstAttemptTimeoutMs: 200, retryMinTimeoutMs: 150 },
+    loadContext: async () => "runtime context".repeat(50),
+    runAgentCommand: async ({ message, timeoutMs, sessionAttempt }) => {
+      calls.push({ message, timeoutMs, sessionAttempt });
+      if (calls.length === 1) {
+        const error = new Error("OpenClaw exited at its own deadline");
+        error.code = "OPENCLAW_EXIT";
+        throw error;
+      }
+      return JSON.stringify({
+        payloads: [
+          {
+            text: JSON.stringify({
+              schema_version: 1,
+              action: "reply",
+              body: "短く復帰します。",
+              confidence: "high",
+            }),
+          },
+        ],
+      });
+    },
+  }, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/discord/respond`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer secret",
+      },
+      body: JSON.stringify({
+        request_id: "req_first_exit_retry",
+        channel: { id: "1094907178671939654", type: "sandbox", registered: true },
+        message: {
+          id: "msg_1",
+          author_id: "user_1",
+          content: "さっきの続きで一言で返してください。",
+          mentions_bot: true,
+          is_reply_to_bot: false,
+        },
+        context: { recent_messages: [{ message_id: "ctx_1", author_id: "user_1", content: "raw recent content" }] },
+      }),
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.action, "reply");
+    assert.equal(body.body, "短く復帰します。");
+  });
+
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].timeoutMs, 200);
+  assert.match(calls[0].message, /# Runtime files/);
+  assert.equal(calls[0].sessionAttempt, undefined);
+  assert.ok(calls[1].timeoutMs >= baseConfig.retryMinTimeoutMs);
+  assert.equal(calls[1].sessionAttempt, "retry-1");
+  assert.match(calls[1].message, /context overflow、timeout、または OpenClaw 実行失敗/);
+  assert.doesNotMatch(calls[1].message, /# Runtime files/);
+  assert.doesNotMatch(calls[1].message, /raw recent content/);
+});
+
+test("keeps retry diagnostics when a first timeout retry also fails", async () => {
+  const calls = [];
+  await withServer({
+    config: { ...baseConfig, requestTimeoutMs: 1000, firstAttemptTimeoutMs: 200, retryMinTimeoutMs: 150 },
+    loadContext: async () => "runtime context",
+    runAgentCommand: async ({ message, timeoutMs, sessionAttempt }) => {
+      calls.push({ message, timeoutMs, sessionAttempt });
+      if (calls.length === 1) {
+        const error = new Error("first attempt timed out");
+        error.code = "OPENCLAW_TIMEOUT";
+        throw error;
+      }
+      const error = new Error("retry failed raw https://example.com");
+      error.code = "OPENCLAW_EXIT";
+      throw error;
+    },
+  }, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/discord/respond`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer secret",
+      },
+      body: JSON.stringify({
+        request_id: "req_first_timeout_retry_fails",
+        channel: { id: "1094907178671939654", type: "sandbox", registered: true },
+        message: {
+          id: "msg_1",
+          author_id: "user_1",
+          content: "さっきの続きで一言で返してください。",
+          mentions_bot: true,
+          is_reply_to_bot: false,
+        },
+        context: { recent_messages: [{ message_id: "ctx_1", author_id: "user_1", content: "raw recent content" }] },
+      }),
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.action, "observe");
+    assert.equal(body.reason, "OPENCLAW_TIMEOUT");
+    assert.equal(body.diagnostics.request_id, "req_first_timeout_retry_fails");
+    assert.equal(body.diagnostics.reason_code, "OPENCLAW_TIMEOUT");
+    assert.equal(body.diagnostics.error_code, "OPENCLAW_EXIT");
+    assert.equal(body.diagnostics.retry_count, 1);
+    assert.ok(body.diagnostics.retry_prompt_chars > 0);
+    assert.doesNotMatch(JSON.stringify(body.diagnostics), /example\.com/);
+  });
+
+  assert.equal(calls.length, 2);
   assert.equal(calls[0].sessionAttempt, undefined);
   assert.equal(calls[1].sessionAttempt, "retry-1");
   assert.doesNotMatch(calls[1].message, /# Runtime files/);
@@ -1534,7 +1920,9 @@ test("OpenClaw failure observe response includes safe diagnostics from request m
     assert.equal(body.action, "observe");
     assert.equal(body.reason, "openclaw_error_text");
     assert.deepEqual(Object.keys(body.diagnostics).sort(), [
+      "attempt_mode",
       "elapsed_ms",
+      "first_attempt_timeout_ms",
       "initial_prompt_chars",
       "prompt_chars",
       "reason_code",
@@ -1545,6 +1933,8 @@ test("OpenClaw failure observe response includes safe diagnostics from request m
     ].sort());
     assert.equal(body.diagnostics.request_id, "req_observe_diagnostics");
     assert.equal(body.diagnostics.reason_code, "openclaw_error_text");
+    assert.equal(body.diagnostics.attempt_mode, "full_first");
+    assert.equal(body.diagnostics.first_attempt_timeout_ms, baseConfig.firstAttemptTimeoutMs);
     assert.equal(body.diagnostics.retry_count, 0);
     assert.equal(body.diagnostics.retry_prompt_chars, 0);
     assert.equal(body.diagnostics.workspace_context_chars, "runtime context for diagnostics".length);

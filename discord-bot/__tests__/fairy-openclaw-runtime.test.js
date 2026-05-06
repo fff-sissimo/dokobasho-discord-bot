@@ -705,7 +705,9 @@ describe("fairy OpenClaw runtime", () => {
       diagnostics: {
         request_id: "req_123",
         reason_code: "OPENCLAW_TIMEOUT",
+        attempt_mode: "compact_first",
         elapsed_ms: 1234.8,
+        first_attempt_timeout_ms: 75000,
         prompt_chars: "2048",
         initial_prompt_chars: 1024,
         retry_count: 1,
@@ -725,7 +727,9 @@ describe("fairy OpenClaw runtime", () => {
     expect(response.diagnostics).toEqual({
       request_id: "req_123",
       reason_code: "OPENCLAW_TIMEOUT",
+      attempt_mode: "compact_first",
       elapsed_ms: 1234,
+      first_attempt_timeout_ms: 75000,
       prompt_chars: 2048,
       initial_prompt_chars: 1024,
       retry_count: 1,
@@ -1520,7 +1524,9 @@ describe("fairy OpenClaw runtime", () => {
         diagnostics: {
           request_id: "raw request id with spaces",
           reason_code: reason,
+          attempt_mode: "full_first",
           elapsed_ms: 2001,
+          first_attempt_timeout_ms: 75000,
           prompt_chars: 1234,
           error_code: "OPENCLAW_EXIT",
           stdout: "raw stdout must not be shown",
@@ -1557,7 +1563,7 @@ describe("fairy OpenClaw runtime", () => {
     expect(message.reply).toHaveBeenCalledWith({
       content:
         "-# OpenClaw 直接実行に失敗しました。時間をおいてもう一度試してください。\n" +
-        `-# 詳細: request_id=req_observe_timeout reason_code=${reason} elapsed_ms=2001 prompt_chars=1234 error_code=OPENCLAW_EXIT`,
+        `-# 詳細: request_id=req_observe_timeout reason_code=${reason} attempt_mode=full_first elapsed_ms=2001 first_attempt_timeout_ms=75000 prompt_chars=1234 error_code=OPENCLAW_EXIT`,
       allowedMentions: SAFE_ALLOWED_MENTIONS,
     });
     expect(message.reply.mock.calls[0][0].content).not.toContain("raw stdout");

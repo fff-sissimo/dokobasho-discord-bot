@@ -60,17 +60,20 @@ const normalizeSafeIdentifier = (value) => {
 
 const DIAGNOSTIC_NUMBER_FIELDS = new Set([
   "elapsed_ms",
+  "first_attempt_timeout_ms",
   "prompt_chars",
   "initial_prompt_chars",
   "retry_count",
   "retry_prompt_chars",
   "workspace_context_chars",
 ]);
-const DIAGNOSTIC_IDENTIFIER_FIELDS = new Set(["request_id", "reason_code", "error_code"]);
+const DIAGNOSTIC_IDENTIFIER_FIELDS = new Set(["request_id", "reason_code", "attempt_mode", "error_code"]);
 const DIAGNOSTIC_FIELDS = [
   "request_id",
   "reason_code",
+  "attempt_mode",
   "elapsed_ms",
+  "first_attempt_timeout_ms",
   "prompt_chars",
   "initial_prompt_chars",
   "retry_count",
@@ -312,11 +315,28 @@ const buildAgentPrompt = ({ payload, workspaceContext }) => [
 
 const buildRetryAgentPrompt = ({ payload }) => [
   "あなたは Discord 上の `どこばしょのようせい` の OpenClaw retry 判断 API です。",
-  "前回は context overflow でした。Runtime files と workspace context は使わず、この Discord payload だけで判断してください。",
+  "前回は context overflow、timeout、または OpenClaw 実行失敗でした。Runtime files と workspace context は使わず、この Discord payload だけで判断してください。",
   "Discord へ直接投稿せず、必ず JSON だけを返してください。",
   "返却 JSON は schema_version, action, body, reason, confidence, memory_candidates, followup_candidates, checked_followup_ids, closed_followup_ids, requires_approval, approval を含めてください。",
   "action は observe, reply, offer, assist, draft, publish_blocked のどれかだけです。",
   "bot への明示 mention、bot への reply、または短い直接依頼では、禁止要素がない限り action: \"reply\" で短く返してください。",
+  "everyone/here、role mention、外部 URL、添付、公開告知、運営判断、承認が必要な内容は requires_approval を true にするか publish_blocked にしてください。",
+  "approval.mentions は常に空配列にしてください。外部 URL は自動取得しないでください。",
+  "raw Discord 本文、秘密値、未加工の会話ログは保存・出力しないでください。",
+  "",
+  "# Discord payload",
+  "```json",
+  JSON.stringify(payload),
+  "```",
+].join("\n");
+
+const buildCompactAgentPrompt = ({ payload }) => [
+  "あなたは Discord 上の `どこばしょのようせい` の OpenClaw compact 判断 API です。",
+  "Runtime files と workspace context は使わず、この Discord payload だけで判断してください。",
+  "Discord へ直接投稿せず、必ず JSON だけを返してください。",
+  "返却 JSON は schema_version, action, body, reason, confidence, memory_candidates, followup_candidates, checked_followup_ids, closed_followup_ids, requires_approval, approval を含めてください。",
+  "action は observe, reply, offer, assist, draft, publish_blocked のどれかだけです。",
+  "短い疎通確認、ping、挨拶、一言の直接依頼では、禁止要素がない限り action: \"reply\" で短く返してください。",
   "everyone/here、role mention、外部 URL、添付、公開告知、運営判断、承認が必要な内容は requires_approval を true にするか publish_blocked にしてください。",
   "approval.mentions は常に空配列にしてください。外部 URL は自動取得しないでください。",
   "raw Discord 本文、秘密値、未加工の会話ログは保存・出力しないでください。",
@@ -683,6 +703,7 @@ const parseAgentResponse = (stdout) => {
 
 module.exports = {
   buildAgentPrompt,
+  buildCompactAgentPrompt,
   buildObserveResponse,
   buildRetryAgentPrompt,
   loadWorkspaceContext,

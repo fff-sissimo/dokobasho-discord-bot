@@ -5,6 +5,7 @@ const http = require("node:http");
 const { assertRuntimeConfig, loadConfig } = require("./config");
 const {
   buildAgentPrompt,
+  buildCompactAgentPrompt,
   buildObserveResponse,
   buildRetryAgentPrompt,
   loadWorkspaceContext,
@@ -163,10 +164,57 @@ const isSelfContainedDirectRequest = ({ message, context }) => {
   if (content.length > 220) return false;
   if (context.has_promised_followup) return false;
   if (Array.isArray(context.matched_followup_ids) && context.matched_followup_ids.length > 0) return false;
-  if (/(?:さっき|前(?:の|回)?|上(?:の)?|これ|それ|あれ|この|その|続き|文脈|話題|どう思う)/.test(content)) {
+  if (/(?:さっき|先ほど|先程|先日|以前|直前|今の件|上記|前(?:の|回)?|上(?:の)?|これ|それ|あれ|この|その|続き|文脈|話題|どう思う)/.test(content)) {
     return false;
   }
-  return /live smoke/i.test(content) || /(?:^|[^A-Za-z])ping(?:$|[^A-Za-z])/i.test(content);
+  const hasRecentContext = Array.isArray(context.recent_messages) && context.recent_messages.length > 0;
+  if (/live smoke/i.test(content) || /(?:^|[^A-Za-z])ping(?:$|[^A-Za-z])/i.test(content)) return true;
+  if (/(?:短い挨拶|挨拶して|挨拶してください)/.test(content)) return true;
+  if (/(?:今の調子|疎通|テスト).{0,24}(?:一言|ひとこと)/.test(content)) return true;
+  return !hasRecentContext && /(?:一言で返して|一言で返信|一言で返してください|ひとこと(?:で)?返して)/.test(content);
+};
+
+const CONTEXT_DEPENDENT_PATTERN = /(?:さっき|先ほど|先程|先日|以前|直前|今の件|上記|前(?:の|回)?|上(?:の)?|これ|それ|あれ|この|その|続き|文脈|話題|どう思う)/;
+const DIRECT_COMPACT_PATTERN = /live smoke/i;
+const isDirectCompactText = (content, { hasRecentContext = false } = {}) => {
+  if (DIRECT_COMPACT_PATTERN.test(content)) return true;
+  if (/(?:^|[^A-Za-z])ping(?:$|[^A-Za-z])/i.test(content)) return true;
+  if (/(?:短い挨拶|挨拶して|挨拶してください)/.test(content)) return true;
+  if (/(?:今の調子|疎通|テスト).{0,24}(?:一言|ひとこと)/.test(content)) return true;
+  return !hasRecentContext && /(?:一言で返して|一言で返信|一言で返してください|ひとこと(?:で)?返して)/.test(content);
+};
+
+const hasCompactFirstInputRisk = (message) => {
+  const content = String(message.content || "");
+  if (/@everyone|@here/i.test(content)) return true;
+  if (/<@&\d+>/i.test(content)) return true;
+  if (/https?:\/\/\S+/i.test(content)) return true;
+  if (message.mentions_everyone) return true;
+  if (Array.isArray(message.role_mentions) && message.role_mentions.length > 0) return true;
+  if (Array.isArray(message.attachments) && message.attachments.length > 0) return true;
+  if (Array.isArray(message.links) && message.links.length > 0) return true;
+  return false;
+};
+
+const isCompactFirstRequest = (payload) => {
+  const source = payload && typeof payload === "object" && !Array.isArray(payload) ? payload : {};
+  const message = source.message && typeof source.message === "object" && !Array.isArray(source.message)
+    ? source.message
+    : {};
+  const context = source.context && typeof source.context === "object" && !Array.isArray(source.context)
+    ? source.context
+    : {};
+  const content = String(message.content || "");
+  if (!message.mentions_bot) return false;
+  if (message.is_reply_to_bot) return false;
+  if (content.length > 220) return false;
+  if (CONTEXT_DEPENDENT_PATTERN.test(content)) return false;
+  if (context.has_promised_followup) return false;
+  if (Array.isArray(context.matched_followup_ids) && context.matched_followup_ids.length > 0) return false;
+  if (hasCompactFirstInputRisk(message)) return false;
+  return isDirectCompactText(content, {
+    hasRecentContext: Array.isArray(context.recent_messages) && context.recent_messages.length > 0,
+  });
 };
 
 const buildPromptPayload = (payload, { mode = "normal" } = {}) => {
@@ -194,13 +242,13 @@ const buildPromptPayload = (payload, { mode = "normal" } = {}) => {
     links: normalizeRetryLinks(message.links),
   };
   const projectedContext = {
-    recent_messages: [],
+    recent_messages: normalizePromptRecentMessages(context.recent_messages),
     active_thread_age_minutes: context.active_thread_age_minutes ?? null,
     has_promised_followup: Boolean(context.has_promised_followup),
     matched_followup_ids: normalizeRetryIdentifierList(context.matched_followup_ids),
   };
-  if (mode !== "retry" && !isSelfContainedDirectRequest({ message: projectedMessage, context: projectedContext })) {
-    projectedContext.recent_messages = normalizePromptRecentMessages(context.recent_messages);
+  if (mode === "retry" || isSelfContainedDirectRequest({ message: projectedMessage, context: projectedContext })) {
+    projectedContext.recent_messages = [];
   }
   return {
     request_id: String(source.request_id || "").trim(),
@@ -254,11 +302,21 @@ const executeOpenClawPrompt = async ({
 const remainingRequestTimeoutMs = ({ config, requestStartedAt }) =>
   Math.max(0, Number(config.requestTimeoutMs || 0) - (Date.now() - requestStartedAt));
 
+const firstAttemptTimeoutMs = ({ config, requestStartedAt }) =>
+  Math.min(
+    remainingRequestTimeoutMs({ config, requestStartedAt }),
+    Number(config.firstAttemptTimeoutMs || config.requestTimeoutMs || 0)
+  );
+
 const buildTimeoutError = () => {
   const error = new Error("OpenClaw request deadline exhausted");
   error.code = "OPENCLAW_TIMEOUT";
   return error;
 };
+
+const RETRYABLE_INITIAL_ERROR_CODES = new Set(["OPENCLAW_TIMEOUT", "OPENCLAW_EXIT"]);
+const isRetryableInitialError = (error) =>
+  error && RETRYABLE_INITIAL_ERROR_CODES.has(String(error.code || ""));
 
 const createServer = ({
   config = loadConfig(),
@@ -298,27 +356,62 @@ const createServer = ({
 
     const requestId = String(payload.request_id || "").trim();
     const requestStartedAt = Date.now();
+    let effectiveFirstAttemptTimeoutMs = 0;
     try {
-      const workspaceContext = await loadContext({
-        workspaceDir: config.workspaceDir,
-        promptFiles: config.promptFiles,
-        maxChars: config.maxWorkspaceContextChars,
-        required: true,
-      });
-      const firstTimeoutMs = remainingRequestTimeoutMs({ config, requestStartedAt });
+      const compactFirst = isCompactFirstRequest(payload);
+      const attemptMode = compactFirst ? "compact_first" : "full_first";
+      const workspaceContext = compactFirst
+        ? ""
+        : await loadContext({
+          workspaceDir: config.workspaceDir,
+          promptFiles: config.promptFiles,
+          maxChars: config.maxWorkspaceContextChars,
+          required: true,
+        });
+      const firstTimeoutMs = firstAttemptTimeoutMs({ config, requestStartedAt });
+      effectiveFirstAttemptTimeoutMs = firstTimeoutMs;
       if (firstTimeoutMs <= 0) throw buildTimeoutError();
-      let result = await executeOpenClawPrompt({
-        config,
-        payload,
-        workspaceContext,
-        runAgentCommand,
-        timeoutMs: firstTimeoutMs,
-      });
-      const initialPromptChars = result.prompt.length;
+      let result;
+      let initialPromptChars = 0;
       let retryCount = 0;
       let retryPromptChars = 0;
       let retryErrorCode = "";
-      if (result.response.action === "observe" && result.response.reason === "context_overflow") {
+      let initialError = null;
+      try {
+        if (compactFirst) {
+          const compactPayload = buildMinimalRetryPayload(payload);
+          result = await executeOpenClawPrompt({
+            config,
+            payload: compactPayload,
+            workspaceContext: "",
+            runAgentCommand,
+            projectPayload: false,
+            timeoutMs: firstTimeoutMs,
+            promptBuilder: buildCompactAgentPrompt,
+          });
+        } else {
+          result = await executeOpenClawPrompt({
+            config,
+            payload,
+            workspaceContext,
+            runAgentCommand,
+            timeoutMs: firstTimeoutMs,
+          });
+        }
+        initialPromptChars = result.prompt.length;
+      } catch (error) {
+        initialError = error;
+        initialPromptChars = error && error.prompt ? String(error.prompt).length : 0;
+        if (!isRetryableInitialError(error)) {
+          throw error;
+        }
+      }
+      if (
+        !initialError &&
+        result &&
+        result.response.action === "observe" &&
+        result.response.reason === "context_overflow"
+      ) {
         const retryTimeoutMs = remainingRequestTimeoutMs({ config, requestStartedAt });
         if (retryTimeoutMs >= config.retryMinTimeoutMs) {
           const retryPayload = buildMinimalRetryPayload(payload);
@@ -341,11 +434,44 @@ const createServer = ({
           }
         }
       }
+      if (initialError) {
+        const retryTimeoutMs = remainingRequestTimeoutMs({ config, requestStartedAt });
+        if (retryTimeoutMs >= config.retryMinTimeoutMs) {
+          const retryPayload = buildMinimalRetryPayload(payload);
+          retryCount = 1;
+          try {
+            result = await executeOpenClawPrompt({
+              config,
+              payload: retryPayload,
+              workspaceContext: "",
+              runAgentCommand,
+              projectPayload: false,
+              timeoutMs: retryTimeoutMs,
+              promptBuilder: buildRetryAgentPrompt,
+              sessionAttempt: "retry-1",
+            });
+            retryPromptChars = result.prompt.length;
+          } catch (error) {
+            retryErrorCode = error && error.code ? error.code : "openclaw_execution_failed";
+            retryPromptChars = error && error.prompt ? String(error.prompt).length : 0;
+            if (initialError && typeof initialError === "object") {
+              initialError.retry_count = retryCount;
+              initialError.retry_prompt_chars = retryPromptChars;
+              initialError.retry_error_code = retryErrorCode;
+            }
+            throw initialError;
+          }
+        } else {
+          throw initialError;
+        }
+      }
       const response = result.response;
       const metrics = {
         request_id: requestId,
         reason_code: response.reason,
+        attempt_mode: attemptMode,
         elapsed_ms: Date.now() - requestStartedAt,
+        first_attempt_timeout_ms: firstTimeoutMs,
         prompt_chars: result.prompt.length,
         initial_prompt_chars: initialPromptChars,
         retry_count: retryCount,
@@ -367,6 +493,8 @@ const createServer = ({
         initial_prompt_chars: metrics.initial_prompt_chars,
         retry_count: metrics.retry_count,
         retry_prompt_chars: metrics.retry_prompt_chars,
+        attempt_mode: metrics.attempt_mode,
+        first_attempt_timeout_ms: metrics.first_attempt_timeout_ms,
         workspace_context_chars: metrics.workspace_context_chars,
       }, "[openclaw-api] request completed");
       sendJson(res, 200, isFailureObserveResponse(response)
@@ -384,11 +512,20 @@ const createServer = ({
       const diagnostics = {
         request_id: requestId,
         reason_code: reason,
+        attempt_mode: isCompactFirstRequest(payload) ? "compact_first" : "full_first",
         elapsed_ms: Date.now() - requestStartedAt,
-        error_code: error && error.code,
+        first_attempt_timeout_ms: effectiveFirstAttemptTimeoutMs ||
+          firstAttemptTimeoutMs({ config, requestStartedAt }),
+        error_code: error && (error.retry_error_code || error.code),
       };
       if (error && error.prompt) {
         diagnostics.prompt_chars = String(error.prompt).length;
+      }
+      if (error && Object.prototype.hasOwnProperty.call(error, "retry_count")) {
+        diagnostics.retry_count = error.retry_count;
+      }
+      if (error && Object.prototype.hasOwnProperty.call(error, "retry_prompt_chars")) {
+        diagnostics.retry_prompt_chars = error.retry_prompt_chars;
       }
       sendJson(res, 200, buildObserveResponse(reason, diagnostics));
     }
@@ -417,5 +554,6 @@ module.exports = {
   buildMinimalRetryPayload,
   buildPromptPayload,
   createServer,
+  isCompactFirstRequest,
   readJsonBody,
 };

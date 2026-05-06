@@ -46,9 +46,10 @@ const FOLLOWUP_KINDS = new Set([
   "test_only",
 ]);
 const FOLLOWUP_BASES = new Set(["explicit_user_request", "agreed_in_thread", "due_followup", "unknown"]);
-const DIAGNOSTIC_STRING_KEYS = new Set(["request_id", "reason_code", "error_code"]);
+const DIAGNOSTIC_STRING_KEYS = new Set(["request_id", "reason_code", "attempt_mode", "error_code"]);
 const DIAGNOSTIC_NUMBER_KEYS = new Set([
   "elapsed_ms",
+  "first_attempt_timeout_ms",
   "prompt_chars",
   "initial_prompt_chars",
   "retry_count",
@@ -1104,7 +1105,9 @@ const buildDiagnosticsSummary = (diagnostics = {}) => {
   for (const key of [
     "request_id",
     "reason_code",
+    "attempt_mode",
     "elapsed_ms",
+    "first_attempt_timeout_ms",
     "prompt_chars",
     "initial_prompt_chars",
     "retry_count",
