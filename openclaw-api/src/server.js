@@ -52,6 +52,37 @@ const isAuthorized = (req, apiKey) => {
   return header === `Bearer ${apiKey}`;
 };
 
+const LOGGABLE_REASON_CODES = new Set([
+  "OPENCLAW_EXIT",
+  "OPENCLAW_TIMEOUT",
+  "context_overflow",
+  "invalid_openclaw_action",
+  "invalid_openclaw_response",
+  "openclaw_error_text",
+  "openclaw_execution_failed",
+  "secret_like_output",
+  "unparseable_openclaw_output",
+]);
+
+const safeLogIdentifier = (value) => {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  if (/(?:api[_-]?key|token|secret|password|passwd)\s*[:=]/i.test(text)) return "[redacted]";
+  if (/(?:bearer|basic)\s+[a-z0-9._~+/=-]{8,}/i.test(text)) return "[redacted]";
+  if (/(?:(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|sk-proj-[A-Za-z0-9_-]+|sk-[A-Za-z0-9_-]+)/i.test(text)) return "[redacted]";
+  if (/AKIA[0-9A-Z]{16}/.test(text)) return "[redacted]";
+  if (LOGGABLE_REASON_CODES.has(text)) return text;
+  return "[freeform]";
+};
+
+const safeLogText = (value, { maxLength = 120 } = {}) => {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  if (/(?:api[_-]?key|token|secret|password|passwd)\s*[:=]/i.test(text)) return "[redacted]";
+  if (/(?:bearer|basic)\s+[a-z0-9._~+/=-]{8,}/i.test(text)) return "[redacted]";
+  return text.slice(0, maxLength);
+};
+
 const createServer = ({
   config = loadConfig(),
   logger = console,
@@ -89,6 +120,7 @@ const createServer = ({
     }
 
     const requestId = String(payload.request_id || "").trim();
+    const requestStartedAt = Date.now();
     try {
       const workspaceContext = await loadContext({
         workspaceDir: config.workspaceDir,
@@ -102,6 +134,12 @@ const createServer = ({
         request_id: requestId,
         channel_id: payload.channel && payload.channel.id,
         action: response.action,
+        reason: safeLogIdentifier(response.reason),
+        confidence: safeLogText(response.confidence, { maxLength: 24 }),
+        body_len: typeof response.body === "string" ? response.body.length : 0,
+        elapsed_ms: Date.now() - requestStartedAt,
+        prompt_chars: prompt.length,
+        workspace_context_chars: workspaceContext.length,
       }, "[openclaw-api] request completed");
       sendJson(res, 200, response);
     } catch (error) {
@@ -110,6 +148,7 @@ const createServer = ({
         channel_id: payload.channel && payload.channel.id,
         err: error && error.message,
         code: error && error.code,
+        elapsed_ms: Date.now() - requestStartedAt,
       }, "[openclaw-api] request failed");
       sendJson(res, 200, buildObserveResponse(error && error.code ? error.code : "openclaw_execution_failed"));
     }

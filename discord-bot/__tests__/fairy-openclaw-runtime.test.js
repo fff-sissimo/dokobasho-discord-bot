@@ -578,8 +578,8 @@ describe("fairy OpenClaw runtime", () => {
           due_at: "2026-05-05T11:00:00.000Z",
           kind: "explicit_request",
           basis: "unknown",
-          assigneeMemberId: "stale_user",
-          sourceFollowupId: "stale_due",
+          assigneeMemberId: "gho_1234567890abcdef1234567890abcdef1234",
+          sourceFollowupId: "sk-proj-1234567890abcdef",
           metadata: {
             kind: "agreed_todo",
             basis: "agreed_in_thread",
@@ -590,8 +590,8 @@ describe("fairy OpenClaw runtime", () => {
         {
           summary: "空metadata優先",
           due_at: "2026-05-05T12:00:00.000Z",
-          assigneeMemberId: "stale_user",
-          sourceFollowupId: "stale_due",
+          assigneeMemberId: "gho_1234567890abcdef1234567890abcdef1234",
+          sourceFollowupId: "sk-proj-1234567890abcdef",
           metadata: {
             assignee_member_id: "",
             source_followup_id: "",
@@ -656,6 +656,11 @@ describe("fairy OpenClaw runtime", () => {
         { summary: "確認 https://example.com/raw", due_at: "2026-05-05T10:00:00.000Z" },
         { summary: "安全な確認", due_at: "2026-05-05T11:00:00.000Z", notes: "token=abc123secret" },
         { summary: "長".repeat(201), due_at: "2026-05-05T12:00:00.000Z" },
+        {
+          summary: "url/ghs_1234567890abcdef1234567890abcdef1234",
+          due_at: "2026-05-05T13:00:00.000Z",
+          notes: "abc=gho_1234567890abcdef1234567890abcdef1234",
+        },
       ],
     });
 
@@ -670,6 +675,8 @@ describe("fairy OpenClaw runtime", () => {
     expect(JSON.stringify(state)).not.toContain("https://example.com/raw");
     expect(JSON.stringify(state)).not.toContain("token=abc123secret");
     expect(JSON.stringify(state)).not.toContain("長".repeat(201));
+    expect(JSON.stringify(state)).not.toContain("ghs_1234567890abcdef1234567890abcdef1234");
+    expect(JSON.stringify(state)).not.toContain("gho_1234567890abcdef1234567890abcdef1234");
   });
 
   it("normalizes followup state to the persisted whitelist schema", async () => {
@@ -1398,13 +1405,15 @@ describe("fairy OpenClaw runtime", () => {
     expect(message.reply).not.toHaveBeenCalled();
   });
 
-  it("replies with a safe failure message when OpenClaw execution timeout is normalized to observe", async () => {
+  it.each(["OPENCLAW_TIMEOUT", "context_overflow", "openclaw_error_text"])(
+    "replies with a safe failure message when OpenClaw failure %s is normalized to observe",
+    async (reason) => {
     const openClawClient = {
       execute: jest.fn().mockResolvedValue({
         schema_version: 1,
         action: "observe",
         body: "",
-        reason: "OPENCLAW_TIMEOUT",
+        reason,
         requires_approval: false,
       }),
     };
@@ -1597,6 +1606,20 @@ describe("fairy OpenClaw runtime", () => {
       "OPENAI_API_KEY=\"syntheticSecret12345\"",
       "BOT_TOKEN='syntheticSecret12345'",
       "N8N_WEBHOOK_SECRET: \"syntheticSecret12345\"",
+      "ghp_1234567890abcdef1234567890abcdef1234",
+      "gho_1234567890abcdef1234567890abcdef1234",
+      "ghu_1234567890abcdef1234567890abcdef1234",
+      "ghs_1234567890abcdef1234567890abcdef1234",
+      "ghr_1234567890abcdef1234567890abcdef1234",
+      "github_pat_1234567890abcdef1234567890abcdef",
+      "AKIA1234567890ABCDEF",
+      "sk-proj-1234567890abcdef",
+      "token is sk-proj-1234567890abcdef.",
+      "token is gho_1234567890abcdef1234567890abcdef1234.",
+      "token is ghp_1234567890abcdef1234567890abcdef1234.",
+      "abc=gho_1234567890abcdef1234567890abcdef1234",
+      "x:ghu_1234567890abcdef1234567890abcdef1234",
+      "url/ghs_1234567890abcdef1234567890abcdef1234",
     ]) {
       expect(
         runOutboundGate({

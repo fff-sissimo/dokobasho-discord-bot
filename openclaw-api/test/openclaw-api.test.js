@@ -208,6 +208,11 @@ test("normalizes followup candidate metadata while keeping summary due_at notes 
           source_followup_id: "",
         },
       },
+      {
+        summary: "token metadata",
+        assignee_member_id: "gho_1234567890abcdef1234567890abcdef1234",
+        source_followup_id: "sk-proj-1234567890abcdef",
+      },
     ],
   });
 
@@ -244,6 +249,21 @@ test("normalizes followup candidate metadata while keeping summary due_at notes 
     },
     {
       summary: "unknown values",
+      due_at: "",
+      notes: "",
+      kind: "",
+      basis: "unknown",
+      assignee_member_id: "",
+      source_followup_id: "",
+      metadata: {
+        kind: "",
+        basis: "unknown",
+        assignee_member_id: "",
+        source_followup_id: "",
+      },
+    },
+    {
+      summary: "token metadata",
       due_at: "",
       notes: "",
       kind: "",
@@ -542,14 +562,19 @@ test("falls back to safe reply when OpenClaw payload text is non-json", () => {
   assert.deepEqual(response.approval.mentions, []);
 });
 
-test("does not fall back to reply for OpenClaw context overflow text", () => {
-  for (const text of [
-    "Context overflow: prompt too large for the model. Try /reset (or /new) to start a fresh session, or use a larger-context model.",
-    "Error: maximum context length exceeded",
-    "Request failed: 500 internal server error",
-    "OpenClaw error: failed to generate response",
-    "status=503 Service Unavailable",
-    "502 Bad Gateway",
+test("classifies OpenClaw error text without falling back to reply", () => {
+  for (const [text, reason] of [
+    [
+      "Context overflow: prompt too large for the model. Try /reset (or /new) to start a fresh session, or use a larger-context model.",
+      "context_overflow",
+    ],
+    ["Error: maximum context length exceeded", "context_overflow"],
+    ["Request failed: 500 internal server error", "openclaw_error_text"],
+    ["OpenClaw error: failed to generate response", "openclaw_error_text"],
+    ["RateLimitError: too many requests", "openclaw_error_text"],
+    ["status=429 Too Many Requests", "openclaw_error_text"],
+    ["status=503 Service Unavailable", "openclaw_error_text"],
+    ["502 Bad Gateway", "openclaw_error_text"],
   ]) {
     const response = parseAgentResponse(JSON.stringify({
       payloads: [
@@ -558,9 +583,309 @@ test("does not fall back to reply for OpenClaw context overflow text", () => {
     }));
 
     assert.equal(response.action, "observe");
-    assert.equal(response.reason, "invalid_openclaw_response");
+    assert.equal(response.reason, reason);
     assert.equal(response.body, "");
   }
+});
+
+test("classifies structured reply error body without posting it", () => {
+  for (const [body, reason] of [
+    ["Context overflow: prompt too large for the model.", "context_overflow"],
+    ["Request failed: 500 internal server error", "openclaw_error_text"],
+  ]) {
+    const response = parseAgentResponse(JSON.stringify({
+      schema_version: 1,
+      action: "reply",
+      body,
+      reason: "high",
+      confidence: "high",
+    }));
+
+    assert.equal(response.action, "observe");
+    assert.equal(response.reason, reason);
+    assert.equal(response.body, "");
+  }
+});
+
+test("prefers latest structured error over earlier structured reply", () => {
+  const response = parseAgentResponse([
+    JSON.stringify({
+      schema_version: 1,
+      action: "reply",
+      body: "古い返信",
+      reason: "normal",
+      confidence: "high",
+    }),
+    JSON.stringify({
+      schema_version: 1,
+      action: "reply",
+      body: "Context overflow: prompt too large for the model.",
+      reason: "normal",
+      confidence: "high",
+    }),
+  ].join("\n"));
+
+  assert.equal(response.action, "observe");
+  assert.equal(response.reason, "context_overflow");
+  assert.equal(response.body, "");
+});
+
+test("prefers latest payload error over earlier payload reply in a single wrapper", () => {
+  const response = parseAgentResponse(JSON.stringify({
+    payloads: [
+      {
+        text: JSON.stringify({
+          schema_version: 1,
+          action: "reply",
+          body: "古い返信",
+          reason: "normal",
+          confidence: "high",
+        }),
+      },
+      {
+        text: JSON.stringify({
+          schema_version: 1,
+          action: "reply",
+          body: "Context overflow: prompt too large for the model.",
+          reason: "normal",
+          confidence: "high",
+        }),
+      },
+    ],
+  }));
+
+  assert.equal(response.action, "observe");
+  assert.equal(response.reason, "context_overflow");
+  assert.equal(response.body, "");
+});
+
+test("prefers latest raw payload error over earlier payload reply in a single wrapper", () => {
+  const response = parseAgentResponse(JSON.stringify({
+    payloads: [
+      {
+        text: JSON.stringify({
+          schema_version: 1,
+          action: "reply",
+          body: "古い返信",
+          reason: "normal",
+          confidence: "high",
+        }),
+      },
+      {
+        text: "Context overflow: prompt too large for the model.",
+      },
+    ],
+  }));
+
+  assert.equal(response.action, "observe");
+  assert.equal(response.reason, "context_overflow");
+  assert.equal(response.body, "");
+});
+
+test("prefers non-payload error text over payload fallback reply", () => {
+  const response = parseAgentResponse(JSON.stringify({
+    payloads: [
+      { text: "古い返信" },
+    ],
+    choices: [
+      {
+        message: {
+          content: "Context overflow: prompt too large for the model.",
+        },
+      },
+    ],
+  }));
+
+  assert.equal(response.action, "observe");
+  assert.equal(response.reason, "context_overflow");
+  assert.equal(response.body, "");
+});
+
+test("prefers trailing raw error or token over earlier structured reply", () => {
+  for (const [trailing, reason] of [
+    ["Context overflow: prompt too large for the model.", "context_overflow"],
+    ["gho_1234567890abcdef1234567890abcdef1234", "secret_like_output"],
+  ]) {
+    const response = parseAgentResponse([
+      JSON.stringify({
+        schema_version: 1,
+        action: "reply",
+        body: "古い返信",
+        reason: "normal",
+        confidence: "high",
+      }),
+      trailing,
+    ].join("\n"));
+
+    assert.equal(response.action, "observe");
+    assert.equal(response.reason, reason);
+    assert.equal(response.body, "");
+  }
+});
+
+test("does not turn bare provider tokens into fallback replies", () => {
+  for (const text of [
+    "ghp_1234567890abcdef1234567890abcdef1234",
+    "gho_1234567890abcdef1234567890abcdef1234",
+    "ghu_1234567890abcdef1234567890abcdef1234",
+    "ghs_1234567890abcdef1234567890abcdef1234",
+    "ghr_1234567890abcdef1234567890abcdef1234",
+    "github_pat_1234567890abcdef1234567890abcdef",
+    "AKIA1234567890ABCDEF",
+    "sk-proj-1234567890abcdef",
+    "token is sk-proj-1234567890abcdef.",
+    "token is gho_1234567890abcdef1234567890abcdef1234.",
+    "token is ghp_1234567890abcdef1234567890abcdef1234.",
+    "abc=gho_1234567890abcdef1234567890abcdef1234",
+    "x:ghu_1234567890abcdef1234567890abcdef1234",
+    "url/ghs_1234567890abcdef1234567890abcdef1234",
+  ]) {
+    const response = parseAgentResponse(JSON.stringify({
+      payloads: [
+        { text },
+      ],
+    }));
+
+    assert.equal(response.action, "observe");
+    assert.equal(response.reason, "secret_like_output");
+    assert.equal(response.body, "");
+  }
+});
+
+test("prefers latest provider token over earlier safe reply", () => {
+  const response = parseAgentResponse(JSON.stringify({
+    payloads: [
+      {
+        text: JSON.stringify({
+          schema_version: 1,
+          action: "reply",
+          body: "古い返信",
+          reason: "normal",
+          confidence: "high",
+        }),
+      },
+      {
+        text: JSON.stringify({
+          schema_version: 1,
+          action: "reply",
+          body: "abc=gho_1234567890abcdef1234567890abcdef1234",
+          reason: "normal",
+          confidence: "high",
+        }),
+      },
+    ],
+  }));
+
+  assert.equal(response.action, "observe");
+  assert.equal(response.reason, "secret_like_output");
+  assert.equal(response.body, "");
+});
+
+test("classifies structured provider token body without posting it", () => {
+  for (const body of [
+    "sk-proj-1234567890abcdef",
+    "token is sk-proj-1234567890abcdef.",
+    "abc=gho_1234567890abcdef1234567890abcdef1234",
+    "x:ghu_1234567890abcdef1234567890abcdef1234",
+    "url/ghs_1234567890abcdef1234567890abcdef1234",
+  ]) {
+    const response = parseAgentResponse(JSON.stringify({
+      schema_version: 1,
+      action: "reply",
+      body,
+      reason: "normal",
+      confidence: "high",
+    }));
+
+    assert.equal(response.action, "observe");
+    assert.equal(response.reason, "secret_like_output");
+    assert.equal(response.body, "");
+  }
+});
+
+test("removes provider tokens from followup summary and notes", () => {
+  const response = normalizeOpenClawResponse({
+    schema_version: 1,
+    action: "observe",
+    followup_candidates: [
+      {
+        summary: "url/ghs_1234567890abcdef1234567890abcdef1234",
+        due_at: "2026-05-08T09:00:00+09:00",
+        notes: "abc=gho_1234567890abcdef1234567890abcdef1234",
+      },
+    ],
+  });
+
+  assert.equal(response.followup_candidates[0].summary, "");
+  assert.equal(response.followup_candidates[0].notes, "");
+});
+
+test("does not classify ordinary words ending in error as OpenClaw errors", () => {
+  const response = parseAgentResponse(JSON.stringify({
+    payloads: [
+      { text: "terror is a word, not a model issue" },
+    ],
+  }));
+
+  assert.equal(response.action, "reply");
+  assert.equal(response.body, "terror is a word, not a model issue");
+});
+
+test("classifies raw stdout error text before unparseable fallback", () => {
+  const response = parseAgentResponse(
+    "Context overflow: prompt too large for the model. Try /reset (or /new) to start a fresh session."
+  );
+
+  assert.equal(response.action, "observe");
+  assert.equal(response.reason, "context_overflow");
+  assert.equal(response.body, "");
+});
+
+test("keeps classified failure observe ahead of non-json fallback text", () => {
+  const response = parseAgentResponse(JSON.stringify({
+    payloads: [
+      {
+        text: JSON.stringify({
+          schema_version: 1,
+          action: "observe",
+          body: "",
+          reason: "context_overflow",
+        }),
+      },
+      {
+        text: "今日は軽めにいけそうです。",
+      },
+    ],
+  }));
+
+  assert.equal(response.action, "observe");
+  assert.equal(response.reason, "context_overflow");
+  assert.equal(response.body, "");
+});
+
+test("classifies non-json error text from choices and content wrappers", () => {
+  const choicesResponse = parseAgentResponse(JSON.stringify({
+    choices: [
+      {
+        message: {
+          content: "Error: maximum context length exceeded",
+        },
+      },
+    ],
+  }));
+  assert.equal(choicesResponse.action, "observe");
+  assert.equal(choicesResponse.reason, "context_overflow");
+
+  const contentResponse = parseAgentResponse(JSON.stringify({
+    content: [
+      {
+        type: "text",
+        text: "status=503 Service Unavailable",
+      },
+    ],
+  }));
+  assert.equal(contentResponse.action, "observe");
+  assert.equal(contentResponse.reason, "openclaw_error_text");
 });
 
 test("does not fall back to reply for non-payload status text", () => {
@@ -598,6 +923,131 @@ test("OpenClaw execution failure becomes safe observe response", async () => {
     assert.equal(body.action, "observe");
     assert.equal(body.reason, "OPENCLAW_TIMEOUT");
   });
+});
+
+test("request completed log keeps reason metadata bounded and redacted", async () => {
+  const logs = [];
+  await withServer({
+    logger: { info: (entry) => logs.push(entry), warn: () => {} },
+    runAgentCommand: async () => JSON.stringify({
+      payloads: [
+        {
+          text: JSON.stringify({
+            schema_version: 1,
+            action: "observe",
+            body: "",
+            reason: `token=unsafe ${"x".repeat(200)}`,
+          }),
+        },
+      ],
+    }),
+  }, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/discord/respond`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer secret",
+      },
+      body: JSON.stringify({
+        request_id: "req_log",
+        channel: { id: "1094907178671939654" },
+      }),
+    });
+    assert.equal(response.status, 200);
+  });
+
+  const completed = logs.find((entry) => entry && entry.request_id === "req_log");
+  assert.equal(completed.reason, "secret_like_output");
+  assert.equal(completed.body_len, 0);
+  assert.ok(completed.prompt_chars > 0);
+  assert.ok(completed.workspace_context_chars >= 0);
+});
+
+test("request completed log only keeps allowlisted reason codes", async () => {
+  const logs = [];
+  for (const reason of [
+    "normal",
+    "ghp_1234567890abcdef1234567890abcdef1234",
+    "gho_1234567890abcdef1234567890abcdef1234",
+    "github_pat_1234567890abcdef1234567890abcdef",
+    "AKIA1234567890ABCDEF",
+    "sk-proj-1234567890abcdef",
+    "context_overflow",
+  ]) {
+    await withServer({
+      logger: { info: (entry) => logs.push(entry), warn: () => {} },
+      runAgentCommand: async () => JSON.stringify({
+        payloads: [
+          {
+            text: JSON.stringify({
+              schema_version: 1,
+              action: "observe",
+              body: "",
+              reason,
+            }),
+          },
+        ],
+      }),
+    }, async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/discord/respond`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer secret",
+        },
+        body: JSON.stringify({
+          request_id: `req_log_reason_${logs.length}`,
+          channel: { id: "1094907178671939654" },
+        }),
+      });
+      assert.equal(response.status, 200);
+    });
+  }
+
+  assert.deepEqual(logs.map((entry) => entry.reason), [
+    "[freeform]",
+    "secret_like_output",
+    "secret_like_output",
+    "secret_like_output",
+    "secret_like_output",
+    "secret_like_output",
+    "context_overflow",
+  ]);
+});
+
+test("request completed log does not keep freeform reason text", async () => {
+  const logs = [];
+  await withServer({
+    logger: { info: (entry) => logs.push(entry), warn: () => {} },
+    runAgentCommand: async () => JSON.stringify({
+      payloads: [
+        {
+          text: JSON.stringify({
+            schema_version: 1,
+            action: "observe",
+            body: "",
+            reason: "短い挨拶です。今の調子を一言で返してください。",
+          }),
+        },
+      ],
+    }),
+  }, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/discord/respond`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer secret",
+      },
+      body: JSON.stringify({
+        request_id: "req_log_freeform",
+        channel: { id: "1094907178671939654" },
+      }),
+    });
+    assert.equal(response.status, 200);
+  });
+
+  const completed = logs.find((entry) => entry && entry.request_id === "req_log_freeform");
+  assert.equal(completed.reason, "[freeform]");
 });
 
 test("buildOpenClawArgs uses local embedded agent by default", () => {
@@ -689,7 +1139,7 @@ test("loadConfig defaults to request scoped sessions with fixed compatibility op
   assert.equal(config.sessionScope, "request");
   assert.equal(config.timeoutSeconds, 120);
   assert.equal(config.requestTimeoutMs, 140000);
-  assert.equal(config.maxWorkspaceContextChars, 16000);
+  assert.equal(config.maxWorkspaceContextChars, 8000);
   assert.equal(config.promptFiles.includes("TOOLS.md"), false);
   assert.equal(loadConfig({
     OPENCLAW_API_KEY: "secret",

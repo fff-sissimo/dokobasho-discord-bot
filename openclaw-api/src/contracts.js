@@ -54,6 +54,7 @@ const normalizeSafeIdentifier = (value) => {
   if (/https?:\/\//i.test(text)) return "";
   if (/(?:api[_-]?key|token|secret|password|passwd|key)\s*[:=]/i.test(text)) return "";
   if (/(?:bearer|basic)[_.:-]?[a-z0-9._~+/=-]{8,}/i.test(text)) return "";
+  if (containsSecretLikeText(text)) return "";
   return text;
 };
 
@@ -105,9 +106,9 @@ const normalizeFollowupCandidate = (candidate) => {
   }
   const metadata = normalizeFollowupMetadata(candidate);
   return {
-    summary: normalizeString(candidate.summary),
+    summary: normalizeSafeFreeformText(candidate.summary),
     due_at: String(candidate.due_at || "").trim(),
-    notes: normalizeString(candidate.notes),
+    notes: normalizeSafeFreeformText(candidate.notes),
     kind: metadata.kind,
     basis: metadata.basis,
     assignee_member_id: metadata.assignee_member_id,
@@ -138,6 +139,13 @@ const normalizeOpenClawResponse = (value) => {
   if (!action) {
     return buildObserveResponse("invalid_openclaw_action");
   }
+  if (containsSecretLikeText(value.body) || containsSecretLikeText(value.reason)) {
+    return buildObserveResponse("secret_like_output");
+  }
+  const bodyFailureReason = classifyNonJsonErrorText(value.body);
+  if (bodyFailureReason) return buildObserveResponse(bodyFailureReason);
+  const reasonFailureReason = classifyNonJsonErrorText(value.reason);
+  if (reasonFailureReason) return buildObserveResponse(reasonFailureReason);
   return {
     schema_version: 1,
     action,
@@ -314,6 +322,15 @@ const parseJsonObjects = (text, { preferLast = false } = {}) => {
   return parsed;
 };
 
+const extractNonJsonRemainder = (text) => {
+  let remainder = String(text || "");
+  const candidates = collectJsonObjectTexts(remainder).sort((a, b) => b.length - a.length);
+  for (const candidate of candidates) {
+    remainder = remainder.split(candidate).join(" ");
+  }
+  return normalizeString(remainder);
+};
+
 const extractAgentTexts = (result) => {
   const texts = [];
   const addText = (value) => {
@@ -332,7 +349,7 @@ const extractAgentTexts = (result) => {
     if (typeof value !== "object") return;
 
     if (Array.isArray(value.payloads)) {
-      for (const payload of value.payloads) {
+      for (const payload of [...value.payloads].reverse()) {
         if (payload && typeof payload.text === "string") {
           addText(payload.text);
         } else {
@@ -385,7 +402,7 @@ const extractPayloadTexts = (result) => {
     if (typeof value !== "object") return;
 
     if (Array.isArray(value.payloads)) {
-      for (const payload of value.payloads) {
+      for (const payload of [...value.payloads].reverse()) {
         if (payload && typeof payload.text === "string" && payload.text.trim()) {
           texts.push(payload.text);
         }
@@ -404,7 +421,19 @@ const extractPayloadTexts = (result) => {
 const isParseFailureResponse = (response) =>
   response &&
   response.action === "observe" &&
-  ["invalid_openclaw_response", "invalid_openclaw_action", "unparseable_openclaw_output"].includes(response.reason);
+  [
+    "context_overflow",
+    "invalid_openclaw_response",
+    "invalid_openclaw_action",
+    "openclaw_error_text",
+    "secret_like_output",
+    "unparseable_openclaw_output",
+  ].includes(response.reason);
+
+const isClassifiedFailureResponse = (response) =>
+  response &&
+  response.action === "observe" &&
+  ["context_overflow", "openclaw_error_text", "secret_like_output"].includes(response.reason);
 
 const buildTextFallbackResponse = (text) => ({
   schema_version: 1,
@@ -425,14 +454,36 @@ const isFallbackTextCandidate = (text) => {
   if (!normalized) return false;
   if (normalized.length > 1800) return false;
   if (normalized.startsWith("{") || normalized.startsWith("[")) return false;
-  if (/(?:api[_-]?key|token|secret|password|passwd)\s*[:=]/i.test(normalized)) return false;
-  if (
-    /context overflow|prompt too large|larger-context model|try\s+\/(?:reset|new)\b/i.test(normalized) ||
-    /\b(?:error|exception|failed|failure)\b|request failed|maximum context length|context length exceeded|token limit|too many tokens|rate limit|(?:HTTP\s*)?(?:status\s*[=:]\s*)?5\d\d|service unavailable|bad gateway|gateway timeout/i.test(normalized)
-  ) {
-    return false;
-  }
+  if (containsSecretLikeText(normalized)) return false;
+  if (classifyNonJsonErrorText(normalized)) return false;
   return true;
+};
+
+function containsSecretLikeText(text) {
+  const normalized = String(text || "");
+  return /(?:^|[\s"'`({\[])(?:api[_-]?key|token|secret|password|passwd)\s*[:=]\s*["']?[^\s"',)}\]]{6,}/i.test(normalized) ||
+    /(?:^|[\s"'`({\[])[A-Z0-9_]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|PASSWD)\s*[:=]\s*["']?[^\s"',)}\]]{6,}/i.test(normalized) ||
+    /(?:^|[\s"'`({\[])authorization\s*:\s*(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/i.test(normalized) ||
+    /(?:^|[\s"'`({\[])(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/i.test(normalized) ||
+    /(?:(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{16,}|github_pat_[A-Za-z0-9_]{16,}|sk-proj-[A-Za-z0-9_-]{16,}|sk-[A-Za-z0-9_-]{16,}|AKIA[0-9A-Z]{16})(?=$|[^A-Za-z0-9_-])/i.test(normalized);
+}
+
+function normalizeSafeFreeformText(value) {
+  const text = normalizeString(value);
+  return text && !containsSecretLikeText(text) ? text : "";
+}
+
+const classifyNonJsonErrorText = (text) => {
+  const normalized = normalizeString(text);
+  if (/context overflow|prompt too large|larger-context model|try\s+\/(?:reset|new)\b|maximum context length|context length exceeded|token limit|too many tokens/i.test(normalized)) {
+    return "context_overflow";
+  }
+  if (/\b(?:error|exception|failed|failure)\b/i.test(normalized) ||
+    /\b[A-Za-z0-9_]+Error\b/.test(normalized) ||
+    /request failed|rate\s*limit(?:ed)?|too many requests|(?:\bHTTP\s*|\bstatus\s*[=:]\s*)(?:429|5\d\d)\b|\b(?:429|5\d\d)\s+(?:too many requests|internal server error|service unavailable|bad gateway|gateway timeout)\b|service unavailable|bad gateway|gateway timeout/i.test(normalized)) {
+    return "openclaw_error_text";
+  }
+  return "";
 };
 
 const WRAPPER_KEYS = [
@@ -483,18 +534,75 @@ const collectResponseCandidates = (value, output = [], depth = 0) => {
 
 const parseAgentResponse = (stdout) => {
   const parsedStdout = parseJsonObjects(stdout, { preferLast: true });
-  if (parsedStdout.length === 0) return buildObserveResponse("unparseable_openclaw_output");
+  if (parsedStdout.length === 0) {
+    const stdoutErrorReason = classifyNonJsonErrorText(stdout);
+    return buildObserveResponse(stdoutErrorReason || "unparseable_openclaw_output");
+  }
   const normalized = [];
   const fallbackTexts = [];
+  const errorTextReasons = [];
+  const orderedPayloadResults = [];
+  const nonJsonRemainder = extractNonJsonRemainder(stdout);
+  if (containsSecretLikeText(nonJsonRemainder)) {
+    errorTextReasons.push("secret_like_output");
+  } else {
+    const remainderErrorReason = classifyNonJsonErrorText(nonJsonRemainder);
+    if (remainderErrorReason) errorTextReasons.push(remainderErrorReason);
+  }
   for (const value of parsedStdout) {
     for (const candidate of collectResponseCandidates(value)) {
       normalized.push(normalizeOpenClawResponse(candidate));
     }
+    for (const text of extractAgentTexts(value)) {
+      if (containsSecretLikeText(text)) {
+        errorTextReasons.push("secret_like_output");
+        continue;
+      }
+      const errorReason = classifyNonJsonErrorText(text);
+      if (errorReason) errorTextReasons.push(errorReason);
+    }
     for (const text of extractPayloadTexts(value)) {
-      if (isFallbackTextCandidate(text)) fallbackTexts.push(text);
+      const textResponses = collectResponseCandidates(text).map(normalizeOpenClawResponse);
+      const selectedTextResponse = textResponses.find((response) =>
+        isClassifiedFailureResponse(response) || !isParseFailureResponse(response)
+      );
+      if (selectedTextResponse) {
+        orderedPayloadResults.push({ type: "response", response: selectedTextResponse });
+        continue;
+      }
+      if (containsSecretLikeText(text)) {
+        orderedPayloadResults.push({ type: "error", reason: "secret_like_output" });
+        continue;
+      }
+      const errorReason = classifyNonJsonErrorText(text);
+      if (errorReason) {
+        orderedPayloadResults.push({ type: "error", reason: errorReason });
+        continue;
+      }
+      if (isFallbackTextCandidate(text)) {
+        orderedPayloadResults.push({ type: "fallback", text });
+        fallbackTexts.push(text);
+      }
     }
   }
-  return normalized.find((response) => !isParseFailureResponse(response)) ||
+  const selectedNormalized = normalized.find((response) =>
+    isClassifiedFailureResponse(response) || !isParseFailureResponse(response)
+  );
+  if (errorTextReasons.length > 0) return buildObserveResponse(errorTextReasons[0]);
+  const selectedPayload = orderedPayloadResults[0];
+  if (selectedPayload && selectedPayload.type === "response") return selectedPayload.response;
+  if (selectedPayload && selectedPayload.type === "error") return buildObserveResponse(selectedPayload.reason);
+  if (selectedPayload && selectedPayload.type === "fallback") {
+    const payloadFailure = orderedPayloadResults.find((result) =>
+      result.type === "error" || (result.type === "response" && isClassifiedFailureResponse(result.response))
+    );
+    if (payloadFailure && payloadFailure.type === "response") return payloadFailure.response;
+    if (payloadFailure && payloadFailure.type === "error") return buildObserveResponse(payloadFailure.reason);
+    if (errorTextReasons.length > 0) return buildObserveResponse(errorTextReasons[0]);
+    return buildTextFallbackResponse(selectedPayload.text);
+  }
+  return selectedNormalized ||
+    (errorTextReasons.length > 0 ? buildObserveResponse(errorTextReasons[0]) : null) ||
     (fallbackTexts.length > 0 ? buildTextFallbackResponse(fallbackTexts[0]) : null) ||
     normalized[0] ||
     buildObserveResponse("invalid_openclaw_response");

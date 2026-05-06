@@ -265,6 +265,7 @@ const isUnsafeFollowupText = (value) => {
   if (/https?:\/\/\S+/i.test(text)) return true;
   if (/(?:api[_-]?key|token|secret|password|passwd|key)\s*[:=]\s*[^\s]+/i.test(text)) return true;
   if (/(?:bearer|basic)\s+[a-z0-9._~+/=-]{12,}/i.test(text)) return true;
+  if (containsSecretLikeText(text)) return true;
   return false;
 };
 
@@ -290,6 +291,7 @@ const normalizeSafeIdentifier = (value) => {
   if (/https?:\/\//i.test(text)) return "";
   if (/(?:api[_-]?key|token|secret|password|passwd|key)\s*[:=]/i.test(text)) return "";
   if (/(?:bearer|basic)[_.:-]?[a-z0-9._~+/=-]{8,}/i.test(text)) return "";
+  if (containsSecretLikeText(text)) return "";
   return text;
 };
 
@@ -975,7 +977,8 @@ const containsSecretLikeText = (body) => {
   return /(?:^|[\s"'`({\[])(?:api[_-]?key|token|secret|password|passwd)\s*[:=]\s*["']?[^\s"',)}\]]{6,}/i.test(text) ||
     /(?:^|[\s"'`({\[])[A-Z0-9_]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|PASSWD)\s*[:=]\s*["']?[^\s"',)}\]]{6,}/i.test(text) ||
     /(?:^|[\s"'`({\[])authorization\s*:\s*(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/i.test(text) ||
-    /(?:^|[\s"'`({\[])(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/i.test(text);
+    /(?:^|[\s"'`({\[])(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/i.test(text) ||
+    /(?:(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{16,}|github_pat_[A-Za-z0-9_]{16,}|sk-proj-[A-Za-z0-9_-]{16,}|sk-[A-Za-z0-9_-]{16,}|AKIA[0-9A-Z]{16})(?=$|[^A-Za-z0-9_-])/i.test(text);
 };
 const payloadHasInputRisk = (payload) => {
   const message = payload && payload.message ? payload.message : {};
@@ -1043,9 +1046,12 @@ const buildGateBlockedMessage = () => "-# 今回は自動送信せず止めま�
 const OPENCLAW_FAILURE_OBSERVE_REASONS = new Set([
   "OPENCLAW_TIMEOUT",
   "OPENCLAW_EXIT",
+  "context_overflow",
   "openclaw_execution_failed",
+  "openclaw_error_text",
   "invalid_openclaw_response",
   "invalid_openclaw_action",
+  "secret_like_output",
   "unparseable_openclaw_output",
 ]);
 const isOpenClawFailureObserve = (response) =>
