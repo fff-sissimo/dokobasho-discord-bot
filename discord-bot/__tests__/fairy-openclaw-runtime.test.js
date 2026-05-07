@@ -387,7 +387,7 @@ describe("fairy OpenClaw runtime", () => {
     ).toThrow("841686630271418429");
   });
 
-  it("rejects default project and ops allowlist entries until explicitly verified", () => {
+  it("allows the verified Vostok general project and rejects remaining pending project or ops entries", () => {
     const baseEnv = {
       FAIRY_RUNTIME_MODE: "openclaw",
       OPENCLAW_API_BASE_URL: "https://openclaw.example/discord/respond",
@@ -395,16 +395,16 @@ describe("fairy OpenClaw runtime", () => {
       GUILD_ID: "guild_1",
     };
 
-    expect(DEFAULT_CHANNEL_REGISTRY["1465296404455882860"].status).toBe("pending");
+    expect(DEFAULT_CHANNEL_REGISTRY["1465296404455882860"].status).toBe("verified");
     expect(DEFAULT_CHANNEL_REGISTRY["1465295987236143319"].status).toBe("pending");
     expect(DEFAULT_CHANNEL_REGISTRY["840827137451229208"].status).toBe("known");
 
-    expect(() =>
+    expect(
       createOpenClawRuntimeConfig({
         ...baseEnv,
         FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS: "1094907178671939654,1465296404455882860",
-      })
-    ).toThrow("1465296404455882860");
+      }).channelRegistry["1465296404455882860"].status
+    ).toBe("verified");
 
     expect(() =>
       createOpenClawRuntimeConfig({
@@ -419,15 +419,6 @@ describe("fairy OpenClaw runtime", () => {
         FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS: "1094907178671939654,840827137451229208",
       })
     ).toThrow("840827137451229208");
-
-    expect(() =>
-      createOpenClawRuntimeConfig({
-        ...baseEnv,
-        FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS: "1094907178671939654,1465296404455882860",
-        FAIRY_OPENCLAW_CHANNEL_REGISTRY_JSON:
-          '{"1465296404455882860":{"name":"vostok-vol02-general","type":"project","status":"verified"}}',
-      })
-    ).toThrow("canonical registry not verified");
 
     expect(() =>
       createOpenClawRuntimeConfig({

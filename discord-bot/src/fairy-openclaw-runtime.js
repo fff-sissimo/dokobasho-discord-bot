@@ -24,7 +24,7 @@ const DEFAULT_CHANNEL_REGISTRY = Object.freeze({
   "840827137451229210": Object.freeze({ name: "はじまりの酒場", type: "chat", status: "verified" }),
   "841686630271418429": Object.freeze({ name: "らくがきちょう", type: "creation", status: "known" }),
   "1311647968113332275": Object.freeze({ name: "アイデアボード", type: "board", status: "verified" }),
-  "1465296404455882860": Object.freeze({ name: "vostok-vol02-general", type: "project", status: "pending" }),
+  "1465296404455882860": Object.freeze({ name: "vostok-vol02-general", type: "project", status: "verified" }),
   "1465295987236143319": Object.freeze({ name: "vostok-vol02-pd", type: "project", status: "pending" }),
   "1465296093427531960": Object.freeze({ name: "vostok-vol02-music", type: "project", status: "pending" }),
   "1465296285341847765": Object.freeze({ name: "vostok-vol02-artwork", type: "project", status: "pending" }),

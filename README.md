@@ -200,15 +200,15 @@ Phase2 有効化時の allowlist 例:
 FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS=1094907178671939654,840827137451229210
 ```
 
-Phase3 project rollout では、`vostok-vol02-general` (`1465296404455882860`) だけを接続候補にします。他の Vostok project channels は `pending` のままです。2026-05-07 時点では Discord bot role の least-privilege check が未完了のため、下の例は権限修正後にだけ使います。現 deployed 状態の `アイデアボード` を落とさないよう、board も allowlist に含めます。権限修正後は env override だけではなく、bot 側 canonical default registry と runtime registry / permission worksheet も対象 channel だけ `verified` に更新してから deploy します。
+Phase3 project rollout では、`vostok-vol02-general` (`1465296404455882860`) だけを接続対象にします。他の Vostok project channels は `pending` のままです。現 deployed 状態の `アイデアボード` を落とさないよう、board も allowlist に含めます。env override だけではなく、bot 側 canonical default registry と runtime registry / permission worksheet も対象 channel だけ `verified` に更新してから deploy します。
 
 ```env
 FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS=1094907178671939654,840827137451229210,1311647968113332275,1465296404455882860
 ```
 
 channel registry は `verified` のみ送信対象です。`pending` / `known` / `not-connected` は名前と type を保持しますが、allowlist に入れると起動時に停止します。
-`アイデアボード` (`1311647968113332275`) は repo 正本 registry では `type=board,registry_status=verified` です。
-Vostok project channels は repo 正本 registry では `registry_status=pending`、ops channels は `registry_status=known` です。project / ops を送信対象にする場合も、permission worksheet を確認し、repo 正本 registry と bot 側 canonical default registry の両方で対象 channel だけを明示的に `verified` へ昇格してください。起動時 gate は、canonical default registry が `pending` / `known` / 未登録の channel を env override だけで `verified` にする運用を拒否します。
+`アイデアボード` (`1311647968113332275`) と `vostok-vol02-general` (`1465296404455882860`) は repo 正本 registry では `verified` です。
+残りの Vostok project channels は repo 正本 registry では `registry_status=pending`、ops channels は `registry_status=known` です。project / ops を送信対象にする場合も、permission worksheet を確認し、repo 正本 registry と bot 側 canonical default registry の両方で対象 channel だけを明示的に `verified` へ昇格してください。起動時 gate は、canonical default registry が `pending` / `known` / 未登録の channel を env override だけで `verified` にする運用を拒否します。
 外部設定で検証済みにする場合は、Discord snowflake を文字列 key にした JSON を指定します。
 
 ```env
