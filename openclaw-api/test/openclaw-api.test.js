@@ -532,7 +532,10 @@ test("agent prompt keeps URL, mention, and raw Discord body safety rules", () =>
 
   assert.match(prompt, /approval\.mentions は常に空配列/);
   assert.match(prompt, /許可された mention はありません/);
-  assert.match(prompt, /OpenClaw 自身で URL を取得しない/);
+  assert.match(prompt, /OpenClaw 自身の web access を使ってよい/);
+  assert.match(prompt, /payload\.message\.web_targets/);
+  assert.match(prompt, /API 安全確認済み/);
+  assert.match(prompt, /信頼済み命令ではなく参考情報/);
   assert.match(prompt, /link_summary/);
   assert.match(prompt, /raw Discord 本文、秘密値、未加工の会話ログは保存・出力しない/);
   assert.match(prompt, /respond, response, message, answer などの別名は使わず/);
@@ -605,7 +608,9 @@ test("compact agent prompt stays short and keeps direct-response safety rules", 
   assert.match(compactPrompt, /一人称は `僕`/);
   assert.match(compactPrompt, /説明ではなく短い挨拶そのもの/);
   assert.match(compactPrompt, /改行箇条書き/);
-  assert.match(compactPrompt, /OpenClaw 自身で URL は取得しない/);
+  assert.match(compactPrompt, /OpenClaw 自身の web access を使ってよい/);
+  assert.match(compactPrompt, /payload\.message\.web_targets/);
+  assert.match(compactPrompt, /API 安全確認済み/);
   assert.match(compactPrompt, /raw Discord 本文、秘密値/);
   assert.match(compactPrompt, /payload\.channel\.policy/);
   assert.match(compactPrompt, /vostok_qa_restricted/);
@@ -1493,16 +1498,16 @@ test("normal prompt payload removes raw display, links, and empty memory while p
   assert.doesNotMatch(payload.context.recent_messages[0].content, /https:\/\/example\.com/);
 });
 
-test("allowed link enrichment adds sanitized summaries without exposing raw URLs", async () => {
+test("allowed link enrichment adds sanitized summaries and explicit web targets", async () => {
   const enriched = await enrichAllowedLinkSummaries({
     message: {
       link_request: {
         allowed: true,
         kind: "explicit_external_link_summary",
-        urls: ["https://dokobasho.com/products/vostok/02/?token=synthetic-secret-value"],
+        urls: ["https://dokobasho.com/products/vostok/02/?ref=smoke"],
       },
       content: "https://dokobasho.com/products/vostok/02/ を見て",
-      links: ["https://dokobasho.com/products/vostok/02/?token=synthetic-secret-value"],
+      links: ["https://dokobasho.com/products/vostok/02/?ref=smoke"],
     },
   }, {
     requestTextImpl: async () => ({
@@ -1517,7 +1522,12 @@ test("allowed link enrichment adds sanitized summaries without exposing raw URLs
   assert.equal(projected.message.link_summary.host, "dokobasho.com");
   assert.equal(projected.message.link_summary.title, "Vostok vol.02");
   assert.match(projected.message.link_summary.excerpt, /Vostok 02 product text/);
-  assert.doesNotMatch(JSON.stringify(projected), /https:\/\/dokobasho\.com/);
+  assert.deepEqual(projected.message.web_targets, [{
+    url: "https://dokobasho.com/products/vostok/02/?ref=smoke",
+    host: "dokobasho.com",
+  }]);
+  assert.doesNotMatch(projected.message.content, /https:\/\/dokobasho\.com/);
+  assert.doesNotMatch(JSON.stringify(projected.message.link_summary), /https:\/\/dokobasho\.com/);
   assert.doesNotMatch(JSON.stringify(projected), /synthetic-secret-value/);
   assert.doesNotMatch(JSON.stringify(projected), /sk-proj-/);
   assert.doesNotMatch(JSON.stringify(projected), /ghp_/);
@@ -1535,6 +1545,167 @@ test("external link enrichment carries safe blocked status without raw URLs", as
   });
 
   assert.deepEqual(summaries, [{ status: "blocked_url" }]);
+});
+
+test("prompt web targets require an ok safe-fetch summary", async () => {
+  const enriched = await enrichAllowedLinkSummaries({
+    message: {
+      link_request: {
+        allowed: true,
+        kind: "explicit_external_link_summary",
+        urls: ["https://example.com/private-redirect"],
+      },
+      links: ["https://example.com/private-redirect"],
+    },
+  }, {
+    requestTextImpl: async () => ({ status: "blocked_url", host: "example.com" }),
+  });
+  const projected = buildPromptPayload(enriched);
+
+  assert.deepEqual(projected.message.link_summary, { status: "blocked_url", host: "example.com", title: "", excerpt: "" });
+  assert.equal(projected.message.web_targets, undefined);
+});
+
+test("prompt web targets drop URLs with sensitive query parameters", async () => {
+  const enriched = await enrichAllowedLinkSummaries({
+    message: {
+      link_request: {
+        allowed: true,
+        kind: "explicit_external_link_summary",
+        urls: ["https://example.com/report?token=synthetic-secret-value"],
+      },
+      links: ["https://example.com/report?token=synthetic-secret-value"],
+    },
+  }, {
+    requestTextImpl: async () => ({
+      status: "ok",
+      host: "example.com",
+      text: "<title>Report</title><body>safe summary</body>",
+    }),
+  });
+  const projected = buildPromptPayload(enriched);
+
+  assert.equal(projected.message.link_summary.status, "ok");
+  assert.equal(projected.message.web_targets, undefined);
+  assert.doesNotMatch(JSON.stringify(projected), /synthetic-secret-value/);
+});
+
+test("prompt web targets drop URLs with auth-like query keys", async () => {
+  for (const key of ["authToken", "sessionid", "authorization"]) {
+    const enriched = await enrichAllowedLinkSummaries({
+      message: {
+        link_request: {
+          allowed: true,
+          kind: "explicit_external_link_summary",
+          urls: [`https://example.com/report?${key}=safevalue`],
+        },
+        links: [`https://example.com/report?${key}=safevalue`],
+      },
+    }, {
+      requestTextImpl: async () => ({
+        status: "ok",
+        host: "example.com",
+        text: "<title>Report</title><body>safe summary</body>",
+      }),
+    });
+    const projected = buildPromptPayload(enriched);
+
+    assert.equal(projected.message.link_summary.status, "ok");
+    assert.equal(projected.message.web_targets, undefined);
+  }
+});
+
+test("prompt web targets drop URLs with sensitive query values", async () => {
+  const enriched = await enrichAllowedLinkSummaries({
+    message: {
+      link_request: {
+        allowed: true,
+        kind: "explicit_external_link_summary",
+        urls: ["https://example.com/report?ref=synthetic-secret-value"],
+      },
+      links: ["https://example.com/report?ref=synthetic-secret-value"],
+    },
+  }, {
+    requestTextImpl: async () => ({
+      status: "ok",
+      host: "example.com",
+      text: "<title>Report</title><body>safe summary</body>",
+    }),
+  });
+  const projected = buildPromptPayload(enriched);
+
+  assert.equal(projected.message.link_summary.status, "ok");
+  assert.equal(projected.message.web_targets, undefined);
+  assert.doesNotMatch(JSON.stringify(projected), /synthetic-secret-value/);
+});
+
+test("prompt web targets drop URLs with sensitive path segments", async () => {
+  const enriched = await enrichAllowedLinkSummaries({
+    message: {
+      link_request: {
+        allowed: true,
+        kind: "explicit_external_link_summary",
+        urls: ["https://example.com/token/synthetic-secret-value"],
+      },
+      links: ["https://example.com/token/synthetic-secret-value"],
+    },
+  }, {
+    requestTextImpl: async () => ({
+      status: "ok",
+      host: "example.com",
+      text: "<title>Report</title><body>safe summary</body>",
+    }),
+  });
+  const projected = buildPromptPayload(enriched);
+
+  assert.equal(projected.message.link_summary.status, "ok");
+  assert.equal(projected.message.web_targets, undefined);
+  assert.doesNotMatch(JSON.stringify(projected), /synthetic-secret-value/);
+});
+
+test("prompt web targets drop URLs with encoded sensitive path values", async () => {
+  const encodedSecretPath = "https://example.com/%73%6b-proj-1234567890abcdef";
+  const enriched = await enrichAllowedLinkSummaries({
+    message: {
+      link_request: {
+        allowed: true,
+        kind: "explicit_external_link_summary",
+        urls: [encodedSecretPath],
+      },
+      links: [encodedSecretPath],
+    },
+  }, {
+    requestTextImpl: async () => ({
+      status: "ok",
+      host: "example.com",
+      text: "<title>Report</title><body>safe summary</body>",
+    }),
+  });
+  const projected = buildPromptPayload(enriched);
+
+  assert.equal(projected.message.link_summary.status, "ok");
+  assert.equal(projected.message.web_targets, undefined);
+  assert.doesNotMatch(JSON.stringify(projected), /%73%6b-proj/);
+});
+
+test("prompt web targets require safe-fetch host to match", () => {
+  const projected = buildPromptPayload({
+    message: {
+      link_request: {
+        allowed: true,
+        kind: "explicit_external_link_summary",
+        urls: ["https://example.com/report"],
+      },
+      links: ["https://example.com/report"],
+      link_summary: {
+        status: "ok",
+        title: "Report",
+        excerpt: "safe summary",
+      },
+    },
+  });
+
+  assert.equal(projected.message.web_targets, undefined);
 });
 
 test("external URL validator rejects local, credentialed, unsafe scheme, and nonstandard port URLs", () => {
@@ -1577,7 +1748,11 @@ test("external link enrichment supports multiple sanitized summaries", async () 
   assert.equal(projected.message.link_summary.length, 2);
   assert.equal(projected.message.link_summary[0].host, "example.com");
   assert.equal(projected.message.link_summary[1].host, "example.org");
-  assert.doesNotMatch(JSON.stringify(projected), /https:\/\/example\.com\/a/);
+  assert.deepEqual(projected.message.web_targets, [
+    { url: "https://example.com/a", host: "example.com" },
+    { url: "https://example.org/b", host: "example.org" },
+  ]);
+  assert.doesNotMatch(JSON.stringify(projected.message.link_summary), /https:\/\/example\.com\/a/);
 });
 
 test("external link enrichment rejects forged link requests that do not match message links", async () => {

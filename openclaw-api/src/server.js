@@ -475,6 +475,63 @@ const normalizePromptLinkSummary = (value) => {
   };
 };
 
+const PROMPT_WEB_TARGET_SECRET_KEY_PATTERN = /(?:api[_-]?key|auth(?:orization)?|auth[_-]?token|code|jwt|password|passwd|refresh[_-]?token|secret|session(?:id)?|sid|token)/i;
+const PROMPT_WEB_TARGET_SECRET_VALUE_PATTERN = /(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}|(?:(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|sk-proj-[A-Za-z0-9_-]+|sk-[A-Za-z0-9_-]+)|AKIA[0-9A-Z]{16}/i;
+const PROMPT_WEB_TARGET_SECRET_TEXT_PATTERN = /(?:api[_-]?key|auth|jwt|password|passwd|secret|session|token)/i;
+
+const hasSensitivePromptWebTargetValue = (parsed) => {
+  if (PROMPT_WEB_TARGET_SECRET_VALUE_PATTERN.test(parsed.pathname)) return true;
+  const pathSegments = parsed.pathname
+    .split("/")
+    .map((segment) => {
+      try {
+        return decodeURIComponent(segment);
+      } catch {
+        return segment;
+      }
+    })
+    .filter(Boolean);
+  if (pathSegments.some((segment) => PROMPT_WEB_TARGET_SECRET_KEY_PATTERN.test(segment))) return true;
+  if (pathSegments.some((segment) => PROMPT_WEB_TARGET_SECRET_VALUE_PATTERN.test(segment))) return true;
+  if (pathSegments.some((segment) => PROMPT_WEB_TARGET_SECRET_TEXT_PATTERN.test(segment))) return true;
+  for (const [key, value] of parsed.searchParams.entries()) {
+    if (PROMPT_WEB_TARGET_SECRET_KEY_PATTERN.test(key)) return true;
+    if (PROMPT_WEB_TARGET_SECRET_VALUE_PATTERN.test(value)) return true;
+    if (PROMPT_WEB_TARGET_SECRET_TEXT_PATTERN.test(value)) return true;
+  }
+  return false;
+};
+
+const getPromptLinkSummaryAt = (value, index) => {
+  const source = Array.isArray(value) ? value[index] : index === 0 ? value : null;
+  return source && typeof source === "object" && !Array.isArray(source) ? source : null;
+};
+
+const isOkPromptLinkSummaryForTarget = (summary, parsed) => {
+  if (!summary) return false;
+  const status = String(summary.status || "").trim().toLowerCase();
+  const host = String(summary.host || "").trim().toLowerCase();
+  return status === "ok" && host === parsed.hostname.toLowerCase();
+};
+
+const normalizePromptWebTargets = (linkRequest, { messageLinks = [], linkSummary = null } = {}) => {
+  const normalized = normalizeExternalLinkRequest(linkRequest, { messageLinks });
+  if (!normalized) return [];
+  return normalized.urls
+    .map((url, index) => {
+      const parsed = validateExternalUrl(url);
+      if (!parsed) return null;
+      if (hasSensitivePromptWebTargetValue(parsed)) return null;
+      if (!isOkPromptLinkSummaryForTarget(getPromptLinkSummaryAt(linkSummary, index), parsed)) return null;
+      return {
+        url: parsed.href,
+        host: parsed.hostname.toLowerCase().slice(0, 80),
+      };
+    })
+    .filter(Boolean)
+    .slice(0, LINK_SUMMARY_MAX_URLS);
+};
+
 const redactPromptText = (value) =>
   String(value || "").replace(/https?:\/\/\S+/gi, "[external_url]");
 
@@ -578,6 +635,11 @@ const buildPromptPayload = (payload, { mode = "normal" } = {}) => {
   };
   const projectedLinkSummary = normalizePromptLinkSummary(message.link_summary);
   if (projectedLinkSummary) projectedMessage.link_summary = projectedLinkSummary;
+  const projectedWebTargets = normalizePromptWebTargets(message.link_request, {
+    messageLinks: message.links,
+    linkSummary: message.link_summary,
+  });
+  if (projectedWebTargets.length > 0) projectedMessage.web_targets = projectedWebTargets;
   const projectedContext = {
     recent_messages: normalizePromptRecentMessages(context.recent_messages),
     active_thread_age_minutes: context.active_thread_age_minutes ?? null,
