@@ -2,6 +2,8 @@
 
 const { spawn } = require("node:child_process");
 const { createHash } = require("node:crypto");
+const fs = require("node:fs/promises");
+const path = require("node:path");
 
 const OPENCLAW_SESSION_ID_MAX_CHARS = 64;
 const SESSION_HASH_CHARS = 16;
@@ -132,6 +134,43 @@ const buildOpenClawChildEnv = (sourceEnv = process.env) =>
       .filter(([, value]) => value !== undefined && value !== null && String(value).trim() !== "")
   );
 
+const isSafeSessionFileSegment = (sessionId) => {
+  const value = String(sessionId || "").trim();
+  return Boolean(value)
+    && value === path.basename(value)
+    && !value.includes("..")
+    && /^[A-Za-z0-9_.:-]+$/.test(value);
+};
+
+const buildOpenClawSessionStatePaths = ({ homeDir, sessionId }) => {
+  const safeHomeDir = String(homeDir || "").trim();
+  if (!safeHomeDir || !isSafeSessionFileSegment(sessionId)) return [];
+  const sessionsDir = path.join(safeHomeDir, ".openclaw", "agents", "main", "sessions");
+  return [
+    path.join(sessionsDir, `${sessionId}.jsonl`),
+    path.join(sessionsDir, `${sessionId}.trajectory.jsonl`),
+  ];
+};
+
+const cleanupOpenClawSessionState = async ({ homeDir, sessionId }) => {
+  const statePaths = buildOpenClawSessionStatePaths({ homeDir, sessionId });
+  let removedPaths = 0;
+  for (const statePath of statePaths) {
+    try {
+      await fs.stat(statePath);
+      await fs.rm(statePath, { force: true });
+      removedPaths += 1;
+    } catch (error) {
+      if (error && error.code === "ENOENT") continue;
+      throw error;
+    }
+  }
+  return {
+    attempted_paths: statePaths.length,
+    removed_paths: removedPaths,
+  };
+};
+
 const emitTraceLog = ({ logger, traceLogs, entry, message }) => {
   if (!traceLogs || !logger || typeof logger.info !== "function") return;
   logger.info(entry, message);
@@ -168,6 +207,8 @@ const runOpenClawAgent = ({
       message,
       sessionAttempt,
     });
+    const childEnv = buildOpenClawChildEnv();
+    const childHomeDir = childEnv.HOME || "";
     const args = buildOpenClawArgs({
       agentMode: config.agentMode,
       agentId: config.agentId,
@@ -203,21 +244,74 @@ const runOpenClawAgent = ({
     let sawStderr = false;
     let settled = false;
     let timedOut = false;
+    let timeoutError;
     let timer;
     let killTimer;
+    let cleanupChain = Promise.resolve();
 
-    const fail = (error) => {
+    const cleanupSessionState = (cleanupStage) => {
+      if (config.cleanupSessionState === false || !childHomeDir || !scopedSessionId) return Promise.resolve();
+      cleanupChain = cleanupChain
+        .then(async () => {
+          trace({
+            stage: "openclaw_session_cleanup_start",
+            cleanup_stage: cleanupStage,
+            has_session_id: Boolean(scopedSessionId),
+          });
+          const cleanupResult = await cleanupOpenClawSessionState({
+            homeDir: childHomeDir,
+            sessionId: scopedSessionId,
+          });
+          trace({
+            stage: "openclaw_session_cleanup_end",
+            cleanup_stage: cleanupStage,
+            ...cleanupResult,
+          });
+        })
+        .catch((error) => {
+          const cleanupError = new Error("OpenClaw session state cleanup failed");
+          cleanupError.code = "OPENCLAW_SESSION_CLEANUP_FAILED";
+          cleanupError.stage = "openclaw_session_cleanup_error";
+          cleanupError.cause = error;
+          if (logger && typeof logger.warn === "function") {
+            logger.warn({
+              ...baseLog,
+              stage: "openclaw_session_cleanup_error",
+              cleanup_stage: cleanupStage,
+              elapsed_ms: Date.now() - startedAt,
+              error_code: error && error.code ? error.code : "OPENCLAW_SESSION_CLEANUP_ERROR",
+            }, "[openclaw-api] OpenClaw session state cleanup failed");
+          }
+          trace({
+            stage: "openclaw_session_cleanup_error",
+            cleanup_stage: cleanupStage,
+            error_code: error && error.code ? error.code : "OPENCLAW_SESSION_CLEANUP_ERROR",
+          });
+          throw cleanupError;
+        });
+      return cleanupChain;
+    };
+
+    const fail = (error, cleanupStage = "settle_error") => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      reject(error);
+      const cleanupPromise = cleanupStage ? cleanupSessionState(cleanupStage) : Promise.resolve();
+      cleanupPromise.then(
+        () => reject(error),
+        (cleanupError) => reject(cleanupError)
+      );
     };
-    const succeed = (value) => {
+    const succeed = (value, cleanupStage = "settle_success") => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       clearTimeout(killTimer);
-      resolve(value);
+      const cleanupPromise = cleanupStage ? cleanupSessionState(cleanupStage) : Promise.resolve();
+      cleanupPromise.then(
+        () => resolve(value),
+        (cleanupError) => reject(cleanupError)
+      );
     };
 
     trace({
@@ -235,7 +329,7 @@ const runOpenClawAgent = ({
     try {
       child = spawn(config.command, args, {
         cwd: config.workspaceDir,
-        env: buildOpenClawChildEnv(),
+        env: childEnv,
         stdio: ["ignore", "pipe", "pipe"],
       });
     } catch (error) {
@@ -253,6 +347,7 @@ const runOpenClawAgent = ({
       pid: child.pid || 0,
     });
     timer = setTimeout(() => {
+      if (settled) return;
       timedOut = true;
       const killSent = child.kill("SIGTERM");
       const stderrDiagnostics = buildStderrDiagnostics(stderr);
@@ -288,7 +383,7 @@ const runOpenClawAgent = ({
       error.stdout_bytes = stdoutBytes;
       error.stderr_bytes = stderrBytes;
       Object.assign(error, stderrDiagnostics);
-      fail(error);
+      timeoutError = error;
     }, effectiveTimeoutMs);
 
     child.stdout.on("data", (chunk) => {
@@ -328,6 +423,7 @@ const runOpenClawAgent = ({
       fail(error);
     });
     child.on("close", (code, signal) => {
+      clearTimeout(timer);
       clearTimeout(killTimer);
       const closeCode = code === null
         ? -1
@@ -343,26 +439,40 @@ const runOpenClawAgent = ({
         timed_out: timedOut,
         ...buildStderrDiagnostics(stderr),
       });
-      if (settled) return;
-      if (code !== 0) {
-        const error = new Error(`OpenClaw command failed: code=${code}`);
-        error.code = "OPENCLAW_EXIT";
-        error.stage = "openclaw_close";
-        error.stdout_bytes = stdoutBytes;
-        error.stderr_bytes = stderrBytes;
-        error.stderr = stderr.slice(-4000);
-        Object.assign(error, buildStderrDiagnostics(stderr));
-        fail(error);
-        return;
-      }
-      succeed(stdout);
+      cleanupSessionState("close").then(
+        () => {
+          if (settled) return;
+          if (timeoutError) {
+            fail(timeoutError, null);
+            return;
+          }
+          if (code !== 0) {
+            const error = new Error(`OpenClaw command failed: code=${code}`);
+            error.code = "OPENCLAW_EXIT";
+            error.stage = "openclaw_close";
+            error.stdout_bytes = stdoutBytes;
+            error.stderr_bytes = stderrBytes;
+            error.stderr = stderr.slice(-4000);
+            Object.assign(error, buildStderrDiagnostics(stderr));
+            fail(error, null);
+            return;
+          }
+          succeed(stdout, null);
+        },
+        (cleanupError) => {
+          if (settled) return;
+          fail(cleanupError, null);
+        }
+      );
     });
   });
 
 module.exports = {
   buildOpenClawArgs,
   buildOpenClawChildEnv,
+  buildOpenClawSessionStatePaths,
   buildRequestScopedSessionId,
   buildStderrDiagnostics,
+  cleanupOpenClawSessionState,
   runOpenClawAgent,
 };

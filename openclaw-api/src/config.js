@@ -47,7 +47,7 @@ const loadConfig = (env = process.env) => {
       : "request",
     thinking: String(env.OPENCLAW_AGENT_THINKING || "low").trim(),
     timeoutSeconds: parsePositiveInt(env.OPENCLAW_AGENT_TIMEOUT_SECONDS, 120),
-    requestTimeoutMs: parsePositiveInt(env.OPENCLAW_REQUEST_TIMEOUT_MS, 140000),
+    requestTimeoutMs: parsePositiveInt(env.OPENCLAW_REQUEST_TIMEOUT_MS, 160000),
     firstAttemptTimeoutMs: parsePositiveInt(
       env.OPENCLAW_FIRST_ATTEMPT_TIMEOUT_MS,
       DEFAULT_FIRST_ATTEMPT_TIMEOUT_MS
@@ -55,6 +55,7 @@ const loadConfig = (env = process.env) => {
     retryMinTimeoutMs: parsePositiveInt(env.OPENCLAW_RETRY_MIN_TIMEOUT_MS, DEFAULT_RETRY_MIN_TIMEOUT_MS),
     killGraceMs: parsePositiveInt(env.OPENCLAW_KILL_GRACE_MS, DEFAULT_KILL_GRACE_MS),
     traceLogs: parseBoolean(env.OPENCLAW_TRACE_LOGS, false),
+    cleanupSessionState: parseBoolean(env.OPENCLAW_CLEANUP_SESSION_STATE, true),
     maxBodyBytes: parsePositiveInt(env.OPENCLAW_API_MAX_BODY_BYTES, 65536),
     maxWorkspaceContextChars: parsePositiveInt(
       env.OPENCLAW_WORKSPACE_CONTEXT_MAX_CHARS,

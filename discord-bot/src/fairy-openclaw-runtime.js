@@ -4,7 +4,7 @@ const { randomUUID } = require("node:crypto");
 const fs = require("node:fs/promises");
 const path = require("node:path");
 
-const DEFAULT_OPENCLAW_TIMEOUT_MS = 150000;
+const DEFAULT_OPENCLAW_TIMEOUT_MS = 180000;
 const DEFAULT_OPENCLAW_STATE_DIR = "/var/lib/dokobasho/fairy-openclaw-state";
 const DISCORD_BOT_REPO_ROOT = path.resolve(__dirname, "..");
 const WORKSPACE_REPO_ROOT = path.resolve(__dirname, "../..");
@@ -1216,6 +1216,7 @@ const buildGateBlockedMessage = () => "-# 今回は自動送信せず止めま�
 const OPENCLAW_FAILURE_OBSERVE_REASONS = new Set([
   "OPENCLAW_TIMEOUT",
   "OPENCLAW_EXIT",
+  "OPENCLAW_SESSION_CLEANUP_FAILED",
   "context_overflow",
   "openclaw_execution_failed",
   "openclaw_error_text",

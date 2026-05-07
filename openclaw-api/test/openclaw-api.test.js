@@ -10,6 +10,7 @@ const { DEFAULT_WORKSPACE_CONTEXT_MAX_CHARS, loadConfig, parseBoolean } = requir
 const {
   buildOpenClawArgs,
   buildOpenClawChildEnv,
+  buildOpenClawSessionStatePaths,
   buildRequestScopedSessionId,
   buildStderrDiagnostics,
   runOpenClawAgent,
@@ -2751,13 +2752,155 @@ test("long fixed scoped session id is bounded for OpenClaw cache key limit", () 
   assert.match(retry, /-retry-1$/);
 });
 
-test("OpenClaw runner trace logs child process timeout lifecycle", async () => {
-  const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-runner-trace-"));
+test("OpenClaw runner removes request-scoped session state after successful agent run", async () => {
+  const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-runner-cleanup-"));
+  const homeDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-home-cleanup-"));
   const commandPath = path.join(workspaceDir, "openclaw-stub.js");
   await fs.writeFile(
     commandPath,
     [
       "#!/usr/bin/env node",
+      "const fs = require('node:fs');",
+      "const path = require('node:path');",
+      "const sessionIndex = process.argv.indexOf('--session-id');",
+      "const sessionId = sessionIndex >= 0 ? process.argv[sessionIndex + 1] : 'missing-session';",
+      "const stateDir = path.join(process.env.HOME, '.openclaw', 'agents', 'main', 'sessions');",
+      "fs.mkdirSync(stateDir, { recursive: true });",
+      "fs.writeFileSync(path.join(stateDir, `${sessionId}.jsonl`), 'raw smoke body that must not persist');",
+      "fs.writeFileSync(path.join(stateDir, `${sessionId}.trajectory.jsonl`), 'raw smoke trajectory that must not persist');",
+      "process.stdout.write(JSON.stringify({ action: 'reply', body: 'ok' }));",
+      "",
+    ].join("\n"),
+    "utf8"
+  );
+  await fs.chmod(commandPath, 0o700);
+  const logs = [];
+  const requestId = "req_runner_cleanup";
+  const message = JSON.stringify({ request_id: requestId, content: "raw smoke body that must not persist" });
+  const expectedSessionId = buildRequestScopedSessionId({
+    sessionId: baseConfig.sessionId,
+    sessionScope: baseConfig.sessionScope,
+    requestId,
+    message,
+  });
+  const statePaths = buildOpenClawSessionStatePaths({ homeDir, sessionId: expectedSessionId });
+  const originalHome = process.env.HOME;
+  process.env.HOME = homeDir;
+  try {
+    const stdout = await runOpenClawAgent({
+      config: {
+        ...baseConfig,
+        command: commandPath,
+        workspaceDir,
+      },
+      message,
+      timeoutMs: 1000,
+      logger: { info: (entry) => logs.push(entry) },
+      traceLogs: true,
+      requestId,
+      channelId: "1094907178671939654",
+      attempt: "first",
+      attemptMode: "compact_first",
+    });
+    assert.equal(stdout, JSON.stringify({ action: "reply", body: "ok" }));
+  } finally {
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+  }
+
+  for (const statePath of statePaths) {
+    await assert.rejects(fs.stat(statePath), { code: "ENOENT" });
+  }
+  const cleanupLog = logs.find((entry) => entry.stage === "openclaw_session_cleanup_end");
+  assert.equal(cleanupLog.removed_paths, 2);
+  assert.ok(!JSON.stringify(logs).includes("raw smoke body"));
+});
+
+test("OpenClaw session state cleanup only targets safe session file names", () => {
+  assert.deepEqual(buildOpenClawSessionStatePaths({ homeDir: "/tmp/home", sessionId: "../escape" }), []);
+  assert.deepEqual(buildOpenClawSessionStatePaths({ homeDir: "/tmp/home", sessionId: "nested/session" }), []);
+  assert.deepEqual(buildOpenClawSessionStatePaths({ homeDir: "/tmp/home", sessionId: "session with spaces" }), []);
+  assert.deepEqual(buildOpenClawSessionStatePaths({ homeDir: "", sessionId: "safe-session" }), []);
+  assert.deepEqual(
+    buildOpenClawSessionStatePaths({ homeDir: "/tmp/home", sessionId: "safe-session_1:req.2" }),
+    [
+      "/tmp/home/.openclaw/agents/main/sessions/safe-session_1:req.2.jsonl",
+      "/tmp/home/.openclaw/agents/main/sessions/safe-session_1:req.2.trajectory.jsonl",
+    ]
+  );
+});
+
+test("OpenClaw runner fails the request when session state cleanup fails", async () => {
+  const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-runner-cleanup-fail-"));
+  const homeDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-home-cleanup-fail-"));
+  const commandPath = path.join(workspaceDir, "openclaw-stub.js");
+  await fs.writeFile(
+    commandPath,
+    [
+      "#!/usr/bin/env node",
+      "process.stdout.write(JSON.stringify({ action: 'reply', body: 'ok' }));",
+      "",
+    ].join("\n"),
+    "utf8"
+  );
+  await fs.chmod(commandPath, 0o700);
+  const requestId = "req_runner_cleanup_failure";
+  const message = JSON.stringify({ request_id: requestId, content: "raw body" });
+  const expectedSessionId = buildRequestScopedSessionId({
+    sessionId: baseConfig.sessionId,
+    sessionScope: baseConfig.sessionScope,
+    requestId,
+    message,
+  });
+  const [sessionPath] = buildOpenClawSessionStatePaths({ homeDir, sessionId: expectedSessionId });
+  await fs.mkdir(sessionPath, { recursive: true });
+  const warnings = [];
+  const originalHome = process.env.HOME;
+  process.env.HOME = homeDir;
+  try {
+    await assert.rejects(
+      runOpenClawAgent({
+        config: {
+          ...baseConfig,
+          command: commandPath,
+          workspaceDir,
+        },
+        message,
+        timeoutMs: 1000,
+        logger: { info: () => {}, warn: (entry) => warnings.push(entry) },
+        traceLogs: false,
+        requestId,
+        channelId: "1094907178671939654",
+        attempt: "first",
+        attemptMode: "compact_first",
+      }),
+      { code: "OPENCLAW_SESSION_CLEANUP_FAILED" }
+    );
+  } finally {
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+  }
+  assert.equal(warnings.length, 1);
+  assert.equal(warnings[0].stage, "openclaw_session_cleanup_error");
+  assert.equal(warnings[0].request_id, requestId);
+});
+
+test("OpenClaw runner trace logs child process timeout lifecycle", async () => {
+  const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-runner-trace-"));
+  const homeDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-home-trace-"));
+  const commandPath = path.join(workspaceDir, "openclaw-stub.js");
+  await fs.writeFile(
+    commandPath,
+    [
+      "#!/usr/bin/env node",
+      "const fs = require('node:fs');",
+      "const path = require('node:path');",
+      "const sessionIndex = process.argv.indexOf('--session-id');",
+      "const sessionId = sessionIndex >= 0 ? process.argv[sessionIndex + 1] : 'missing-session';",
+      "const stateDir = path.join(process.env.HOME, '.openclaw', 'agents', 'main', 'sessions');",
+      "fs.mkdirSync(stateDir, { recursive: true });",
+      "fs.writeFileSync(path.join(stateDir, `${sessionId}.jsonl`), 'raw secret body');",
+      "fs.writeFileSync(path.join(stateDir, `${sessionId}.trajectory.jsonl`), 'raw secret trajectory');",
       "process.stderr.write('Request failed at https://example.com/raw token=abcdefsecret\\n');",
       "setTimeout(() => {}, 5000);",
       "",
@@ -2779,32 +2922,51 @@ test("OpenClaw runner trace logs child process timeout lifecycle", async () => {
     };
   });
 
-  await assert.rejects(
-    runOpenClawAgent({
-      config: {
-        ...baseConfig,
-        command: commandPath,
-        workspaceDir,
-        requestTimeoutMs: 750,
-        timeoutSeconds: 5,
-      },
-      message: JSON.stringify({ request_id: "req_runner_trace", content: "raw secret body" }),
-      timeoutMs: 750,
-      logger: { info: (entry) => logs.onInfo(entry) },
-      traceLogs: true,
-      requestId: "req_runner_trace",
-      channelId: "1094907178671939654",
-      attempt: "first",
-      attemptMode: "compact_first",
-    }),
-    /timed out/
-  );
+  const message = JSON.stringify({ request_id: "req_runner_trace", content: "raw secret body" });
+  const expectedSessionId = buildRequestScopedSessionId({
+    sessionId: baseConfig.sessionId,
+    sessionScope: baseConfig.sessionScope,
+    requestId: "req_runner_trace",
+    message,
+  });
+  const statePaths = buildOpenClawSessionStatePaths({ homeDir, sessionId: expectedSessionId });
+  const originalHome = process.env.HOME;
+  process.env.HOME = homeDir;
+  try {
+    await assert.rejects(
+      runOpenClawAgent({
+        config: {
+          ...baseConfig,
+          command: commandPath,
+          workspaceDir,
+          requestTimeoutMs: 750,
+          timeoutSeconds: 5,
+        },
+        message,
+        timeoutMs: 750,
+        logger: { info: (entry) => logs.onInfo(entry) },
+        traceLogs: true,
+        requestId: "req_runner_trace",
+        channelId: "1094907178671939654",
+        attempt: "first",
+        attemptMode: "compact_first",
+      }),
+      /timed out/
+    );
+  } finally {
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+  }
 
   const stages = logs.map((entry) => entry.stage);
   assert.ok(stages.includes("openclaw_spawn_start"));
   assert.ok(stages.includes("openclaw_spawned"));
   assert.ok(stages.includes("openclaw_timeout_signal_sent"));
+  assert.ok(stages.includes("openclaw_session_cleanup_end"));
   await closeObserved;
+  for (const statePath of statePaths) {
+    await assert.rejects(fs.stat(statePath), { code: "ENOENT" });
+  }
   assert.equal(closeLog.close_code, -1);
   assert.equal(closeLog.close_signal, "SIGTERM");
   assert.equal(closeLog.timed_out, true);
@@ -2816,6 +2978,74 @@ test("OpenClaw runner trace logs child process timeout lifecycle", async () => {
   assert.doesNotMatch(timeoutLog.stderr_tail_safe, /abcdefsecret/);
   assert.ok(logs.every((entry) => entry.request_id === "req_runner_trace"));
   assert.ok(!JSON.stringify(logs).includes("raw secret body"));
+});
+
+test("OpenClaw runner removes session state written during SIGTERM shutdown", async () => {
+  const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-runner-late-cleanup-"));
+  const homeDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-home-late-cleanup-"));
+  const commandPath = path.join(workspaceDir, "openclaw-stub.js");
+  await fs.writeFile(
+    commandPath,
+    [
+      "#!/usr/bin/env node",
+      "const fs = require('node:fs');",
+      "const path = require('node:path');",
+      "const sessionIndex = process.argv.indexOf('--session-id');",
+      "const sessionId = sessionIndex >= 0 ? process.argv[sessionIndex + 1] : 'missing-session';",
+      "const stateDir = path.join(process.env.HOME, '.openclaw', 'agents', 'main', 'sessions');",
+      "fs.mkdirSync(stateDir, { recursive: true });",
+      "process.on('SIGTERM', () => {",
+      "  fs.writeFileSync(path.join(stateDir, `${sessionId}.jsonl`), 'late raw secret body');",
+      "  fs.writeFileSync(path.join(stateDir, `${sessionId}.trajectory.jsonl`), 'late raw secret trajectory');",
+      "  setTimeout(() => process.exit(143), 25);",
+      "});",
+      "setTimeout(() => {}, 5000);",
+      "",
+    ].join("\n"),
+    "utf8"
+  );
+  await fs.chmod(commandPath, 0o700);
+
+  const requestId = "req_runner_late_cleanup";
+  const message = JSON.stringify({ request_id: requestId, content: "raw body" });
+  const expectedSessionId = buildRequestScopedSessionId({
+    sessionId: baseConfig.sessionId,
+    sessionScope: baseConfig.sessionScope,
+    requestId,
+    message,
+  });
+  const statePaths = buildOpenClawSessionStatePaths({ homeDir, sessionId: expectedSessionId });
+  const originalHome = process.env.HOME;
+  process.env.HOME = homeDir;
+  try {
+    await assert.rejects(
+      runOpenClawAgent({
+        config: {
+          ...baseConfig,
+          command: commandPath,
+          workspaceDir,
+          requestTimeoutMs: 100,
+          timeoutSeconds: 1,
+        },
+        message,
+        timeoutMs: 100,
+        logger: { info: () => {}, warn: () => {} },
+        traceLogs: true,
+        requestId,
+        channelId: "1094907178671939654",
+        attempt: "first",
+        attemptMode: "compact_first",
+      }),
+      /timed out/
+    );
+  } finally {
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+  }
+
+  for (const statePath of statePaths) {
+    await assert.rejects(fs.stat(statePath), { code: "ENOENT" });
+  }
 });
 
 test("OpenClaw child env keeps runtime secrets out of the agent process", () => {
@@ -2842,10 +3072,11 @@ test("loadConfig defaults to request scoped sessions with fixed compatibility op
   const config = loadConfig({ OPENCLAW_API_KEY: "secret" });
   assert.equal(config.sessionScope, "request");
   assert.equal(config.timeoutSeconds, 120);
-  assert.equal(config.requestTimeoutMs, 140000);
+  assert.equal(config.requestTimeoutMs, 160000);
   assert.equal(config.retryMinTimeoutMs, 60000);
   assert.equal(config.killGraceMs, 10000);
   assert.equal(config.traceLogs, false);
+  assert.equal(config.cleanupSessionState, true);
   assert.equal(config.maxWorkspaceContextChars, 4000);
   assert.equal(config.promptFiles.includes("TOOLS.md"), false);
   assert.equal(config.promptFiles.includes("OPEN_ITEMS.md"), false);
@@ -2855,4 +3086,8 @@ test("loadConfig defaults to request scoped sessions with fixed compatibility op
     OPENCLAW_API_KEY: "secret",
     OPENCLAW_AGENT_SESSION_SCOPE: "fixed",
   }).sessionScope, "fixed");
+  assert.equal(loadConfig({
+    OPENCLAW_API_KEY: "secret",
+    OPENCLAW_CLEANUP_SESSION_STATE: "0",
+  }).cleanupSessionState, false);
 });

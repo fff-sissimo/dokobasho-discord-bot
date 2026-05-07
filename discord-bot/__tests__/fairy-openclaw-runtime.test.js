@@ -89,7 +89,7 @@ describe("fairy OpenClaw runtime", () => {
       FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS: "1094907178671939654",
     });
     expect(defaultConfig.stateDir).toBe(DEFAULT_OPENCLAW_STATE_DIR);
-    expect(defaultConfig.timeoutMs).toBe(150000);
+    expect(defaultConfig.timeoutMs).toBe(180000);
 
     expect(
       createOpenClawRuntimeConfig({
@@ -1556,7 +1556,7 @@ describe("fairy OpenClaw runtime", () => {
     expect(message.reply).not.toHaveBeenCalled();
   });
 
-  it.each(["OPENCLAW_TIMEOUT", "context_overflow", "openclaw_error_text"])(
+  it.each(["OPENCLAW_TIMEOUT", "OPENCLAW_SESSION_CLEANUP_FAILED", "context_overflow", "openclaw_error_text"])(
     "replies with a safe failure message when OpenClaw failure %s is normalized to observe",
     async (reason) => {
     const openClawClient = {

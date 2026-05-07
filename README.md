@@ -54,7 +54,7 @@ Discord上で動作する多機能ボット。リマインダー機能と `/fair
     - `OPENCLAW_API_BASE_URL`: (`FAIRY_RUNTIME_MODE=openclaw` で必須) OpenClaw 判断 API の完全 URL。正本の env 名です。
     - `OPENCLAW_API_URL`: (任意) 旧互換 alias。新規設定では使わず、古い runtime 互換が必要な場合だけ残します。
     - `OPENCLAW_API_KEY`: (`FAIRY_RUNTIME_MODE=openclaw` で必須) OpenClaw 判断 API 用の Bearer token。
-    - `OPENCLAW_API_TIMEOUT_MS`: (任意) OpenClaw 判断 API の timeout(ms)。未指定時 `150000`。
+    - `OPENCLAW_API_TIMEOUT_MS`: (任意) OpenClaw 判断 API の timeout(ms)。未指定時 `180000`。
     - `FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS`: (`FAIRY_RUNTIME_MODE=openclaw` で必須) OpenClaw 直接実行を許可する channel ID の comma-separated list。Phase1 sandbox は `1094907178671939654`、Phase2 chat は権限確認後に `840827137451229210` を追加。
     - `FAIRY_OPENCLAW_STATE_DIR`: (任意) OpenClaw runtime の followup / heartbeat state 保存先。未指定時 `/var/lib/dokobasho/fairy-openclaw-state`。指定する場合は repo 外の絶対パスにしてください。
     - `NOTION_TOKEN`: (推奨) Notion連携トークン。`n8n` と `n8n-runners` の両方に渡します。
@@ -189,7 +189,7 @@ FAIRY_RUNTIME_MODE=openclaw
 OPENCLAW_API_BASE_URL=http://openclaw-api:8788/discord/respond
 # OPENCLAW_API_URL is a legacy alias. Keep unset unless older runtime compatibility is required.
 OPENCLAW_API_KEY=<openssl rand -base64 32 で生成した共有シークレット>
-OPENCLAW_API_TIMEOUT_MS=150000
+OPENCLAW_API_TIMEOUT_MS=180000
 FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS=1094907178671939654
 FAIRY_OPENCLAW_STATE_DIR=/var/lib/dokobasho/fairy-openclaw-state
 ```
@@ -217,7 +217,7 @@ FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS=1094907178671939654,1311647968113332275
 ```
 
 `openclaw-api` は同じ `discord-bot/.env` から `OPENCLAW_API_KEY` を読みます。Hostinger で `dokobasho-fairy-openclaw` の配置場所が既定と違う場合は、Compose 実行環境に `OPENCLAW_WORKSPACE_HOST_DIR=/path/to/dokobasho-fairy-openclaw` を設定してください。
-既定の `OPENCLAW_AGENT_MODE=local` では、`openclaw-api` container 内の OpenClaw CLI が直接 agent turn を実行します。OpenClaw の state は `OPENCLAW_STATE_HOST_DIR`（未指定時 `./openclaw-state`）から `/root/.openclaw` へマウントされます。
+既定の `OPENCLAW_AGENT_MODE=local` では、`openclaw-api` container 内の OpenClaw CLI が直接 agent turn を実行します。OpenClaw の state は `OPENCLAW_STATE_HOST_DIR`（未指定時 `./openclaw-state`）から `/root/.openclaw` へマウントされます。`openclaw-api` は OpenClaw 実行後に該当 session id の `.jsonl` / `.trajectory.jsonl` だけを削除します。認証、設定、workspace cache などの非 session state は維持します。live runtime では `OPENCLAW_AGENT_SESSION_SCOPE=request` を既定とし、`fixed` は session 履歴を維持したい検証用互換設定としてのみ扱います。緊急時だけ `OPENCLAW_CLEANUP_SESSION_STATE=0` で無効化できますが、raw Discord 本文が OpenClaw state に残るため redaction audit failure として扱います。
 
 送信直前 gate は、allowlist 外チャンネル、承認必須応答、everyone/here、role mention、添付、外部 URL を自動送信しません。
 payload の `channel.type` は registry から解決し、thread 投稿では `thread_id`、`parent_channel_id`、`category_id` を文字列で渡します。
