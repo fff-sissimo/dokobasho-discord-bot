@@ -620,6 +620,37 @@ describe("fairy OpenClaw runtime", () => {
         payload,
       })
     ).toEqual({ ok: true, reason: "ok" });
+
+    const naturalPayload = buildOpenClawPayload({
+      eventType: "message_create",
+      guildId: "840827137451229205",
+      channel: { id: "1465296404455882860", name: "vostok-vol02-general" },
+      message: {
+        id: "msg_allowed_natural_link",
+        author: { id: "user_1", username: "user" },
+        channel: threadChannel,
+        createdAt: new Date("2026-05-07T10:01:00.000Z"),
+        mentions: { everyone: false, roles: { map: () => [] } },
+        attachments: [],
+      },
+      content: "<@bot_1> もう一度ここから情報を拾って、BOOTH整備をするにあたっての情報の整理をやって https://dokobasho.com/products/vostok/02/",
+      mentionsBot: true,
+      allowedChannelIds,
+    });
+
+    expect(naturalPayload.message.link_request).toEqual({
+      allowed: true,
+      kind: "explicit_external_link_summary",
+      urls: ["https://dokobasho.com/products/vostok/02/"],
+    });
+    expect(
+      runOutboundGate({
+        response: validateOpenClawResponse({ action: "reply", body: "整理します" }),
+        channelId: "1465296404455882860",
+        allowedChannelIds,
+        payload: naturalPayload,
+      })
+    ).toEqual({ ok: true, reason: "ok" });
   });
 
   it("keeps URL input blocked unless it is explicit and fully covered by the link request", () => {
@@ -1240,7 +1271,7 @@ describe("fairy OpenClaw runtime", () => {
     expect(openClawClient.execute).not.toHaveBeenCalled();
     expect(message.channel.sendTyping).not.toHaveBeenCalled();
     expect(message.reply).toHaveBeenCalledWith({
-      content: "-# 今回は自動送信せず止めました。",
+      content: "-# 今回は自動送信せず止めました。\n-# 詳細: reason_code=input_external_link",
       allowedMentions: SAFE_ALLOWED_MENTIONS,
     });
     await expect(fs.access(path.join(stateDir, "followups.json"))).rejects.toMatchObject({ code: "ENOENT" });
@@ -1279,7 +1310,7 @@ describe("fairy OpenClaw runtime", () => {
     expect(openClawClient.execute).not.toHaveBeenCalled();
     expect(interaction.deferReply).toHaveBeenCalledTimes(1);
     expect(interaction.editReply).toHaveBeenCalledWith({
-      content: "-# 今回は自動送信せず止めました。",
+      content: "-# 今回は自動送信せず止めました。\n-# 詳細: reason_code=input_role_mention",
       allowedMentions: SAFE_ALLOWED_MENTIONS,
     });
     await expect(fs.access(path.join(stateDir, "followups.json"))).rejects.toMatchObject({ code: "ENOENT" });
@@ -1657,7 +1688,7 @@ describe("fairy OpenClaw runtime", () => {
       expect(result.gate.reason).toBe(testCase.reason);
       expect(result.replyMessageId).toBe(`reply_${testCase.name}`);
       expect(message.reply).toHaveBeenCalledWith({
-        content: "-# 今回は自動送信せず止めました。",
+        content: `-# 今回は自動送信せず止めました。\n-# 詳細: reason_code=${testCase.reason}`,
         allowedMentions: SAFE_ALLOWED_MENTIONS,
       });
     }

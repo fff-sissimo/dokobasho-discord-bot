@@ -703,8 +703,8 @@ const LINK_REQUEST_MAX_URLS = 3;
 const isExplicitLinkReadRequest = (content) => {
   const text = String(content || "");
   if (/(?:投稿案|告知文案|文案|自動投稿せず|扱いだけ確認)/.test(text)) return false;
-  return /(?:URL|リンク|ページ|サイト|本文|内容)/i.test(text) &&
-    /(?:拾|読|読み|要約|見て|見れる|見られる|調べ|まとめ|抽出|取れ|取得)/.test(text);
+  return /(?:URL|リンク|ページ|サイト|本文|内容|情報|ここ|そこ|これ|この)/i.test(text) &&
+    /(?:拾|読|読み|要約|見て|見れる|見られる|調べ|まとめ|整理|抽出|取れ|取得)/.test(text);
 };
 
 const normalizeExplicitExternalLinkRequest = ({ content, links, channel }) => {
@@ -1272,7 +1272,11 @@ const buildSafeFailureMessage = (diagnostics) => {
   const base = "-# OpenClaw 直接実行に失敗しました。時間をおいてもう一度試してください。";
   return summary ? `${base}\n-# 詳細: ${summary}` : base;
 };
-const buildGateBlockedMessage = () => "-# 今回は自動送信せず止めました。";
+const buildGateBlockedMessage = (reason) => {
+  const normalizedReason = normalizeDiagnosticString(reason);
+  const base = "-# 今回は自動送信せず止めました。";
+  return normalizedReason ? `${base}\n-# 詳細: reason_code=${normalizedReason}` : base;
+};
 const OPENCLAW_FAILURE_OBSERVE_REASONS = new Set([
   "OPENCLAW_TIMEOUT",
   "OPENCLAW_EXIT",
@@ -1325,13 +1329,13 @@ const createOpenClawInteractionHandler = ({
     }
     if (String(interaction.guildId || "") !== String(guildId)) {
       const gate = { ok: false, reason: "guild_mismatch" };
-      await interaction.reply({ content: buildGateBlockedMessage(), ephemeral: true, allowedMentions: SAFE_ALLOWED_MENTIONS });
+      await interaction.reply({ content: buildGateBlockedMessage(gate.reason), ephemeral: true, allowedMentions: SAFE_ALLOWED_MENTIONS });
       return { handled: true, gate };
     }
     const operationChannelId = resolveOperationChannelId(interaction.channel, interaction.channelId);
     if (!allowed.has(operationChannelId)) {
       const gate = { ok: false, reason: "channel_not_verified" };
-      await interaction.reply({ content: buildGateBlockedMessage(), ephemeral: true, allowedMentions: SAFE_ALLOWED_MENTIONS });
+      await interaction.reply({ content: buildGateBlockedMessage(gate.reason), ephemeral: true, allowedMentions: SAFE_ALLOWED_MENTIONS });
       return { handled: true, gate };
     }
     await interaction.deferReply({ ephemeral: false });
@@ -1359,7 +1363,7 @@ const createOpenClawInteractionHandler = ({
     payload.request_id = requestIdFactory();
     const inputGate = runInputRiskGate(payload);
     if (!inputGate.ok) {
-      await interaction.editReply({ content: buildGateBlockedMessage(), allowedMentions: SAFE_ALLOWED_MENTIONS });
+      await interaction.editReply({ content: buildGateBlockedMessage(inputGate.reason), allowedMentions: SAFE_ALLOWED_MENTIONS });
       return { handled: true, requestId: payload.request_id, payload, gate: inputGate };
     }
     await applyRuntimeStateToPayload({ payload, stateStore, logger });
@@ -1382,7 +1386,7 @@ const createOpenClawInteractionHandler = ({
           });
           return { handled: true, requestId: payload.request_id, payload, response, gate };
         }
-        await interaction.editReply({ content: buildGateBlockedMessage(), allowedMentions: SAFE_ALLOWED_MENTIONS });
+        await interaction.editReply({ content: buildGateBlockedMessage(gate.reason), allowedMentions: SAFE_ALLOWED_MENTIONS });
         return { handled: true, requestId: payload.request_id, payload, response, gate };
       }
       await interaction.editReply({ content: response.body, allowedMentions: SAFE_ALLOWED_MENTIONS });
@@ -1439,7 +1443,7 @@ const createOpenClawMessageHandler = ({
     if (!inputGate.ok) {
       if (isExplicitMessageTrigger(runtimeOptions.messageTriggerSource)) {
         const sentMessage = await message.reply({
-          content: buildGateBlockedMessage(),
+          content: buildGateBlockedMessage(inputGate.reason),
           allowedMentions: SAFE_ALLOWED_MENTIONS,
         });
         return {
@@ -1485,7 +1489,7 @@ const createOpenClawMessageHandler = ({
           isExplicitMessageTrigger(runtimeOptions.messageTriggerSource)
         ) {
           const sentMessage = await message.reply({
-            content: buildGateBlockedMessage(),
+            content: buildGateBlockedMessage(gate.reason),
             allowedMentions: SAFE_ALLOWED_MENTIONS,
           });
           return {
