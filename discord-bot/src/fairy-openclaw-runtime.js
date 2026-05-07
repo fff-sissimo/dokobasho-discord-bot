@@ -218,6 +218,19 @@ const assertAllowlistIsVerified = ({ allowedChannelIds, channelRegistry }) => {
   }
 };
 
+const assertAllowlistMatchesCanonicalRegistry = ({ allowedChannelIds, channelRegistry, canonicalRegistry = DEFAULT_CHANNEL_REGISTRY }) => {
+  const canonicalBlocked = allowedChannelIds.filter((id) => {
+    const canonicalEntry = canonicalRegistry[id];
+    const runtimeEntry = channelRegistry[id];
+    if (!runtimeEntry) return false;
+    if (!canonicalEntry) return runtimeEntry.status === "verified";
+    return canonicalEntry.status !== "verified" && runtimeEntry.status === "verified";
+  });
+  if (canonicalBlocked.length > 0) {
+    throw new Error(`invalid OpenClaw channel allowlist: canonical registry not verified for channel ids: ${canonicalBlocked.join(", ")}`);
+  }
+};
+
 const resolveOpenClawApiUrl = (env = process.env) => {
   const baseUrl = String(env.OPENCLAW_API_BASE_URL || "").trim();
   const legacyUrl = String(env.OPENCLAW_API_URL || "").trim();
@@ -259,6 +272,7 @@ const createOpenClawRuntimeConfig = (env = process.env) => {
   }
   const channelRegistry = loadOpenClawChannelRegistry(env);
   assertAllowlistIsVerified({ allowedChannelIds, channelRegistry });
+  assertAllowlistMatchesCanonicalRegistry({ allowedChannelIds, channelRegistry });
 
   return {
     mode,

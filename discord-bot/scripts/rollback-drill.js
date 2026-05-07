@@ -4,7 +4,7 @@ const { parseArgs } = require("./openclaw-runbook-common");
 
 const BASELINES = Object.freeze({
   v1: Object.freeze({
-    allowlist: ["1094907178671939654"],
+    allowlist: ["1094907178671939654", "840827137451229210"],
     recreateServices: ["discord-bot"],
   }),
 });

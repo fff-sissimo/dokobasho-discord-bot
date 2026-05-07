@@ -396,6 +396,7 @@ describe("fairy OpenClaw runtime", () => {
     };
 
     expect(DEFAULT_CHANNEL_REGISTRY["1465296404455882860"].status).toBe("pending");
+    expect(DEFAULT_CHANNEL_REGISTRY["1465295987236143319"].status).toBe("pending");
     expect(DEFAULT_CHANNEL_REGISTRY["840827137451229208"].status).toBe("known");
 
     expect(() =>
@@ -408,26 +409,43 @@ describe("fairy OpenClaw runtime", () => {
     expect(() =>
       createOpenClawRuntimeConfig({
         ...baseEnv,
+        FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS: "1094907178671939654,1465295987236143319",
+      })
+    ).toThrow("1465295987236143319");
+
+    expect(() =>
+      createOpenClawRuntimeConfig({
+        ...baseEnv,
         FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS: "1094907178671939654,840827137451229208",
       })
     ).toThrow("840827137451229208");
 
-    expect(
+    expect(() =>
       createOpenClawRuntimeConfig({
         ...baseEnv,
         FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS: "1094907178671939654,1465296404455882860",
         FAIRY_OPENCLAW_CHANNEL_REGISTRY_JSON:
           '{"1465296404455882860":{"name":"vostok-vol02-general","type":"project","status":"verified"}}',
-      }).channelRegistry["1465296404455882860"].status
-    ).toBe("verified");
-    expect(
+      })
+    ).toThrow("canonical registry not verified");
+
+    expect(() =>
       createOpenClawRuntimeConfig({
         ...baseEnv,
         FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS: "1094907178671939654,1465295987236143319",
         FAIRY_OPENCLAW_CHANNEL_REGISTRY_JSON:
           '[{"channel_id":"1465295987236143319","name":"vostok-vol02-pd","type":"project","status":"verified"}]',
-      }).channelRegistry["1465295987236143319"].status
-    ).toBe("verified");
+      })
+    ).toThrow("canonical registry not verified");
+
+    expect(() =>
+      createOpenClawRuntimeConfig({
+        ...baseEnv,
+        FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS: "1094907178671939654,999999999999999999",
+        FAIRY_OPENCLAW_CHANNEL_REGISTRY_JSON:
+          '{"999999999999999999":{"name":"unknown-project","type":"project","status":"verified"}}',
+      })
+    ).toThrow("canonical registry not verified");
   });
 
   it("uses the canonical verified idea board registry by default", () => {
