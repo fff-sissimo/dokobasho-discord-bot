@@ -1,6 +1,9 @@
 "use strict";
 
 const http = require("node:http");
+const https = require("node:https");
+const dns = require("node:dns").promises;
+const net = require("node:net");
 
 const { assertRuntimeConfig, loadConfig } = require("./config");
 const {
@@ -121,6 +124,11 @@ const RETRY_LIST_MAX_ITEMS = 5;
 const RETRY_IDENTIFIER_MAX_CHARS = 80;
 const OPS_OPTIONAL_CONTEXT_MAX_CHARS = 500;
 const FOLLOWUP_OPTIONAL_CONTEXT_MAX_CHARS = 500;
+const LINK_SUMMARY_TIMEOUT_MS = 5000;
+const LINK_SUMMARY_MAX_BYTES = 120000;
+const LINK_SUMMARY_MAX_CHARS = 1400;
+const LINK_SUMMARY_MAX_URLS = 3;
+const LINK_SUMMARY_MAX_REDIRECTS = 3;
 
 const normalizeRetryIdentifierList = (value) =>
   (Array.isArray(value) ? value : [])
@@ -147,6 +155,287 @@ const normalizeRetryLinks = (value) =>
       present: Boolean(String(link || "").trim()),
     }));
 
+const normalizeExternalLinkRequest = (value, { messageLinks = [] } = {}) => {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  if (source.allowed !== true) return null;
+  if (source.kind !== "explicit_external_link_summary") return null;
+  const urls = (Array.isArray(source.urls) ? source.urls : [])
+    .map((url) => {
+      try {
+        return new URL(String(url || "").trim()).href;
+      } catch {
+        return "";
+      }
+    })
+    .filter(Boolean)
+    .slice(0, LINK_SUMMARY_MAX_URLS);
+  if (urls.length === 0 || urls.length !== (Array.isArray(source.urls) ? source.urls.length : 0)) return null;
+  const payloadLinks = (Array.isArray(messageLinks) ? messageLinks : []).map((url) => {
+    try {
+      return new URL(String(url || "").trim()).href;
+    } catch {
+      return "";
+    }
+  }).filter(Boolean);
+  if (payloadLinks.length !== urls.length) return null;
+  if (!urls.every((url, index) => url === payloadLinks[index])) return null;
+  return { urls };
+};
+
+const isBlockedHostname = (hostname) => {
+  const host = String(hostname || "").trim().toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
+  return !host || host === "localhost" || host.endsWith(".localhost");
+};
+
+const isBlockedIpAddress = (address) => {
+  const raw = String(address || "").trim().toLowerCase().replace(/^\[|\]$/g, "");
+  if (!raw) return true;
+  if (raw.startsWith("::ffff:")) return isBlockedIpAddress(raw.slice(7));
+  const ipType = net.isIP(raw);
+  if (ipType === 4) {
+    const parts = raw.split(".").map((part) => Number(part));
+    if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return true;
+    const [a, b] = parts;
+    return (
+      a === 0 ||
+      a === 10 ||
+      a === 127 ||
+      (a === 100 && b >= 64 && b <= 127) ||
+      (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && (b === 0 || b === 168)) ||
+      (a === 198 && (b === 18 || b === 19 || (b === 51 && parts[2] === 100))) ||
+      (a === 203 && b === 0 && parts[2] === 113) ||
+      a >= 224
+    );
+  }
+  if (ipType === 6) {
+    return (
+      raw === "::" ||
+      raw === "::1" ||
+      raw.startsWith("fc") ||
+      raw.startsWith("fd") ||
+      raw.startsWith("fe8") ||
+      raw.startsWith("fe9") ||
+      raw.startsWith("fea") ||
+      raw.startsWith("feb") ||
+      raw.startsWith("ff") ||
+      raw.startsWith("2001:db8")
+    );
+  }
+  return true;
+};
+
+const validateExternalUrl = (rawUrl) => {
+  let parsed;
+  try {
+    parsed = new URL(String(rawUrl || ""));
+  } catch {
+    return null;
+  }
+  if (!["http:", "https:"].includes(parsed.protocol)) return null;
+  if (parsed.username || parsed.password) return null;
+  if (parsed.port && !["80", "443"].includes(parsed.port)) return null;
+  if (isBlockedHostname(parsed.hostname)) return null;
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, "");
+  if (net.isIP(hostname) && isBlockedIpAddress(hostname)) return null;
+  parsed.hash = "";
+  return parsed;
+};
+
+const resolvePublicAddress = async (hostname, lookupImpl = dns.lookup) => {
+  const host = String(hostname || "").replace(/\.$/, "");
+  if (net.isIP(host)) {
+    if (isBlockedIpAddress(host)) return null;
+    return { address: host, family: net.isIP(host) };
+  }
+  const records = await lookupImpl(host, { all: true, verbatim: true });
+  const addresses = (Array.isArray(records) ? records : [records]).filter((record) => record && record.address);
+  if (addresses.length === 0) return null;
+  if (addresses.some((record) => isBlockedIpAddress(record.address))) return null;
+  return addresses[0];
+};
+
+const stripHtmlForSummary = (value) =>
+  String(value || "")
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, "\"")
+    .replace(/&#39;/g, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const redactSummaryText = (value) =>
+  String(value || "")
+    .replace(/https?:\/\/\S+/gi, "[external_url]")
+    .replace(/(?:api[_-]?key|token|secret|password|passwd)\s*[:=]\s*["']?[^\s"',)}\]]{6,}/gi, "[redacted_secret]")
+    .replace(/(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi, "[redacted_auth]")
+    .replace(/(?:(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|sk-proj-[A-Za-z0-9_-]+|sk-[A-Za-z0-9_-]+)/gi, "[token_redacted]")
+    .replace(/AKIA[0-9A-Z]{16}/g, "[aws_key_redacted]");
+
+const extractLinkSummary = (text) => {
+  const source = String(text || "");
+  const titleMatch = source.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  const title = redactSummaryText(stripHtmlForSummary(titleMatch ? titleMatch[1] : "")).slice(0, 180);
+  const excerpt = redactSummaryText(stripHtmlForSummary(source)).slice(0, LINK_SUMMARY_MAX_CHARS);
+  return { title, excerpt };
+};
+
+const requestExternalText = async (rawUrl, {
+  lookupImpl = dns.lookup,
+  timeoutMs = LINK_SUMMARY_TIMEOUT_MS,
+  redirectCount = 0,
+} = {}) => {
+  if (redirectCount > LINK_SUMMARY_MAX_REDIRECTS) return { status: "too_many_redirects" };
+  const parsed = validateExternalUrl(rawUrl);
+  if (!parsed) return { status: "blocked_url" };
+  const resolved = await resolvePublicAddress(parsed.hostname, lookupImpl);
+  if (!resolved) return { status: "blocked_url" };
+  const client = parsed.protocol === "https:" ? https : http;
+  const isHttps = parsed.protocol === "https:";
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return new Promise((resolve) => {
+    const req = client.request({
+      protocol: parsed.protocol,
+      hostname: resolved.address,
+      family: resolved.family,
+      port: parsed.port || (isHttps ? 443 : 80),
+      path: `${parsed.pathname || "/"}${parsed.search || ""}`,
+      method: "GET",
+      servername: isHttps ? parsed.hostname : undefined,
+      signal: controller.signal,
+      headers: {
+        accept: "text/html,text/plain;q=0.9,application/xhtml+xml;q=0.8,*/*;q=0.1",
+        "accept-encoding": "identity",
+        host: parsed.host,
+        "user-agent": "dokobasho-fairy-openclaw/1.0",
+      },
+    }, async (response) => {
+      const statusCode = Number(response.statusCode || 0);
+      if (statusCode >= 300 && statusCode < 400 && response.headers.location) {
+        response.resume();
+        clearTimeout(timer);
+        const nextUrl = new URL(String(response.headers.location), parsed).href;
+        resolve(await requestExternalText(nextUrl, { lookupImpl, timeoutMs, redirectCount: redirectCount + 1 }));
+        return;
+      }
+      if (statusCode < 200 || statusCode >= 300) {
+        response.resume();
+        clearTimeout(timer);
+        resolve({ status: "unavailable", host: parsed.hostname });
+        return;
+      }
+      const contentType = String(response.headers["content-type"] || "").toLowerCase();
+      const contentEncoding = String(response.headers["content-encoding"] || "").toLowerCase();
+      const contentLength = Number(response.headers["content-length"] || 0);
+      if (contentEncoding && contentEncoding !== "identity") {
+        response.resume();
+        clearTimeout(timer);
+        resolve({ status: "unsupported_content_encoding", host: parsed.hostname });
+        return;
+      }
+      if (contentType && !/text\/html|text\/plain|application\/xhtml\+xml/.test(contentType)) {
+        response.resume();
+        clearTimeout(timer);
+        resolve({ status: "unsupported_content_type", host: parsed.hostname });
+        return;
+      }
+      if (contentLength > LINK_SUMMARY_MAX_BYTES) {
+        response.resume();
+        clearTimeout(timer);
+        resolve({ status: "too_large", host: parsed.hostname });
+        return;
+      }
+      const chunks = [];
+      let size = 0;
+      response.on("data", (chunk) => {
+        size += chunk.length;
+        if (size > LINK_SUMMARY_MAX_BYTES) {
+          response.destroy(new Error("link summary response too large"));
+          return;
+        }
+        chunks.push(chunk);
+      });
+      response.on("end", () => {
+        clearTimeout(timer);
+        resolve({ status: "ok", host: parsed.hostname, text: Buffer.concat(chunks).toString("utf8") });
+      });
+      response.on("error", () => {
+        clearTimeout(timer);
+        resolve({ status: size > LINK_SUMMARY_MAX_BYTES ? "too_large" : "unavailable", host: parsed.hostname });
+      });
+    });
+    req.on("error", (error) => {
+      clearTimeout(timer);
+      resolve({ status: error && error.name === "AbortError" ? "unavailable" : "unavailable", host: parsed.hostname });
+    });
+    req.end();
+  });
+};
+
+const fetchExternalLinkSummaries = async (linkRequest, {
+  requestTextImpl = requestExternalText,
+  lookupImpl = dns.lookup,
+  messageLinks = [],
+} = {}) => {
+  const normalized = normalizeExternalLinkRequest(linkRequest, { messageLinks });
+  if (!normalized || typeof requestTextImpl !== "function") return null;
+  const deadline = Date.now() + LINK_SUMMARY_TIMEOUT_MS;
+  try {
+    const summaries = [];
+    for (const url of normalized.urls) {
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) {
+        summaries.push({ status: "unavailable" });
+        continue;
+      }
+      const result = await requestTextImpl(url, { lookupImpl, timeoutMs: remainingMs });
+      const host = String(result && result.host ? result.host : "").trim().toLowerCase().slice(0, 80);
+      if (!result || result.status !== "ok") {
+        summaries.push({ status: String((result && result.status) || "unavailable").replace(/[^A-Za-z0-9_.:-]/g, "_").slice(0, 40), ...(host ? { host } : {}) });
+        continue;
+      }
+      const summary = extractLinkSummary(result.text);
+      summaries.push({
+        status: summary.excerpt ? "ok" : "empty",
+        ...(host ? { host } : {}),
+        ...(summary.title ? { title: summary.title } : {}),
+        ...(summary.excerpt ? { excerpt: summary.excerpt } : {}),
+      });
+    }
+    return summaries.length > 0 ? summaries : null;
+  } catch {
+    return [{ status: "unavailable" }];
+  }
+};
+
+const enrichAllowedLinkSummaries = async (payload, { requestTextImpl = requestExternalText, lookupImpl = dns.lookup } = {}) => {
+  const source = payload && typeof payload === "object" && !Array.isArray(payload) ? payload : {};
+  const message = source.message && typeof source.message === "object" && !Array.isArray(source.message)
+    ? source.message
+    : {};
+  const linkSummaries = await fetchExternalLinkSummaries(message.link_request, {
+    requestTextImpl,
+    lookupImpl,
+    messageLinks: message.links,
+  });
+  if (!linkSummaries) return payload;
+  return {
+    ...source,
+    message: {
+      ...message,
+      link_summary: linkSummaries.length === 1 ? linkSummaries[0] : linkSummaries,
+    },
+  };
+};
+
 const normalizePromptChannelPolicyList = (value) =>
   (Array.isArray(value) ? value : [])
     .map((item) => String(item || "").trim().replace(/[^A-Za-z0-9_.:-]/g, "_").slice(0, RETRY_IDENTIFIER_MAX_CHARS))
@@ -165,6 +454,25 @@ const normalizePromptChannelPolicy = (value) => {
   const instruction = String(source.instruction || "").replace(/\s+/g, " ").trim().slice(0, 220);
   if (instruction) policy.instruction = instruction;
   return policy;
+};
+
+const normalizePromptLinkSummary = (value) => {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => normalizePromptLinkSummary(item))
+      .filter(Boolean)
+      .slice(0, LINK_SUMMARY_MAX_URLS);
+  }
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const status = String(source.status || "").trim().replace(/[^A-Za-z0-9_.:-]/g, "_").slice(0, 40);
+  const host = String(source.host || "").trim().toLowerCase().replace(/[^A-Za-z0-9.-]/g, "").slice(0, 80);
+  if (!status) return null;
+  return {
+    status,
+    ...(host ? { host } : {}),
+    title: String(source.title || "").replace(/\s+/g, " ").trim().slice(0, 180),
+    excerpt: String(source.excerpt || "").replace(/\s+/g, " ").trim().slice(0, LINK_SUMMARY_MAX_CHARS),
+  };
 };
 
 const redactPromptText = (value) =>
@@ -268,6 +576,8 @@ const buildPromptPayload = (payload, { mode = "normal" } = {}) => {
     attachments: normalizeRetryAttachments(message.attachments),
     links: normalizeRetryLinks(message.links),
   };
+  const projectedLinkSummary = normalizePromptLinkSummary(message.link_summary);
+  if (projectedLinkSummary) projectedMessage.link_summary = projectedLinkSummary;
   const projectedContext = {
     recent_messages: normalizePromptRecentMessages(context.recent_messages),
     active_thread_age_minutes: context.active_thread_age_minutes ?? null,
@@ -512,6 +822,7 @@ const createServer = ({
     let payload;
     try {
       payload = await readJsonBody(req, config.maxBodyBytes);
+      payload = await enrichAllowedLinkSummaries(payload);
     } catch (error) {
       sendJson(res, error.statusCode || 400, { error: error.message });
       return;
@@ -929,6 +1240,10 @@ module.exports = {
   buildOptionalPromptFiles,
   buildPromptPayload,
   createServer,
+  enrichAllowedLinkSummaries,
+  fetchExternalLinkSummaries,
+  requestExternalText,
+  validateExternalUrl,
   isCompactFirstRequest,
   readJsonBody,
 };

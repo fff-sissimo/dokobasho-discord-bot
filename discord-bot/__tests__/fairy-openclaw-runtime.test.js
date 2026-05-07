@@ -573,6 +573,122 @@ describe("fairy OpenClaw runtime", () => {
     });
   });
 
+  it("allows explicit external URL summary requests in verified project threads", () => {
+    const allowedChannelIds = new Set(["1465296404455882860"]);
+    const parentChannel = { id: "1465296404455882860", name: "vostok-vol02-general", parentId: "category_1" };
+    const threadChannel = {
+      id: "1501907581835153510",
+      name: "BOOTH整備",
+      isThread: () => true,
+      parentId: "1465296404455882860",
+      parent: parentChannel,
+    };
+    const payload = buildOpenClawPayload({
+      eventType: "message_create",
+      guildId: "840827137451229205",
+      channel: { id: "1465296404455882860", name: "vostok-vol02-general" },
+      message: {
+        id: "msg_allowed_link",
+        author: { id: "user_1", username: "user" },
+        channel: threadChannel,
+        createdAt: new Date("2026-05-07T10:00:00.000Z"),
+        mentions: { everyone: false, roles: { map: () => [] } },
+        attachments: [],
+      },
+      content: "<@bot_1> 以下のURLからある程度情報を拾える？ https://dokobasho.com/products/vostok/02/",
+      mentionsBot: true,
+      allowedChannelIds,
+    });
+
+    expect(payload.channel).toMatchObject({
+      id: "1465296404455882860",
+      type: "project",
+      registered: true,
+      thread_id: "1501907581835153510",
+      parent_channel_id: "1465296404455882860",
+    });
+    expect(payload.message.link_request).toEqual({
+      allowed: true,
+      kind: "explicit_external_link_summary",
+      urls: ["https://dokobasho.com/products/vostok/02/"],
+    });
+    expect(
+      runOutboundGate({
+        response: validateOpenClawResponse({ action: "reply", body: "確認しました" }),
+        channelId: "1465296404455882860",
+        allowedChannelIds,
+        payload,
+      })
+    ).toEqual({ ok: true, reason: "ok" });
+  });
+
+  it("keeps URL input blocked unless it is explicit and fully covered by the link request", () => {
+    const allowedChannelIds = new Set(["1465296404455882860", "1094907178671939654"]);
+    const parentChannel = { id: "1465296404455882860", name: "vostok-vol02-general", parentId: "category_1" };
+    const threadChannel = {
+      id: "1501907581835153510",
+      name: "BOOTH整備",
+      isThread: () => true,
+      parentId: "1465296404455882860",
+      parent: parentChannel,
+    };
+    const baseMessage = {
+      id: "msg_blocked_link",
+      author: { id: "user_1", username: "user" },
+      channel: threadChannel,
+      createdAt: new Date("2026-05-07T10:00:00.000Z"),
+      mentions: { everyone: false, roles: { map: () => [] } },
+      attachments: [],
+    };
+    const build = (content, message = baseMessage, channel = { id: "1465296404455882860", name: "vostok-vol02-general" }) =>
+      buildOpenClawPayload({
+        eventType: "message_create",
+        guildId: "840827137451229205",
+        channel,
+        message,
+        content,
+        mentionsBot: true,
+        allowedChannelIds,
+      });
+
+    const nonExplicit = build("<@bot_1> https://dokobasho.com/products/vostok/02/");
+    const withCredentials = build("<@bot_1> このURLから情報を拾える？ https://user:pass@example.com/products/vostok/02/");
+    const tooManyLinks = build("<@bot_1> このURLから情報を拾える？ https://a.example/ https://b.example/ https://c.example/ https://d.example/");
+    const postDraftRequest = build("<@bot_1> live smoke P-4: https://example.com/ を含む投稿案を作ってください。自動投稿せず、扱いだけ確認してください。");
+    const unknownChannel = build(
+      "<@bot_1> このURLから情報を拾える？ https://dokobasho.com/products/vostok/02/",
+      { ...baseMessage, channel: { id: "999999999999999999", name: "unknown" } },
+      { id: "999999999999999999", name: "unknown" }
+    );
+    const regularExternal = build("<@bot_1> このURLから情報を拾える？ https://example.com/products/vostok/02/");
+    expect(regularExternal.message.link_request).toEqual({
+      allowed: true,
+      kind: "explicit_external_link_summary",
+      urls: ["https://example.com/products/vostok/02/"],
+    });
+
+    for (const payload of [nonExplicit, withCredentials, tooManyLinks, postDraftRequest]) {
+      expect(payload.message.link_request).toBeUndefined();
+      expect(
+        runOutboundGate({
+          response: validateOpenClawResponse({ action: "reply", body: "確認しました" }),
+          channelId: payload.channel.id,
+          allowedChannelIds,
+          payload,
+        }).reason
+      ).toBe("input_external_link");
+    }
+    expect(unknownChannel.message.link_request).toBeUndefined();
+    expect(
+      runOutboundGate({
+        response: validateOpenClawResponse({ action: "reply", body: "確認しました" }),
+        channelId: unknownChannel.channel.id,
+        allowedChannelIds,
+        payload: unknownChannel,
+      }).reason
+    ).toBe("channel_not_verified");
+  });
+
   it("keeps creation type resolvable only through custom verified registry", () => {
     const channelRegistry = loadOpenClawChannelRegistry({
       channelRegistry: {

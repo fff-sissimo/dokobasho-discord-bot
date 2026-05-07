@@ -698,6 +698,38 @@ const collectLinks = (content) => {
   return matches ? matches.slice(0, 10) : [];
 };
 
+const LINK_REQUEST_MAX_URLS = 3;
+
+const isExplicitLinkReadRequest = (content) => {
+  const text = String(content || "");
+  if (/(?:投稿案|告知文案|文案|自動投稿せず|扱いだけ確認)/.test(text)) return false;
+  return /(?:URL|リンク|ページ|サイト|本文|内容)/i.test(text) &&
+    /(?:拾|読|読み|要約|見て|見れる|見られる|調べ|まとめ|抽出|取れ|取得)/.test(text);
+};
+
+const normalizeExplicitExternalLinkRequest = ({ content, links, channel }) => {
+  if (!channel || channel.registered !== true || channel.type === "ops" || channel.type === "unknown") return null;
+  if (!isExplicitLinkReadRequest(content)) return null;
+  const normalizedLinks = [];
+  const sourceLinks = Array.isArray(links) ? links : [];
+  if (sourceLinks.length === 0 || sourceLinks.length > LINK_REQUEST_MAX_URLS) return null;
+  for (const rawLink of sourceLinks) {
+    try {
+      const parsed = new URL(String(rawLink || ""));
+      if (!["http:", "https:"].includes(parsed.protocol)) return null;
+      if (parsed.username || parsed.password) return null;
+      normalizedLinks.push(parsed.href);
+    } catch {
+      return null;
+    }
+  }
+  return {
+    allowed: true,
+    kind: "explicit_external_link_summary",
+    urls: normalizedLinks,
+  };
+};
+
 const normalizeRoleMentions = (mentions) => {
   if (!mentions || !mentions.roles) return [];
   const roles = mentions.roles;
@@ -907,6 +939,18 @@ const buildOpenClawPayload = ({
     now;
   const normalizedContextEntries = normalizeContextEntries(contextEntries);
   const recentMessages = capContextEntriesForPrompt(normalizedContextEntries, { currentMessageId: messageId });
+  const resolvedChannel = resolveChannel({
+    channel: message && message.channel,
+    channelId: channel && channel.id,
+    allowedChannelIds,
+    channelRegistry,
+  });
+  const links = collectLinks(content);
+  const linkRequest = normalizeExplicitExternalLinkRequest({
+    content: normalizedContent,
+    links,
+    channel: resolvedChannel,
+  });
 
   return {
     schema_version: 1,
@@ -914,12 +958,7 @@ const buildOpenClawPayload = ({
     event_type: eventType,
     received_at: now,
     guild_id: String(guildId || "").trim(),
-    channel: resolveChannel({
-      channel: message && message.channel,
-      channelId: channel && channel.id,
-      allowedChannelIds,
-      channelRegistry,
-    }),
+    channel: resolvedChannel,
     message: {
       id: messageId,
       author_id: String((message && message.author && message.author.id) || "").trim(),
@@ -935,7 +974,8 @@ const buildOpenClawPayload = ({
       mentions_everyone: Boolean(message && message.mentions && message.mentions.everyone),
       role_mentions: normalizeRoleMentions(message && message.mentions),
       attachments: normalizeAttachments(message && message.attachments),
-      links: collectLinks(content),
+      links,
+      ...(linkRequest ? { link_request: linkRequest } : {}),
     },
     context: {
       recent_messages: recentMessages,
@@ -1104,7 +1144,11 @@ const payloadHasInputRisk = (payload) => {
   if (message.mentions_everyone) return "input_everyone_or_here";
   if (Array.isArray(message.role_mentions) && message.role_mentions.length > 0) return "input_role_mention";
   if (Array.isArray(message.attachments) && message.attachments.length > 0) return "input_attachment";
-  if (Array.isArray(message.links) && message.links.length > 0) return "input_external_link";
+  if (
+    Array.isArray(message.links) &&
+    message.links.length > 0 &&
+    !(message.link_request && message.link_request.allowed === true)
+  ) return "input_external_link";
   return "";
 };
 const runInputRiskGate = (payload) => {

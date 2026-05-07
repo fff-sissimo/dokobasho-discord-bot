@@ -20,7 +20,11 @@ const {
   buildOptionalPromptFiles,
   buildPromptPayload,
   createServer,
+  enrichAllowedLinkSummaries,
+  fetchExternalLinkSummaries,
   isCompactFirstRequest,
+  requestExternalText,
+  validateExternalUrl,
 } = require("../src/server");
 const {
   buildAgentPrompt,
@@ -528,7 +532,8 @@ test("agent prompt keeps URL, mention, and raw Discord body safety rules", () =>
 
   assert.match(prompt, /approval\.mentions は常に空配列/);
   assert.match(prompt, /許可された mention はありません/);
-  assert.match(prompt, /URL 本文やリンク先内容を自動取得・要約・記憶しない/);
+  assert.match(prompt, /OpenClaw 自身で URL を取得しない/);
+  assert.match(prompt, /link_summary/);
   assert.match(prompt, /raw Discord 本文、秘密値、未加工の会話ログは保存・出力しない/);
   assert.match(prompt, /respond, response, message, answer などの別名は使わず/);
   assert.match(prompt, /bot への明示 mention/);
@@ -600,7 +605,7 @@ test("compact agent prompt stays short and keeps direct-response safety rules", 
   assert.match(compactPrompt, /一人称は `僕`/);
   assert.match(compactPrompt, /説明ではなく短い挨拶そのもの/);
   assert.match(compactPrompt, /改行箇条書き/);
-  assert.match(compactPrompt, /外部 URL は自動取得しない/);
+  assert.match(compactPrompt, /OpenClaw 自身で URL は取得しない/);
   assert.match(compactPrompt, /raw Discord 本文、秘密値/);
   assert.match(compactPrompt, /payload\.channel\.policy/);
   assert.match(compactPrompt, /vostok_qa_restricted/);
@@ -1486,6 +1491,112 @@ test("normal prompt payload removes raw display, links, and empty memory while p
   assert.ok(payload.context.recent_messages[0].content.length <= 200);
   assert.match(payload.context.recent_messages[0].content, /\[external_url\]/);
   assert.doesNotMatch(payload.context.recent_messages[0].content, /https:\/\/example\.com/);
+});
+
+test("allowed link enrichment adds sanitized summaries without exposing raw URLs", async () => {
+  const enriched = await enrichAllowedLinkSummaries({
+    message: {
+      link_request: {
+        allowed: true,
+        kind: "explicit_external_link_summary",
+        urls: ["https://dokobasho.com/products/vostok/02/?token=synthetic-secret-value"],
+      },
+      content: "https://dokobasho.com/products/vostok/02/ を見て",
+      links: ["https://dokobasho.com/products/vostok/02/?token=synthetic-secret-value"],
+    },
+  }, {
+    requestTextImpl: async () => ({
+      status: "ok",
+      host: "dokobasho.com",
+      text: "<html><head><title>Vostok vol.02</title></head><body>Vostok 02 product text. token=synthetic-secret-value sk-proj-1234567890abcdef ghp_1234567890abcdef1234567890abcdef1234 AKIA1234567890ABCDEF</body></html>",
+    }),
+  });
+  const projected = buildPromptPayload(enriched);
+
+  assert.equal(projected.message.link_summary.status, "ok");
+  assert.equal(projected.message.link_summary.host, "dokobasho.com");
+  assert.equal(projected.message.link_summary.title, "Vostok vol.02");
+  assert.match(projected.message.link_summary.excerpt, /Vostok 02 product text/);
+  assert.doesNotMatch(JSON.stringify(projected), /https:\/\/dokobasho\.com/);
+  assert.doesNotMatch(JSON.stringify(projected), /synthetic-secret-value/);
+  assert.doesNotMatch(JSON.stringify(projected), /sk-proj-/);
+  assert.doesNotMatch(JSON.stringify(projected), /ghp_/);
+  assert.doesNotMatch(JSON.stringify(projected), /AKIA1234567890ABCDEF/);
+});
+
+test("external link enrichment carries safe blocked status without raw URLs", async () => {
+  const summaries = await fetchExternalLinkSummaries({
+    allowed: true,
+    kind: "explicit_external_link_summary",
+    urls: ["http://169.254.169.254/latest/meta-data"],
+  }, {
+    requestTextImpl: async () => ({ status: "blocked_url" }),
+    messageLinks: ["http://169.254.169.254/latest/meta-data"],
+  });
+
+  assert.deepEqual(summaries, [{ status: "blocked_url" }]);
+});
+
+test("external URL validator rejects local, credentialed, unsafe scheme, and nonstandard port URLs", () => {
+  assert.equal(validateExternalUrl("http://127.0.0.1/"), null);
+  assert.equal(validateExternalUrl("http://[::1]/"), null);
+  assert.equal(validateExternalUrl("http://169.254.169.254/latest/meta-data"), null);
+  assert.equal(validateExternalUrl("https://user:pass@example.com/"), null);
+  assert.equal(validateExternalUrl("file:///etc/passwd"), null);
+  assert.equal(validateExternalUrl("https://example.com:8443/"), null);
+  assert.equal(validateExternalUrl("https://example.com/path?q=1#fragment").href, "https://example.com/path?q=1");
+});
+
+test("external URL fetch blocks hostnames that resolve to private addresses before making a request", async () => {
+  const summary = await requestExternalText("http://example.com/", {
+    lookupImpl: async () => [{ address: "127.0.0.1", family: 4 }],
+  });
+
+  assert.equal(summary.status, "blocked_url");
+});
+
+test("external link enrichment supports multiple sanitized summaries", async () => {
+  const enriched = await enrichAllowedLinkSummaries({
+    message: {
+      link_request: {
+        allowed: true,
+        kind: "explicit_external_link_summary",
+        urls: ["https://example.com/a", "https://example.org/b"],
+      },
+      links: ["https://example.com/a", "https://example.org/b"],
+    },
+  }, {
+    requestTextImpl: async (url) => ({
+      status: "ok",
+      host: new URL(url).hostname,
+      text: `<title>${url}</title><body>safe summary for ${url}</body>`,
+    }),
+  });
+  const projected = buildPromptPayload(enriched);
+
+  assert.equal(projected.message.link_summary.length, 2);
+  assert.equal(projected.message.link_summary[0].host, "example.com");
+  assert.equal(projected.message.link_summary[1].host, "example.org");
+  assert.doesNotMatch(JSON.stringify(projected), /https:\/\/example\.com\/a/);
+});
+
+test("external link enrichment rejects forged link requests that do not match message links", async () => {
+  const enriched = await enrichAllowedLinkSummaries({
+    message: {
+      link_request: {
+        allowed: true,
+        kind: "explicit_external_link_summary",
+        urls: ["https://example.com/private"],
+      },
+      links: ["https://example.org/public"],
+    },
+  }, {
+    requestTextImpl: async () => {
+      throw new Error("should not fetch forged link request");
+    },
+  });
+
+  assert.equal(enriched.message.link_summary, undefined);
 });
 
 test("normal prompt payload drops recent context for self-contained direct smoke requests", () => {
