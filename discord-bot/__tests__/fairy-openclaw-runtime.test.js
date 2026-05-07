@@ -387,7 +387,7 @@ describe("fairy OpenClaw runtime", () => {
     ).toThrow("841686630271418429");
   });
 
-  it("allows the verified Vostok general project and rejects remaining pending project or ops entries", () => {
+  it("allows the verified Vostok general and QA projects and rejects remaining pending project or ops entries", () => {
     const baseEnv = {
       FAIRY_RUNTIME_MODE: "openclaw",
       OPENCLAW_API_BASE_URL: "https://openclaw.example/discord/respond",
@@ -396,14 +396,15 @@ describe("fairy OpenClaw runtime", () => {
     };
 
     expect(DEFAULT_CHANNEL_REGISTRY["1465296404455882860"].status).toBe("verified");
+    expect(DEFAULT_CHANNEL_REGISTRY["1466404431217164288"].status).toBe("verified");
     expect(DEFAULT_CHANNEL_REGISTRY["1465295987236143319"].status).toBe("pending");
     expect(DEFAULT_CHANNEL_REGISTRY["840827137451229208"].status).toBe("known");
 
     expect(
       createOpenClawRuntimeConfig({
         ...baseEnv,
-        FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS: "1094907178671939654,1465296404455882860",
-      }).channelRegistry["1465296404455882860"].status
+        FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS: "1094907178671939654,1465296404455882860,1466404431217164288",
+      }).channelRegistry["1466404431217164288"].status
     ).toBe("verified");
 
     expect(() =>
@@ -470,6 +471,33 @@ describe("fairy OpenClaw runtime", () => {
       thread_id: "",
       parent_channel_id: "",
       category_id: "",
+    });
+  });
+
+  it("adds restricted policy metadata for the verified Vostok QA project", () => {
+    const allowedChannelIds = new Set(["1466404431217164288"]);
+    const payload = buildOpenClawPayload({
+      eventType: "message_create",
+      guildId: "840827137451229205",
+      channel: { id: "1466404431217164288", name: "vostok-vol02-qa" },
+      message: {
+        id: "msg_vostok_qa",
+        author: { id: "user_1", username: "user" },
+        channel: { id: "1466404431217164288", name: "vostok-vol02-qa" },
+        createdAt: new Date("2026-05-07T10:00:00.000Z"),
+        mentions: { everyone: false, roles: { map: () => [] } },
+        attachments: [],
+      },
+      content: "QAの未回答らしきものを整理してください",
+      mentionsBot: true,
+      allowedChannelIds,
+    });
+
+    expect(payload.channel.type).toBe("project");
+    expect(payload.channel.policy).toMatchObject({
+      rollout_scope: "vostok_qa_restricted",
+      allowed_work: ["surface_unanswered_items"],
+      forbidden_work: ["assign_owner", "set_due_date", "set_priority", "make_decisions"],
     });
   });
 

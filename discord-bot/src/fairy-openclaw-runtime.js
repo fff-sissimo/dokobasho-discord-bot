@@ -28,7 +28,7 @@ const DEFAULT_CHANNEL_REGISTRY = Object.freeze({
   "1465295987236143319": Object.freeze({ name: "vostok-vol02-pd", type: "project", status: "pending" }),
   "1465296093427531960": Object.freeze({ name: "vostok-vol02-music", type: "project", status: "pending" }),
   "1465296285341847765": Object.freeze({ name: "vostok-vol02-artwork", type: "project", status: "pending" }),
-  "1466404431217164288": Object.freeze({ name: "vostok-vol02-qa", type: "project", status: "pending" }),
+  "1466404431217164288": Object.freeze({ name: "vostok-vol02-qa", type: "project", status: "verified" }),
   "840827137451229208": Object.freeze({ name: "更新・進行状況", type: "ops", status: "known" }),
   "852073750294822922": Object.freeze({ name: "管理用", type: "ops", status: "known" }),
 });
@@ -847,6 +847,20 @@ const isThreadChannel = (channel) =>
         (typeof channel.isThread === "function" && channel.isThread()))
   );
 
+const resolveChannelPolicy = (channelId, registeredChannel) => {
+  const id = String(channelId || "").trim();
+  if (id === "1466404431217164288" || (registeredChannel && registeredChannel.name === "vostok-vol02-qa")) {
+    return {
+      rollout_scope: "vostok_qa_restricted",
+      allowed_work: ["surface_unanswered_items"],
+      forbidden_work: ["assign_owner", "set_due_date", "set_priority", "make_decisions"],
+      instruction:
+        "Only surface unanswered-looking QA items. Do not assign owner, due date, or priority; ask humans to decide.",
+    };
+  }
+  return null;
+};
+
 const resolveOperationChannelId = (channel, fallbackChannelId) => {
   if (isThreadChannel(channel)) {
     return readSnowflake(channel && channel.parentId, channel && channel.parent && channel.parent.id, fallbackChannelId);
@@ -859,12 +873,14 @@ const resolveChannel = ({ channel, channelId, allowedChannelIds, channelRegistry
   const registeredChannel = channelRegistry[id] || null;
   const registered = Boolean(registeredChannel);
   const verified = registered && registeredChannel.status === "verified" && allowedChannelIds.has(id);
+  const policy = verified ? resolveChannelPolicy(id, registeredChannel) : null;
   return {
     id,
     name: String((channel && channel.name) || (registeredChannel && registeredChannel.name) || "").trim(),
     type: verified ? registeredChannel.type : "unknown",
     registered: verified,
     ...resolveChannelMetadata(channel),
+    ...(policy ? { policy } : {}),
   };
 };
 

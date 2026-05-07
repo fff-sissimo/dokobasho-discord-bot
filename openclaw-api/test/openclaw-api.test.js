@@ -408,6 +408,8 @@ test("agent prompt includes phase2 chat restraint rules", () => {
   assert.match(prompt, /Runtime files を常設方針/);
   assert.match(prompt, /checked_followup_ids/);
   assert.match(prompt, /closed_followup_ids/);
+  assert.match(prompt, /payload\.channel\.policy/);
+  assert.match(prompt, /vostok_qa_restricted/);
   assert.match(prompt, /metadata\.kind/);
   assert.match(prompt, /explicit_request, agreed_todo, formal_quest, creation_continuation, test_only/);
   assert.match(prompt, /metadata\.basis/);
@@ -571,6 +573,8 @@ test("retry agent prompt stays short and excludes runtime context sections", () 
   assert.match(retryPrompt, /一人称は `僕`/);
   assert.match(retryPrompt, /説明ではなく短い挨拶そのもの/);
   assert.match(retryPrompt, /改行箇条書き/);
+  assert.match(retryPrompt, /payload\.channel\.policy/);
+  assert.match(retryPrompt, /vostok_qa_restricted/);
   assert.match(retryPrompt, /# Discord payload/);
   assert.doesNotMatch(retryPrompt, /# Runtime files/);
   assert.doesNotMatch(retryPrompt, /runtime context/);
@@ -598,6 +602,8 @@ test("compact agent prompt stays short and keeps direct-response safety rules", 
   assert.match(compactPrompt, /改行箇条書き/);
   assert.match(compactPrompt, /外部 URL は自動取得しない/);
   assert.match(compactPrompt, /raw Discord 本文、秘密値/);
+  assert.match(compactPrompt, /payload\.channel\.policy/);
+  assert.match(compactPrompt, /vostok_qa_restricted/);
   assert.match(compactPrompt, /# Discord payload/);
   assert.doesNotMatch(compactPrompt, /# Runtime files/);
   assert.doesNotMatch(compactPrompt, /"recent_messages":\[\{/);
@@ -1372,6 +1378,12 @@ test("minimal retry payload keeps only current-message decision fields", () => {
       name: "raw channel name",
       type: "sandbox",
       registered: true,
+      policy: {
+        rollout_scope: "vostok_qa_restricted",
+        allowed_work: ["surface_unanswered_items"],
+        forbidden_work: ["assign_owner", "set_due_date", "set_priority"],
+        instruction: "Only surface unanswered-looking QA items.",
+      },
     },
     message: {
       id: "msg_1",
@@ -1409,6 +1421,12 @@ test("minimal retry payload keeps only current-message decision fields", () => {
   assert.equal(payload.message.content.length, 500);
   assert.deepEqual(payload.context.recent_messages, []);
   assert.equal(payload.channel.name, undefined);
+  assert.deepEqual(payload.channel.policy, {
+    rollout_scope: "vostok_qa_restricted",
+    allowed_work: ["surface_unanswered_items"],
+    forbidden_work: ["assign_owner", "set_due_date", "set_priority"],
+    instruction: "Only surface unanswered-looking QA items.",
+  });
   assert.equal(payload.message.author_display_name, undefined);
   assert.equal(payload.memory, undefined);
   assert.deepEqual(payload.context.matched_followup_ids, ["due_1"]);
@@ -1428,6 +1446,11 @@ test("normal prompt payload removes raw display, links, and empty memory while p
       type: "chat",
       registered: true,
       thread_id: "thread_1",
+      policy: {
+        rollout_scope: "vostok_qa_restricted",
+        allowed_work: ["surface_unanswered_items"],
+        forbidden_work: ["assign_owner", "set_due_date", "set_priority"],
+      },
     },
     message: {
       id: "msg_1",
@@ -1451,6 +1474,8 @@ test("normal prompt payload removes raw display, links, and empty memory while p
   });
 
   assert.equal(payload.channel.name, undefined);
+  assert.equal(payload.channel.policy.rollout_scope, "vostok_qa_restricted");
+  assert.deepEqual(payload.channel.policy.forbidden_work, ["assign_owner", "set_due_date", "set_priority"]);
   assert.equal(payload.message.author_display_name, undefined);
   assert.match(payload.message.content, /\[external_url\]/);
   assert.doesNotMatch(payload.message.content, /https:\/\/example\.com/);

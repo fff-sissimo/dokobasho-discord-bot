@@ -147,6 +147,26 @@ const normalizeRetryLinks = (value) =>
       present: Boolean(String(link || "").trim()),
     }));
 
+const normalizePromptChannelPolicyList = (value) =>
+  (Array.isArray(value) ? value : [])
+    .map((item) => String(item || "").trim().replace(/[^A-Za-z0-9_.:-]/g, "_").slice(0, RETRY_IDENTIFIER_MAX_CHARS))
+    .filter(Boolean)
+    .slice(0, RETRY_LIST_MAX_ITEMS);
+
+const normalizePromptChannelPolicy = (value) => {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const rolloutScope = String(source.rollout_scope || "").trim().replace(/[^A-Za-z0-9_.:-]/g, "_").slice(0, RETRY_IDENTIFIER_MAX_CHARS);
+  if (!rolloutScope) return null;
+  const policy = {
+    rollout_scope: rolloutScope,
+    allowed_work: normalizePromptChannelPolicyList(source.allowed_work),
+    forbidden_work: normalizePromptChannelPolicyList(source.forbidden_work),
+  };
+  const instruction = String(source.instruction || "").replace(/\s+/g, " ").trim().slice(0, 220);
+  if (instruction) policy.instruction = instruction;
+  return policy;
+};
+
 const redactPromptText = (value) =>
   String(value || "").replace(/https?:\/\/\S+/gi, "[external_url]");
 
@@ -257,6 +277,7 @@ const buildPromptPayload = (payload, { mode = "normal" } = {}) => {
   if (mode === "retry" || isSelfContainedDirectRequest({ message: projectedMessage, context: projectedContext })) {
     projectedContext.recent_messages = [];
   }
+  const projectedChannelPolicy = normalizePromptChannelPolicy(channel.policy);
   return {
     request_id: String(source.request_id || "").trim(),
     schema_version: 1,
@@ -271,6 +292,7 @@ const buildPromptPayload = (payload, { mode = "normal" } = {}) => {
       thread_id: String(channel.thread_id || "").trim(),
       parent_channel_id: String(channel.parent_channel_id || "").trim(),
       category_id: String(channel.category_id || "").trim(),
+      ...(projectedChannelPolicy ? { policy: projectedChannelPolicy } : {}),
     },
     message: projectedMessage,
     context: projectedContext,
