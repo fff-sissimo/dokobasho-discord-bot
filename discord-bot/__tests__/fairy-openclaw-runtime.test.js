@@ -573,6 +573,55 @@ describe("fairy OpenClaw runtime", () => {
     });
   });
 
+  it("uses verified parent channel registry for link requests when the payload channel is a thread", () => {
+    const allowedChannelIds = new Set(["1465296404455882860"]);
+    const parentChannel = { id: "1465296404455882860", name: "vostok-vol02-general", parentId: "category_1" };
+    const threadChannel = {
+      id: "1501907581835153510",
+      name: "BOOTH整備",
+      isThread: () => true,
+      parentId: "1465296404455882860",
+      parent: parentChannel,
+    };
+    const payload = buildOpenClawPayload({
+      eventType: "message_create",
+      guildId: "840827137451229205",
+      channel: { id: "1501907581835153510", name: "BOOTH整備" },
+      message: {
+        id: "msg_thread_link_parent_registry",
+        author: { id: "user_1", username: "user" },
+        channel: threadChannel,
+        createdAt: new Date("2026-05-08T10:00:00.000Z"),
+        mentions: { everyone: false, roles: { map: () => [] } },
+        attachments: [],
+      },
+      content: "<@bot_1> このURLの情報を整理して https://dokobasho.com/products/vostok/02/",
+      mentionsBot: true,
+      allowedChannelIds,
+    });
+
+    expect(payload.channel).toMatchObject({
+      id: "1465296404455882860",
+      type: "project",
+      registered: true,
+      thread_id: "1501907581835153510",
+      parent_channel_id: "1465296404455882860",
+    });
+    expect(payload.message.link_request).toEqual({
+      allowed: true,
+      kind: "explicit_external_link_summary",
+      urls: ["https://dokobasho.com/products/vostok/02/"],
+    });
+    expect(
+      runOutboundGate({
+        response: validateOpenClawResponse({ action: "reply", body: "整理します" }),
+        channelId: payload.channel.id,
+        allowedChannelIds,
+        payload,
+      })
+    ).toEqual({ ok: true, reason: "ok" });
+  });
+
   it("allows explicit external URL summary requests in verified project threads", () => {
     const allowedChannelIds = new Set(["1465296404455882860"]);
     const parentChannel = { id: "1465296404455882860", name: "vostok-vol02-general", parentId: "category_1" };
@@ -651,6 +700,120 @@ describe("fairy OpenClaw runtime", () => {
         payload: naturalPayload,
       })
     ).toEqual({ ok: true, reason: "ok" });
+  });
+
+  it("adds safe recent thread link candidates only for explicit read or organize requests", () => {
+    const allowedChannelIds = new Set(["1465296404455882860"]);
+    const parentChannel = { id: "1465296404455882860", name: "vostok-vol02-general", parentId: "category_1" };
+    const threadChannel = {
+      id: "1501907581835153510",
+      name: "BOOTH整備",
+      isThread: () => true,
+      parentId: "1465296404455882860",
+      parent: parentChannel,
+    };
+    const contextEntries = [
+      {
+        message_id: "ctx_safe_link",
+        author_user_id: "user_1",
+        author_is_bot: false,
+        content: "対象は https://dokobasho.com/products/vostok/02/ です",
+        created_at: "2026-05-08T09:50:00.000Z",
+      },
+      {
+        message_id: "ctx_duplicate_link",
+        author_user_id: "user_2",
+        author_is_bot: false,
+        content: "同じURL https://dokobasho.com/products/vostok/02/",
+        created_at: "2026-05-08T09:55:00.000Z",
+      },
+      {
+        message_id: "ctx_credential_link",
+        author_user_id: "user_3",
+        author_is_bot: false,
+        content: "これは拾わない https://user:pass@example.com/secret",
+        created_at: "2026-05-08T09:56:00.000Z",
+      },
+      {
+        message_id: "ctx_notion_link",
+        author_user_id: "user_1",
+        author_is_bot: false,
+        content: "Notion は https://www.notion.so/0123456789abcdef0123456789abcdef",
+        created_at: "2026-05-08T09:57:00.000Z",
+      },
+    ];
+    const payload = buildOpenClawPayload({
+      eventType: "message_create",
+      guildId: "840827137451229205",
+      channel: { id: "1465296404455882860", name: "vostok-vol02-general" },
+      message: {
+        id: "msg_context_link_candidate",
+        author: { id: "user_1", username: "user" },
+        channel: threadChannel,
+        createdAt: new Date("2026-05-08T10:00:00.000Z"),
+        mentions: { everyone: false, roles: { map: () => [] } },
+        attachments: [],
+      },
+      content: "<@bot_1> 上のリンクとNotionを読んで、BOOTH整備用に情報を整理して",
+      mentionsBot: true,
+      allowedChannelIds,
+      contextEntries,
+    });
+
+    expect(payload.message.links).toEqual([]);
+    expect(payload.context.link_candidates).toEqual([
+      {
+        url: "https://dokobasho.com/products/vostok/02/",
+        source: "recent_thread",
+        message_id: "ctx_duplicate_link",
+        author_id: "user_2",
+        created_at: "2026-05-08T09:55:00.000Z",
+      },
+      {
+        url: "https://www.notion.so/0123456789abcdef0123456789abcdef",
+        source: "recent_thread",
+        message_id: "ctx_notion_link",
+        author_id: "user_1",
+        created_at: "2026-05-08T09:57:00.000Z",
+      },
+    ]);
+    expect(payload.message.link_request).toEqual({
+      allowed: true,
+      kind: "explicit_external_link_summary",
+      urls: [
+        "https://dokobasho.com/products/vostok/02/",
+        "https://www.notion.so/0123456789abcdef0123456789abcdef",
+      ],
+    });
+    expect(
+      runOutboundGate({
+        response: validateOpenClawResponse({ action: "reply", body: "整理します" }),
+        channelId: payload.channel.id,
+        allowedChannelIds,
+        payload,
+      })
+    ).toEqual({ ok: true, reason: "ok" });
+
+    const casualPayload = buildOpenClawPayload({
+      eventType: "message_create",
+      guildId: "840827137451229205",
+      channel: { id: "1465296404455882860", name: "vostok-vol02-general" },
+      message: {
+        id: "msg_context_link_casual",
+        author: { id: "user_1", username: "user" },
+        channel: threadChannel,
+        createdAt: new Date("2026-05-08T10:01:00.000Z"),
+        mentions: { everyone: false, roles: { map: () => [] } },
+        attachments: [],
+      },
+      content: "<@bot_1> さっきの件ありがとう",
+      mentionsBot: true,
+      allowedChannelIds,
+      contextEntries,
+    });
+
+    expect(casualPayload.context.link_candidates).toEqual([]);
+    expect(casualPayload.message.link_request).toBeUndefined();
   });
 
   it("keeps URL input blocked unless it is explicit and fully covered by the link request", () => {

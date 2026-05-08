@@ -75,17 +75,51 @@ const buildNotionNoticeResponse = (reason, body) => ({
   confidence: "high",
 });
 
-const collectAllowedNotionTargetIds = (payload) => {
+const collectNotionIdsFromToolResult = (value, output = new Set(), depth = 0) => {
+  if (depth > 6 || value === null || value === undefined) return output;
+  if (typeof value === "string") {
+    const id = extractNotionId(value);
+    if (id) output.add(id);
+    return output;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value.slice(0, 20)) collectNotionIdsFromToolResult(item, output, depth + 1);
+    return output;
+  }
+  if (typeof value === "object") {
+    for (const [key, entry] of Object.entries(value).slice(0, 80)) {
+      if (/^(?:id|page_id|block_id|data_source_id|database_id|url)$/i.test(key)) {
+        collectNotionIdsFromToolResult(entry, output, depth + 1);
+      } else if (key === "results" || key === "data_sources" || key === "result") {
+        collectNotionIdsFromToolResult(entry, output, depth + 1);
+      }
+    }
+  }
+  return output;
+};
+
+const collectSingleAllowedNotionToolResultId = (toolResults = []) => {
+  const ids = new Set();
+  for (const result of Array.isArray(toolResults) ? toolResults : []) {
+    collectNotionIdsFromToolResult(result, ids);
+  }
+  return ids.size === 1 ? Array.from(ids)[0] : "";
+};
+
+const collectAllowedNotionTargetIds = (payload, toolResults = []) => {
   const notion = payload && payload.context && payload.context.notion ? payload.context.notion : {};
-  return new Set(
+  const allowedIds = new Set(
     (Array.isArray(notion.links) ? notion.links : [])
       .map(extractNotionId)
       .filter(Boolean)
   );
+  const toolResultId = collectSingleAllowedNotionToolResultId(toolResults);
+  if (toolResultId) allowedIds.add(toolResultId);
+  return allowedIds;
 };
 
-const requestTargetsAllowedPayloadTarget = ({ payload, request }) => {
-  const allowedIds = collectAllowedNotionTargetIds(payload);
+const requestTargetsAllowedPayloadTarget = ({ payload, request, toolResults = [] }) => {
+  const allowedIds = collectAllowedNotionTargetIds(payload, toolResults);
   if (allowedIds.size === 0) return false;
   const target = request && request.target ? request.target : {};
   const requestId = extractNotionId(target.id || target.page_id || target.data_source_id || target.database_id || target.url);
@@ -199,7 +233,7 @@ const normalizeRetryLinks = (value) =>
       present: Boolean(String(link || "").trim()),
     }));
 
-const normalizeExternalLinkRequest = (value, { messageLinks = [] } = {}) => {
+const normalizeExternalLinkRequest = (value, { messageLinks = [], linkCandidateUrls = [] } = {}) => {
   const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
   if (source.allowed !== true) return null;
   if (source.kind !== "explicit_external_link_summary") return null;
@@ -214,15 +248,15 @@ const normalizeExternalLinkRequest = (value, { messageLinks = [] } = {}) => {
     .filter(Boolean)
     .slice(0, LINK_SUMMARY_MAX_URLS);
   if (urls.length === 0 || urls.length !== (Array.isArray(source.urls) ? source.urls.length : 0)) return null;
-  const payloadLinks = (Array.isArray(messageLinks) ? messageLinks : []).map((url) => {
+  const payloadLinks = [...(Array.isArray(messageLinks) ? messageLinks : []), ...(Array.isArray(linkCandidateUrls) ? linkCandidateUrls : [])].map((url) => {
     try {
       return new URL(String(url || "").trim()).href;
     } catch {
       return "";
     }
   }).filter(Boolean);
-  if (payloadLinks.length !== urls.length) return null;
-  if (!urls.every((url, index) => url === payloadLinks[index])) return null;
+  const allowedLinks = new Set(payloadLinks);
+  if (!urls.every((url) => allowedLinks.has(url))) return null;
   return { urls };
 };
 
@@ -428,8 +462,9 @@ const fetchExternalLinkSummaries = async (linkRequest, {
   requestTextImpl = requestExternalText,
   lookupImpl = dns.lookup,
   messageLinks = [],
+  linkCandidateUrls = [],
 } = {}) => {
-  const normalized = normalizeExternalLinkRequest(linkRequest, { messageLinks });
+  const normalized = normalizeExternalLinkRequest(linkRequest, { messageLinks, linkCandidateUrls });
   if (!normalized || typeof requestTextImpl !== "function") return null;
   const deadline = Date.now() + LINK_SUMMARY_TIMEOUT_MS;
   try {
@@ -469,6 +504,7 @@ const enrichAllowedLinkSummaries = async (payload, { requestTextImpl = requestEx
     requestTextImpl,
     lookupImpl,
     messageLinks: message.links,
+    linkCandidateUrls: normalizePromptLinkCandidateUrls(source.context && source.context.link_candidates),
   });
   if (!linkSummaries) return payload;
   return {
@@ -525,6 +561,21 @@ const normalizePromptNotionLinks = (value) =>
     .filter(Boolean)
     .slice(0, RETRY_LIST_MAX_ITEMS);
 
+const normalizePromptLinkCandidateUrls = (value) =>
+  (Array.isArray(value) ? value : [])
+    .map((candidate) => {
+      const rawUrl = candidate && typeof candidate === "object" && !Array.isArray(candidate)
+        ? candidate.url
+        : candidate;
+      try {
+        return new URL(String(rawUrl || "").trim()).href;
+      } catch {
+        return "";
+      }
+    })
+    .filter(Boolean)
+    .slice(0, LINK_SUMMARY_MAX_URLS);
+
 const normalizePromptNotionContext = (value) => {
   const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
   const notion = {
@@ -578,8 +629,8 @@ const isOkPromptLinkSummaryForTarget = (summary, parsed) => {
   return status === "ok" && host === parsed.hostname.toLowerCase();
 };
 
-const normalizePromptWebTargets = (linkRequest, { messageLinks = [], linkSummary = null } = {}) => {
-  const normalized = normalizeExternalLinkRequest(linkRequest, { messageLinks });
+const normalizePromptWebTargets = (linkRequest, { messageLinks = [], linkCandidateUrls = [], linkSummary = null } = {}) => {
+  const normalized = normalizeExternalLinkRequest(linkRequest, { messageLinks, linkCandidateUrls });
   if (!normalized) return [];
   return normalized.urls
     .map((url, index) => {
@@ -702,6 +753,7 @@ const buildPromptPayload = (payload, { mode = "normal" } = {}) => {
   if (projectedLinkSummary) projectedMessage.link_summary = projectedLinkSummary;
   const projectedWebTargets = normalizePromptWebTargets(message.link_request, {
     messageLinks: message.links,
+    linkCandidateUrls: normalizePromptLinkCandidateUrls(context.link_candidates),
     linkSummary: message.link_summary,
   });
   if (projectedWebTargets.length > 0) projectedMessage.web_targets = projectedWebTargets;
@@ -924,10 +976,10 @@ const executeNotionRound = async ({
   if (!notionBridge || !notionBridge.enabled) return response;
 
   let nextResponse = response;
+  let toolResults = [];
   if (Array.isArray(response.notion_requests) && response.notion_requests.length > 0) {
-    const toolResults = [];
     for (const request of response.notion_requests.slice(0, 3)) {
-      if (shouldCheckReadTarget(request) && !requestTargetsAllowedPayloadTarget({ payload, request })) {
+      if (shouldCheckReadTarget(request) && !requestTargetsAllowedPayloadTarget({ payload, request, toolResults })) {
         toolResults.push({
           id: request.id,
           ok: false,
@@ -977,7 +1029,7 @@ const executeNotionRound = async ({
         notion_writes: nextResponse.notion_writes,
       };
     }
-    if (!hasWriteTargetProvided(payload)) {
+    if (!hasWriteTargetProvided(payload) && collectAllowedNotionTargetIds(payload, toolResults).size === 0) {
       return buildNotionNoticeResponse(
         "notion_write_target_required",
         "書き込み先の Notion ページがまだ分かりません。対象の Notion URL を送ってください。"
@@ -985,7 +1037,7 @@ const executeNotionRound = async ({
     }
     const writeResults = [];
     for (const request of nextResponse.notion_writes.slice(0, 3)) {
-      if (!requestTargetsAllowedPayloadTarget({ payload, request })) {
+      if (!requestTargetsAllowedPayloadTarget({ payload, request, toolResults })) {
         writeResults.push({
           id: request.id,
           ok: false,

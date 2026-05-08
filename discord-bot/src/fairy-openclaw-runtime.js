@@ -700,6 +700,7 @@ const collectLinks = (content) => {
 };
 
 const LINK_REQUEST_MAX_URLS = 3;
+const LINK_CANDIDATE_MAX_URLS = 3;
 
 const isExplicitLinkReadRequest = (content) => {
   const text = String(content || "");
@@ -708,22 +709,38 @@ const isExplicitLinkReadRequest = (content) => {
     /(?:拾|読|読み|要約|見て|見れる|見られる|調べ|まとめ|整理|抽出|取れ|取得)/.test(text);
 };
 
+const normalizeSafeRequestUrl = (rawLink) => {
+  try {
+    const parsed = new URL(String(rawLink || "").replace(/[)\].,、。]+$/u, ""));
+    if (!["http:", "https:"].includes(parsed.protocol)) return "";
+    if (parsed.username || parsed.password) return "";
+    return parsed.href;
+  } catch {
+    return "";
+  }
+};
+
+const normalizeSafeRequestUrls = (links, { strict = true, maxUrls = LINK_REQUEST_MAX_URLS } = {}) => {
+  const sourceLinks = Array.isArray(links) ? links : [];
+  if (sourceLinks.length === 0 || sourceLinks.length > maxUrls) return null;
+  const normalizedLinks = [];
+  for (const rawLink of sourceLinks) {
+    const normalized = normalizeSafeRequestUrl(rawLink);
+    if (!normalized) {
+      if (strict) return null;
+      continue;
+    }
+    if (!normalizedLinks.includes(normalized)) normalizedLinks.push(normalized);
+    if (normalizedLinks.length >= maxUrls) break;
+  }
+  return normalizedLinks.length > 0 ? normalizedLinks : null;
+};
+
 const normalizeExplicitExternalLinkRequest = ({ content, links, channel }) => {
   if (!channel || channel.registered !== true || channel.type === "ops" || channel.type === "unknown") return null;
   if (!isExplicitLinkReadRequest(content)) return null;
-  const normalizedLinks = [];
-  const sourceLinks = Array.isArray(links) ? links : [];
-  if (sourceLinks.length === 0 || sourceLinks.length > LINK_REQUEST_MAX_URLS) return null;
-  for (const rawLink of sourceLinks) {
-    try {
-      const parsed = new URL(String(rawLink || ""));
-      if (!["http:", "https:"].includes(parsed.protocol)) return null;
-      if (parsed.username || parsed.password) return null;
-      normalizedLinks.push(parsed.href);
-    } catch {
-      return null;
-    }
-  }
+  const normalizedLinks = normalizeSafeRequestUrls(links);
+  if (!normalizedLinks) return null;
   return {
     allowed: true,
     kind: "explicit_external_link_summary",
@@ -844,6 +861,36 @@ const capContextEntriesForPrompt = (entries, { currentMessageId = "" } = {}) => 
   return cappedEntries.filter((entry) => entry.content).reverse();
 };
 
+const collectContextLinkCandidates = ({ content, contextEntries, channel, currentLinks = [] }) => {
+  if (!channel || channel.registered !== true || channel.type === "ops" || channel.type === "unknown") return [];
+  if (!isExplicitLinkReadRequest(content)) return [];
+  if (Array.isArray(currentLinks) && currentLinks.length > 0) return [];
+  const candidates = [];
+  const seenUrls = new Set();
+  const sourceEntries = Array.isArray(contextEntries) ? contextEntries.slice().reverse() : [];
+  for (const entry of sourceEntries) {
+    if (!entry || isOpenClawOperationalNoise(entry.content)) continue;
+    const urls = normalizeSafeRequestUrls(collectLinks(entry.content), {
+      strict: false,
+      maxUrls: LINK_CANDIDATE_MAX_URLS,
+    });
+    if (!urls) continue;
+    for (const url of urls) {
+      if (seenUrls.has(url)) continue;
+      seenUrls.add(url);
+      candidates.push({
+        url,
+        source: "recent_thread",
+        message_id: entry.message_id,
+        author_id: entry.author_id,
+        created_at: entry.created_at,
+      });
+      if (candidates.length >= LINK_CANDIDATE_MAX_URLS) return candidates.reverse();
+    }
+  }
+  return candidates.reverse();
+};
+
 const calculateActiveThreadAgeMinutes = ({ recentMessages, currentMessageId, currentCreatedAt }) => {
   const currentMs = Date.parse(currentCreatedAt);
   if (!Number.isFinite(currentMs)) return null;
@@ -930,7 +977,9 @@ const resolveOperationChannelId = (channel, fallbackChannelId) => {
 };
 
 const resolveChannel = ({ channel, channelId, allowedChannelIds, channelRegistry = DEFAULT_CHANNEL_REGISTRY }) => {
-  const id = String(channelId || (channel && channel.id) || "").trim();
+  const metadata = resolveChannelMetadata(channel);
+  const rawId = String(channelId || (channel && channel.id) || "").trim();
+  const id = metadata.parent_channel_id || rawId;
   const registeredChannel = channelRegistry[id] || null;
   const registered = Boolean(registeredChannel);
   const verified = registered && registeredChannel.status === "verified" && allowedChannelIds.has(id);
@@ -940,7 +989,7 @@ const resolveChannel = ({ channel, channelId, allowedChannelIds, channelRegistry
     name: String((channel && channel.name) || (registeredChannel && registeredChannel.name) || "").trim(),
     type: verified ? registeredChannel.type : "unknown",
     registered: verified,
-    ...resolveChannelMetadata(channel),
+    ...metadata,
     ...(policy ? { policy } : {}),
   };
 };
@@ -975,10 +1024,19 @@ const buildOpenClawPayload = ({
     channelRegistry,
   });
   const links = collectLinks(content);
-  const notionLinks = collectNotionLinks(content);
+  const linkCandidates = collectContextLinkCandidates({
+    content: normalizedContent,
+    contextEntries: normalizedContextEntries,
+    channel: resolvedChannel,
+    currentLinks: links,
+  });
+  const notionLinks = [
+    ...collectNotionLinks(content),
+    ...linkCandidates.map((candidate) => candidate.url).filter(isNotionUrl),
+  ].filter((link, index, source) => source.indexOf(link) === index).slice(0, 5);
   const linkRequest = normalizeExplicitExternalLinkRequest({
     content: normalizedContent,
-    links,
+    links: links.length > 0 ? links : linkCandidates.map((candidate) => candidate.url),
     channel: resolvedChannel,
   });
 
@@ -1010,6 +1068,7 @@ const buildOpenClawPayload = ({
     },
     context: {
       recent_messages: recentMessages,
+      link_candidates: linkCandidates,
       active_thread_age_minutes: calculateActiveThreadAgeMinutes({
         recentMessages: normalizedContextEntries,
         currentMessageId: messageId,

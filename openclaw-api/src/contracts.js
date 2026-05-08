@@ -35,7 +35,7 @@ const VALID_FOLLOWUP_BASIS = new Set([
   "due_followup",
   "unknown",
 ]);
-const VALID_NOTION_READ_OPERATIONS = new Set(["retrieve_page", "retrieve_block_children", "query_data_source"]);
+const VALID_NOTION_READ_OPERATIONS = new Set(["retrieve_page", "retrieve_block_children", "query_data_source", "search"]);
 const VALID_NOTION_WRITE_OPERATIONS = new Set(["create_page", "append_blocks"]);
 const BLOCKED_NOTION_OPERATION_PATTERN = /delete|archive|trash|move|duplicate|erase|remove/i;
 
@@ -240,6 +240,17 @@ const normalizeNotionTarget = (target) => {
     const value = normalizeSafeFreeformText(source[key]);
     if (value) normalized[key] = value.slice(0, 300);
   }
+  const rawType = normalizeString(source.type || source.parent_type).toLowerCase();
+  const type = rawType === "database_id"
+    ? "database"
+    : rawType === "data_source_id"
+      ? "data_source"
+      : rawType === "page_id"
+        ? "page"
+        : rawType === "block_id"
+          ? "block"
+          : rawType;
+  if (["page", "block", "database", "data_source"].includes(type)) normalized.type = type;
   return normalized;
 };
 
@@ -465,13 +476,15 @@ const hasNotionPromptContext = (payload) => {
   return Boolean(
     (Array.isArray(message.notion_links) && message.notion_links.length > 0) ||
     (Array.isArray(notion.links) && notion.links.length > 0) ||
+    notion.explicit_write_requested === true ||
+    notion.destructive_request === true ||
     (Array.isArray(notion.tool_results) && notion.tool_results.length > 0)
   );
 };
 
 const buildNotionPromptLines = (payload) => hasNotionPromptContext(payload)
   ? [
-    "Notion 利用時は JSON に notion_requests/notion_writes を含める。対象は payload.context.notion のみ。read: retrieve_page/retrieve_block_children/query_data_source、write: 明示依頼時だけ create_page/append_blocks。search、property 更新、削除/archive/trash/move/duplicate/消去は禁止。",
+    "Notion 利用時は JSON に notion_requests/notion_writes を含める。read: search/retrieve_page/retrieve_block_children/query_data_source。search は Notion integration に共有済みの page/data source を探す時だけ使い、検索結果を読んでから対象を絞る。共有済み data source の中身の検索・絞り込みは query_data_source で扱う。write: 「Notionに作成/保存/追記」の明示依頼があり、payload.context.notion の URL/ID または直前の Notion tool_result で対象が解決できる時だけ create_page/append_blocks。property 更新、削除/archive/trash/move/duplicate/消去は禁止。",
   ]
   : [];
 

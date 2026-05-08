@@ -37,6 +37,9 @@ const {
   normalizeSafeDiagnostics,
   parseAgentResponse,
 } = require("../src/contracts");
+const {
+  createNotionBridge,
+} = require("../src/notion-bridge");
 
 const baseConfig = {
   host: "127.0.0.1",
@@ -164,6 +167,7 @@ test("normalizes Notion requests and drops destructive operations", () => {
     notion_requests: [
       { id: "read_1", operation: "retrieve_page", target: { url: "https://example.notion.site/0123456789abcdef0123456789abcdef" } },
       { id: "search_1", operation: "search", query: "wide search" },
+      { id: "unsupported_1", operation: "list_users" },
       { id: "bad", operation: "delete_page", target: { id: "0123456789abcdef0123456789abcdef" } },
     ],
     notion_writes: [
@@ -172,7 +176,7 @@ test("normalizes Notion requests and drops destructive operations", () => {
       { id: "bad_write", operation: "archive", target: { id: "0123456789abcdef0123456789abcdef" } },
     ],
   });
-  assert.deepEqual(response.notion_requests.map((item) => item.id), ["read_1"]);
+  assert.deepEqual(response.notion_requests.map((item) => item.id), ["read_1", "search_1"]);
   assert.deepEqual(response.notion_writes.map((item) => item.id), ["write_1"]);
 });
 
@@ -268,6 +272,441 @@ test("discord respond denies destructive Notion requests with visible response",
     assert.equal(body.reason, "notion_destructive_request_denied");
     assert.match(body.body, /削除/);
   });
+});
+
+test("discord respond allows Notion writes to targets found by search tool results", async () => {
+  let calls = 0;
+  const searchTargetId = "77777777-7777-7777-7777-777777777777";
+  const writeRequests = [];
+  await withServer({
+    notionBridge: {
+      enabled: true,
+      runRead: async (request) => ({
+        ok: true,
+        operation: request.operation,
+        result: {
+          object: "list",
+          results: [{ object: "data_source", id: searchTargetId, title: "Vostok vol.02 ドキュメントDB" }],
+        },
+      }),
+      runWrite: async (request) => {
+        writeRequests.push(request);
+        return { ok: true, operation: request.operation, page_id: "page_1", url: "https://notion.test/page_1" };
+      },
+    },
+    runAgentCommand: async ({ message }) => {
+      calls += 1;
+      if (calls === 1) {
+        return JSON.stringify({
+          schema_version: 1,
+          action: "reply",
+          body: "探すね",
+          notion_requests: [
+            { id: "search_1", operation: "search", query: "Vostok vol.02 ドキュメントDB" },
+          ],
+        });
+      }
+      assert.match(message, /tool_results/);
+      return JSON.stringify({
+        schema_version: 1,
+        action: "reply",
+        body: "Notionに追加したよ",
+        confidence: "high",
+        notion_writes: [
+          {
+            id: "write_1",
+            operation: "create_page",
+            target: { type: "data_source", id: searchTargetId },
+            title: "BOOTH整備",
+            blocks: [{ type: "bulleted_list_item", text: "作品名を確認" }],
+          },
+        ],
+      });
+    },
+  }, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/discord/respond`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer secret",
+      },
+      body: JSON.stringify({
+        request_id: "req_notion_search_write",
+        channel: { id: "1465296404455882860", type: "project", registered: true },
+        message: { id: "m1", content: "Vostok vol.02ドキュメントDBに新しいページを追加して" },
+        context: {
+          notion: {
+            links: [],
+            explicit_write_requested: true,
+            target_provided: false,
+          },
+        },
+      }),
+    });
+    const body = await response.json();
+    assert.equal(body.action, "reply");
+    assert.equal(body.body, "Notionに追加したよ");
+    assert.equal(calls, 2);
+    assert.equal(writeRequests.length, 1);
+    assert.equal(writeRequests[0].target.id, searchTargetId);
+    assert.equal(writeRequests[0].target.type, "data_source");
+  });
+});
+
+test("discord respond denies Notion writes when search tool results contain multiple target ids", async () => {
+  let calls = 0;
+  await withServer({
+    notionBridge: {
+      enabled: true,
+      runRead: async (request) => ({
+        ok: true,
+        operation: request.operation,
+        result: {
+          object: "list",
+          results: [
+            { object: "data_source", id: "77777777-7777-7777-7777-777777777777", title: "A" },
+            { object: "data_source", id: "88888888-8888-8888-8888-888888888888", title: "B" },
+          ],
+        },
+      }),
+      runWrite: async () => { throw new Error("unexpected write"); },
+    },
+    runAgentCommand: async () => {
+      calls += 1;
+      if (calls === 1) {
+        return JSON.stringify({
+          schema_version: 1,
+          action: "reply",
+          body: "探すね",
+          notion_requests: [{ id: "search_1", operation: "search", query: "Vostok" }],
+        });
+      }
+      return JSON.stringify({
+        schema_version: 1,
+        action: "reply",
+        body: "Notionに追加したよ",
+        notion_writes: [
+          {
+            id: "write_1",
+            operation: "create_page",
+            target: { type: "data_source", id: "77777777-7777-7777-7777-777777777777" },
+            title: "BOOTH整備",
+            body: "body",
+          },
+        ],
+      });
+    },
+  }, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/discord/respond`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer secret",
+      },
+      body: JSON.stringify({
+        request_id: "req_notion_search_write_multi",
+        channel: { id: "1465296404455882860", type: "project", registered: true },
+        message: { id: "m1", content: "Vostok vol.02ドキュメントDBに新しいページを追加して" },
+        context: {
+          notion: {
+            links: [],
+            explicit_write_requested: true,
+            target_provided: false,
+          },
+        },
+      }),
+    });
+    const body = await response.json();
+    assert.equal(body.action, "reply");
+    assert.equal(body.reason, "notion_write_target_required");
+    assert.match(body.body, /書き込み先/);
+  });
+});
+
+test("notion bridge runs search without a target and keeps dangerous reads denied", async () => {
+  const calls = [];
+  const bridge = createNotionBridge({
+    config: {
+      notion: {
+        enabled: true,
+        token: "notion_secret",
+        baseUrl: "https://notion.test/v1",
+        maxResults: 5,
+      },
+    },
+    logger: { warn: () => {} },
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options, body: JSON.parse(options.body) });
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ object: "list", results: [{ object: "page", id: "page_1" }] }),
+      };
+    },
+  });
+
+  const result = await bridge.runRead({
+    operation: "search",
+    query: "meeting notes",
+    page_size: 20,
+    filter: { property: "object", value: "page" },
+    sort: { timestamp: "last_edited_time", direction: "descending" },
+  });
+  const denied = await bridge.runRead({ operation: "delete_page", query: "meeting notes" });
+
+  assert.equal(result.ok, true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "https://notion.test/v1/search");
+  assert.equal(calls[0].options.method, "POST");
+  assert.deepEqual(calls[0].body, {
+    query: "meeting notes",
+    page_size: 5,
+    filter: { property: "object", value: "page" },
+    sort: { timestamp: "last_edited_time", direction: "descending" },
+  });
+  assert.equal(denied.ok, false);
+  assert.equal(denied.reason, "notion_read_operation_denied");
+});
+
+test("notion bridge maps legacy search database filters to data_source", async () => {
+  const calls = [];
+  const bridge = createNotionBridge({
+    config: {
+      notion: {
+        enabled: true,
+        token: "notion_secret",
+        baseUrl: "https://notion.test/v1",
+      },
+    },
+    logger: { warn: () => {} },
+    fetchImpl: async (url, options) => {
+      calls.push({ url, body: JSON.parse(options.body) });
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ object: "list", results: [] }),
+      };
+    },
+  });
+
+  const result = await bridge.runRead({
+    operation: "search",
+    query: "Vostok",
+    filter: { property: "object", value: "database" },
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(calls[0].body.filter, { property: "object", value: "data_source" });
+});
+
+test("notion bridge resolves a database URL to one data source and creates pages with schema title and blocks", async () => {
+  const databaseId = "11111111-1111-1111-1111-111111111111";
+  const dataSourceId = "22222222-2222-2222-2222-222222222222";
+  const calls = [];
+  const bridge = createNotionBridge({
+    config: {
+      notion: {
+        enabled: true,
+        token: "notion_secret",
+        baseUrl: "https://notion.test/v1",
+      },
+    },
+    logger: { warn: () => {} },
+    fetchImpl: async (url, options) => {
+      const body = options.body ? JSON.parse(options.body) : undefined;
+      calls.push({ url, options, body });
+      if (url.endsWith(`/databases/${databaseId}`)) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({
+            object: "database",
+            id: databaseId,
+            data_sources: [{ id: dataSourceId, name: "Tasks" }],
+          }),
+        };
+      }
+      if (url.endsWith(`/data_sources/${dataSourceId}`)) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({
+            object: "data_source",
+            id: dataSourceId,
+            properties: {
+              "Task name": { id: "title", type: "title", title: {} },
+              Done: { id: "done", type: "checkbox", checkbox: {} },
+            },
+          }),
+        };
+      }
+      if (url.endsWith("/pages")) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ object: "page", id: "page_1", url: "https://notion.test/page_1" }),
+        };
+      }
+      throw new Error(`unexpected Notion call: ${url}`);
+    },
+  });
+
+  const result = await bridge.runWrite({
+    operation: "create_page",
+    target: {
+      type: "database",
+      url: `https://www.notion.so/workspace/Tasks-${databaseId.replace(/-/g, "")}`,
+    },
+    title: "New task",
+    body: "legacy body should be ignored when blocks are present",
+    blocks: [
+      { type: "heading_2", text: "Plan" },
+      { type: "bulleted_list_item", text: "First item" },
+      { type: "to_do", text: "Check result", checked: true },
+      { type: "divider" },
+    ],
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.page_id, "page_1");
+  assert.deepEqual(calls.map((call) => new URL(call.url).pathname), [
+    `/v1/databases/${databaseId}`,
+    `/v1/data_sources/${dataSourceId}`,
+    "/v1/pages",
+  ]);
+  const createBody = calls[2].body;
+  assert.deepEqual(createBody.parent, { data_source_id: dataSourceId });
+  assert.deepEqual(Object.keys(createBody.properties), ["Task name"]);
+  assert.equal(createBody.properties["Task name"].title[0].text.content, "New task");
+  assert.deepEqual(createBody.children.map((block) => block.type), [
+    "heading_2",
+    "bulleted_list_item",
+    "to_do",
+    "divider",
+  ]);
+  assert.equal(createBody.children[2].to_do.checked, true);
+});
+
+test("notion bridge creates child pages under page URLs without data source resolution", async () => {
+  const pageId = "99999999-9999-9999-9999-999999999999";
+  const calls = [];
+  const bridge = createNotionBridge({
+    config: {
+      notion: {
+        enabled: true,
+        token: "notion_secret",
+        baseUrl: "https://notion.test/v1",
+      },
+    },
+    logger: { warn: () => {} },
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options, body: options.body ? JSON.parse(options.body) : undefined });
+      if (url.endsWith(`/databases/${pageId}`)) {
+        return {
+          ok: false,
+          status: 404,
+          text: async () => JSON.stringify({ object: "error", code: "object_not_found" }),
+        };
+      }
+      if (url.endsWith("/pages")) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ object: "page", id: "page_1", url: "https://notion.test/page_1" }),
+        };
+      }
+      throw new Error(`unexpected Notion call: ${url}`);
+    },
+  });
+
+  const result = await bridge.runWrite({
+    operation: "create_page",
+    target: { type: "page", url: `https://www.notion.so/workspace/Page-${pageId.replace(/-/g, "")}` },
+    title: "Child page",
+    body: "body",
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(calls.map((call) => new URL(call.url).pathname), ["/v1/pages"]);
+  assert.deepEqual(calls[0].body.parent, { page_id: pageId });
+});
+
+test("notion bridge rejects database URLs with multiple data sources", async () => {
+  const databaseId = "44444444-4444-4444-4444-444444444444";
+  const bridge = createNotionBridge({
+    config: {
+      notion: {
+        enabled: true,
+        token: "notion_secret",
+        baseUrl: "https://notion.test/v1",
+      },
+    },
+    logger: { warn: () => {} },
+    fetchImpl: async (url) => {
+      if (url.endsWith(`/databases/${databaseId}`)) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({
+            object: "database",
+            id: databaseId,
+            data_sources: [
+              { id: "55555555-5555-5555-5555-555555555555", name: "A" },
+              { id: "66666666-6666-6666-6666-666666666666", name: "B" },
+            ],
+          }),
+        };
+      }
+      throw new Error(`unexpected Notion call: ${url}`);
+    },
+  });
+
+  const result = await bridge.runWrite({
+    operation: "create_page",
+    target: { url: `https://www.notion.so/workspace/Tasks-${databaseId.replace(/-/g, "")}` },
+    title: "New task",
+    body: "body",
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "NOTION_DATA_SOURCE_AMBIGUOUS");
+});
+
+test("notion bridge keeps body compatibility when appending blocks", async () => {
+  const blockId = "33333333-3333-3333-3333-333333333333";
+  const calls = [];
+  const bridge = createNotionBridge({
+    config: {
+      notion: {
+        enabled: true,
+        token: "notion_secret",
+        baseUrl: "https://notion.test/v1",
+      },
+    },
+    logger: { warn: () => {} },
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options, body: JSON.parse(options.body) });
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ object: "list", results: [] }),
+      };
+    },
+  });
+
+  const result = await bridge.runWrite({
+    operation: "append_blocks",
+    target: { type: "block", id: blockId },
+    body: "First paragraph\n\nSecond paragraph",
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(calls[0].url, `https://notion.test/v1/blocks/${blockId}/children`);
+  assert.equal(calls[0].options.method, "PATCH");
+  assert.deepEqual(calls[0].body.children.map((block) => block.paragraph.rich_text[0].text.content), [
+    "First paragraph",
+    "Second paragraph",
+  ]);
 });
 
 test("normalizes approval mentions to an empty array", () => {
@@ -677,6 +1116,32 @@ test("agent prompt keeps URL, mention, and raw Discord body safety rules", () =>
   assert.match(prompt, /respond, response, message, answer などの別名は使わず/);
   assert.match(prompt, /bot への明示 mention/);
   assert.match(prompt, /action: "reply"/);
+});
+
+test("agent prompt allows shared Notion data source search without destructive writes", () => {
+  const prompt = buildAgentPrompt({
+    workspaceContext: "runtime context",
+    payload: {
+      channel: { id: "1465296404455882860", type: "project" },
+      message: {
+        id: "msg_notion_search",
+        notion_links: ["https://www.notion.so/0123456789abcdef0123456789abcdef"],
+      },
+      context: {
+        notion: {
+          links: ["https://www.notion.so/0123456789abcdef0123456789abcdef"],
+          target_provided: true,
+        },
+      },
+    },
+  });
+
+  assert.match(prompt, /search\/retrieve_page\/retrieve_block_children\/query_data_source/);
+  assert.match(prompt, /共有済みの page\/data source/);
+  assert.match(prompt, /検索・絞り込みは query_data_source/);
+  assert.match(prompt, /Notion tool_result.*create_page\/append_blocks/);
+  assert.doesNotMatch(prompt, /search、.*禁止/);
+  assert.match(prompt, /削除\/archive\/trash\/move\/duplicate\/消去は禁止/);
 });
 
 test("agent prompt keeps draft-only boundaries for approval-gated operations", () => {
@@ -1682,6 +2147,38 @@ test("allowed link enrichment adds sanitized summaries and explicit web targets"
   assert.doesNotMatch(JSON.stringify(projected), /sk-proj-/);
   assert.doesNotMatch(JSON.stringify(projected), /ghp_/);
   assert.doesNotMatch(JSON.stringify(projected), /AKIA1234567890ABCDEF/);
+});
+
+test("allowed link enrichment accepts explicit recent thread link candidates", async () => {
+  const url = "https://dokobasho.com/products/vostok/02/";
+  const enriched = await enrichAllowedLinkSummaries({
+    message: {
+      link_request: {
+        allowed: true,
+        kind: "explicit_external_link_summary",
+        urls: [url],
+      },
+      content: "さっき共有したURLを見て整理して",
+      links: [],
+    },
+    context: {
+      link_candidates: [{ url, source: "recent_thread", message_id: "ctx_1" }],
+    },
+  }, {
+    requestTextImpl: async () => ({
+      status: "ok",
+      host: "dokobasho.com",
+      text: "<html><head><title>Vostok vol.02</title></head><body>Vostok 02 product text.</body></html>",
+    }),
+  });
+  const projected = buildPromptPayload(enriched);
+
+  assert.equal(projected.message.link_summary.status, "ok");
+  assert.deepEqual(projected.message.web_targets, [{
+    url,
+    host: "dokobasho.com",
+  }]);
+  assert.doesNotMatch(projected.message.content, /https:\/\/dokobasho\.com/);
 });
 
 test("external link enrichment carries safe blocked status without raw URLs", async () => {

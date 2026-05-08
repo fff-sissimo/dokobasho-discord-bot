@@ -203,9 +203,10 @@ FAIRY_OPENCLAW_STATE_DIR=/var/lib/dokobasho/fairy-openclaw-state
 
 `OPENCLAW_NOTION_ENABLED=true` の場合、Notion 読取・書込は `openclaw-api` 内の安全ブリッジだけが実行します。`NOTION_TOKEN` / `OPENCLAW_NOTION_TOKEN` は OpenClaw 子プロセスの env allowlist には含めず、OpenClaw は JSON の `notion_requests` / `notion_writes` だけを返します。
 
-- 許可: 明示された page/block/data source の読取、page 作成、block 追記
+- 許可: 共有済み page/data source の search、明示された page/block/data source の読取、page 作成、block 追記
 - 禁止: delete、archive、trash、move、duplicate、内容消去
-- 書込は「Notionに保存/追記」などの明示依頼があり、対象 URL/ID が解決できる場合だけ実行します。対象未指定時や検索依頼は実行しません
+- 共有済み範囲の保存先探索は `search`、data source 内の絞り込みは `query_data_source` で実行します。未共有領域の検索はできません
+- 書込は「Notionに作成/保存/追記」などの明示依頼があり、対象 URL/ID または直前の Notion search/read 結果で対象が解決できる場合だけ `create_page` / `append_blocks` を実行します
 
 Phase2 有効化時の allowlist 例:
 
