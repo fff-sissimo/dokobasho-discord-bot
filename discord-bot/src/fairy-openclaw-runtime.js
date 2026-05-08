@@ -22,6 +22,7 @@ const TYPING_KEEPALIVE_INTERVAL_MS = 7500;
 const DEFAULT_CHANNEL_REGISTRY = Object.freeze({
   "1094907178671939654": Object.freeze({ name: "妖精さんより", type: "sandbox", status: "verified" }),
   "840827137451229210": Object.freeze({ name: "はじまりの酒場", type: "chat", status: "verified" }),
+  "985145703774978059": Object.freeze({ name: "配信部屋", type: "chat", status: "verified" }),
   "841686630271418429": Object.freeze({ name: "らくがきちょう", type: "creation", status: "known" }),
   "1311647968113332275": Object.freeze({ name: "アイデアボード", type: "board", status: "verified" }),
   "1465296404455882860": Object.freeze({ name: "vostok-vol02-general", type: "project", status: "verified" }),
@@ -709,6 +710,17 @@ const isExplicitLinkReadRequest = (content) => {
     /(?:拾|読|読み|要約|見て|見れる|見られる|調べ|まとめ|整理|抽出|取れ|取得)/.test(text);
 };
 
+const isExplicitLinkHandoffRequest = ({ content, links }) => {
+  const text = normalizeMessageContent(content);
+  const currentLinks = Array.isArray(links) ? links : [];
+  if (currentLinks.length === 0) return false;
+  if (/(?:投稿案|告知文案|文案|自動投稿せず|扱いだけ確認)/.test(text)) return false;
+  const hasNotionTarget = currentLinks.some(isNotionUrl);
+  const hasExternalTarget = currentLinks.some((link) => !isNotionUrl(link));
+  if (!hasNotionTarget || !hasExternalTarget) return false;
+  return /(?:渡す|共有|対象|こっち|こちら|これ|この|改めて|あらためて)/.test(text);
+};
+
 const normalizeSafeRequestUrl = (rawLink) => {
   try {
     const parsed = new URL(String(rawLink || "").replace(/[)\].,、。]+$/u, ""));
@@ -738,7 +750,7 @@ const normalizeSafeRequestUrls = (links, { strict = true, maxUrls = LINK_REQUEST
 
 const normalizeExplicitExternalLinkRequest = ({ content, links, channel }) => {
   if (!channel || channel.registered !== true || channel.type === "ops" || channel.type === "unknown") return null;
-  if (!isExplicitLinkReadRequest(content)) return null;
+  if (!isExplicitLinkReadRequest(content) && !isExplicitLinkHandoffRequest({ content, links })) return null;
   const normalizedLinks = normalizeSafeRequestUrls(links);
   if (!normalizedLinks) return null;
   return {

@@ -855,13 +855,24 @@ describe("fairy OpenClaw runtime", () => {
       { id: "999999999999999999", name: "unknown" }
     );
     const regularExternal = build("<@bot_1> このURLから情報を拾える？ https://example.com/products/vostok/02/");
+    const notionTargetHandoff = build("<@bot_1> じゃあ、改めて渡すね。\nhttps://dokobasho.com/products/vostok/02/\nこっちが対象のDB。\nhttps://www.notion.so/0123456789abcdef0123456789abcdef");
+    const ambiguousDbHandoff = build("<@bot_1> このDB共有 https://example.com/report");
     expect(regularExternal.message.link_request).toEqual({
       allowed: true,
       kind: "explicit_external_link_summary",
       urls: ["https://example.com/products/vostok/02/"],
     });
+    expect(notionTargetHandoff.message.link_request).toEqual({
+      allowed: true,
+      kind: "explicit_external_link_summary",
+      urls: [
+        "https://dokobasho.com/products/vostok/02/",
+        "https://www.notion.so/0123456789abcdef0123456789abcdef",
+      ],
+    });
+    expect(ambiguousDbHandoff.message.link_request).toBeUndefined();
 
-    for (const payload of [nonExplicit, withCredentials, tooManyLinks, postDraftRequest]) {
+    for (const payload of [nonExplicit, withCredentials, tooManyLinks, postDraftRequest, ambiguousDbHandoff]) {
       expect(payload.message.link_request).toBeUndefined();
       expect(
         runOutboundGate({
@@ -881,6 +892,14 @@ describe("fairy OpenClaw runtime", () => {
         payload: unknownChannel,
       }).reason
     ).toBe("channel_not_verified");
+    expect(
+      runOutboundGate({
+        response: validateOpenClawResponse({ action: "reply", body: "受け取りました" }),
+        channelId: notionTargetHandoff.channel.id,
+        allowedChannelIds,
+        payload: notionTargetHandoff,
+      })
+    ).toEqual({ ok: true, reason: "ok" });
   });
 
   it("allows Notion links through the input gate with explicit Notion context", () => {
@@ -946,6 +965,78 @@ describe("fairy OpenClaw runtime", () => {
     expect(DEFAULT_CHANNEL_REGISTRY["841686630271418429"].status).toBe("known");
     expect(payload.channel.type).toBe("creation");
     expect(payload.channel.registered).toBe(true);
+  });
+
+  it("allows the verified 配信部屋 voice channel chat by its own channel id", () => {
+    const allowedChannelIds = new Set(["985145703774978059"]);
+    const voiceChannel = {
+      id: "985145703774978059",
+      name: "配信部屋",
+      type: 2,
+      parentId: "1098535279549235280",
+      isThread: () => false,
+    };
+    const payload = buildOpenClawPayload({
+      eventType: "message_create",
+      guildId: "840827137451229205",
+      channel: { id: "985145703774978059", name: "配信部屋" },
+      message: {
+        id: "msg_voice_channel_chat",
+        author: { id: "user_1", username: "user" },
+        channel: voiceChannel,
+        createdAt: new Date("2026-05-08T10:00:00.000Z"),
+        mentions: { everyone: false, roles: { map: () => [] } },
+        attachments: [],
+      },
+      content: "<@bot_1> 配信中のメモを一言で整理して",
+      mentionsBot: true,
+      allowedChannelIds,
+    });
+
+    expect(payload.channel.id).toBe("985145703774978059");
+    expect(payload.channel.category_id).toBe("1098535279549235280");
+    expect(payload.channel.type).toBe("chat");
+    expect(payload.channel.registered).toBe(true);
+    expect(
+      runOutboundGate({
+        response: validateOpenClawResponse({ action: "reply", body: "配信中のメモとして整理するね" }),
+        channelId: payload.channel.id,
+        allowedChannelIds,
+        payload,
+      })
+    ).toEqual({ ok: true, reason: "ok" });
+
+    for (const channel of [
+      { id: "1098535279549235280", name: "配信部屋", type: 4 },
+      { id: "865619584282918982", name: "配信部屋", type: 0, parentId: "1098535279549235280" },
+    ]) {
+      const rejected = buildOpenClawPayload({
+        eventType: "message_create",
+        guildId: "840827137451229205",
+        channel,
+        message: {
+          id: `msg_wrong_${channel.id}`,
+          author: { id: "user_1", username: "user" },
+          channel,
+          createdAt: new Date("2026-05-08T10:01:00.000Z"),
+          mentions: { everyone: false, roles: { map: () => [] } },
+          attachments: [],
+        },
+        content: "<@bot_1> 配信中のメモを一言で整理して",
+        mentionsBot: true,
+        allowedChannelIds,
+      });
+      expect(rejected.channel.registered).toBe(false);
+      expect(rejected.channel.id).toBe(channel.id);
+      expect(
+        runOutboundGate({
+          response: validateOpenClawResponse({ action: "reply", body: "整理するね" }),
+          channelId: rejected.channel.id,
+          allowedChannelIds,
+          payload: rejected,
+        }).reason
+      ).toBe("channel_not_verified");
+    }
   });
 
   it("excludes the current message itself from active thread age calculation", () => {

@@ -217,17 +217,17 @@ FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS=1094907178671939654,840827137451229210
 Phase3 project rollout では、`vostok-vol02-general` (`1465296404455882860`) は deployed / smoke verified 済みです。次の追加対象は `vostok-vol02-qa` (`1466404431217164288`) で、制限付きにし、未回答らしきものの提示だけを扱います。`pd` / `music` / `artwork` は `pending` のままです。現 deployed 状態の `アイデアボード` を落とさないよう、board も allowlist に含めます。env override だけではなく、bot 側 canonical default registry と runtime registry / permission worksheet も対象 channel だけ `verified` に更新してから deploy します。
 
 ```env
-FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS=1094907178671939654,840827137451229210,1311647968113332275,1465296404455882860,1466404431217164288
+FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS=1094907178671939654,840827137451229210,985145703774978059,1311647968113332275,1465296404455882860,1466404431217164288
 ```
 
 channel registry は `verified` のみ送信対象です。`pending` / `known` / `not-connected` は名前と type を保持しますが、allowlist に入れると起動時に停止します。
-`アイデアボード` (`1311647968113332275`)、`vostok-vol02-general` (`1465296404455882860`)、`vostok-vol02-qa` (`1466404431217164288`) は repo 正本 registry では `verified` です。
+`配信部屋` voice channel chat (`985145703774978059`)、`アイデアボード` (`1311647968113332275`)、`vostok-vol02-general` (`1465296404455882860`)、`vostok-vol02-qa` (`1466404431217164288`) は repo 正本 registry では `verified` です。
 残りの Vostok project channels は repo 正本 registry では `registry_status=pending`、ops channels は `registry_status=known` です。project / ops を送信対象にする場合も、permission worksheet を確認し、repo 正本 registry と bot 側 canonical default registry の両方で対象 channel だけを明示的に `verified` へ昇格してください。起動時 gate は、canonical default registry が `pending` / `known` / 未登録の channel を env override だけで `verified` にする運用を拒否します。
 外部設定で検証済みにする場合は、Discord snowflake を文字列 key にした JSON を指定します。
 
 ```env
-FAIRY_OPENCLAW_CHANNEL_REGISTRY_JSON={"1311647968113332275":{"name":"アイデアボード","type":"board","status":"verified"},"1465296404455882860":{"name":"vostok-vol02-general","type":"project","status":"verified"},"1466404431217164288":{"name":"vostok-vol02-qa","type":"project","status":"verified"}}
-FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS=1094907178671939654,840827137451229210,1311647968113332275,1465296404455882860,1466404431217164288
+FAIRY_OPENCLAW_CHANNEL_REGISTRY_JSON={"985145703774978059":{"name":"配信部屋","type":"chat","status":"verified"},"1311647968113332275":{"name":"アイデアボード","type":"board","status":"verified"},"1465296404455882860":{"name":"vostok-vol02-general","type":"project","status":"verified"},"1466404431217164288":{"name":"vostok-vol02-qa","type":"project","status":"verified"}}
+FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS=1094907178671939654,840827137451229210,985145703774978059,1311647968113332275,1465296404455882860,1466404431217164288
 ```
 
 `openclaw-api` は同じ `discord-bot/.env` から `OPENCLAW_API_KEY` を読みます。Hostinger で `dokobasho-fairy-openclaw` の配置場所が既定と違う場合は、Compose 実行環境に `OPENCLAW_WORKSPACE_HOST_DIR=/path/to/dokobasho-fairy-openclaw` を設定してください。
