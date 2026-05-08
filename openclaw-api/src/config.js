@@ -64,6 +64,14 @@ const loadConfig = (env = process.env) => {
     promptFiles: parsePromptFiles(env.OPENCLAW_PROMPT_FILES).length > 0
       ? parsePromptFiles(env.OPENCLAW_PROMPT_FILES)
       : DEFAULT_PROMPT_FILES,
+    notion: {
+      enabled: parseBoolean(env.OPENCLAW_NOTION_ENABLED, false),
+      token: String(env.OPENCLAW_NOTION_TOKEN || env.NOTION_TOKEN || env.NOTION_API_KEY || "").trim(),
+      version: String(env.OPENCLAW_NOTION_VERSION || env.NOTION_VERSION || "2025-09-03").trim(),
+      baseUrl: String(env.OPENCLAW_NOTION_API_BASE_URL || env.NOTION_API_BASE_URL || "https://api.notion.com/v1").trim(),
+      maxResults: parsePositiveInt(env.OPENCLAW_NOTION_MAX_RESULTS, 5),
+      maxResultChars: parsePositiveInt(env.OPENCLAW_NOTION_MAX_RESULT_CHARS, 4000),
+    },
   };
 };
 
@@ -72,6 +80,7 @@ const assertRuntimeConfig = (config) => {
   if (!config.apiKey) missing.push("OPENCLAW_API_KEY");
   if (!config.workspaceDir) missing.push("OPENCLAW_WORKSPACE_DIR");
   if (!config.command) missing.push("OPENCLAW_COMMAND");
+  if (config.notion && config.notion.enabled && !config.notion.token) missing.push("OPENCLAW_NOTION_TOKEN");
   if (missing.length > 0) {
     throw new Error(`missing OpenClaw API config: ${missing.join(", ")}`);
   }

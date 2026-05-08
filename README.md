@@ -55,11 +55,16 @@ Discord上で動作する多機能ボット。リマインダー機能と `/fair
     - `OPENCLAW_API_URL`: (任意) 旧互換 alias。新規設定では使わず、古い runtime 互換が必要な場合だけ残します。
     - `OPENCLAW_API_KEY`: (`FAIRY_RUNTIME_MODE=openclaw` で必須) OpenClaw 判断 API 用の Bearer token。
     - `OPENCLAW_API_TIMEOUT_MS`: (任意) OpenClaw 判断 API の timeout(ms)。未指定時 `180000`。
+    - `OPENCLAW_NOTION_ENABLED`: (任意) `true/1` で OpenClaw API 側 Notion bridge を有効化。OpenClaw 子プロセスには Notion token を渡しません。
+    - `OPENCLAW_NOTION_TOKEN`: (任意) OpenClaw API 側 Notion bridge 用 token。未指定時は `NOTION_TOKEN` / `NOTION_API_KEY` を参照します。
+    - `OPENCLAW_NOTION_VERSION`: (任意) Notion-Version ヘッダ。Notion data source API を使うため未指定時 `2025-09-03`。
+    - `OPENCLAW_NOTION_MAX_RESULTS`: (任意) Notion data source query / block children の最大件数。未指定時 `5`。
+    - `OPENCLAW_NOTION_MAX_RESULT_CHARS`: (任意) OpenClaw へ戻す Notion 結果の文字数上限。未指定時 `4000`。
     - `FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS`: (`FAIRY_RUNTIME_MODE=openclaw` で必須) OpenClaw 直接実行を許可する channel ID の comma-separated list。Phase1 sandbox は `1094907178671939654`、Phase2 chat は権限確認後に `840827137451229210` を追加。
     - `FAIRY_OPENCLAW_STATE_DIR`: (任意) OpenClaw runtime の followup / heartbeat state 保存先。未指定時 `/var/lib/dokobasho/fairy-openclaw-state`。指定する場合は repo 外の絶対パスにしてください。
     - `NOTION_TOKEN`: (推奨) Notion連携トークン。`n8n` と `n8n-runners` の両方に渡します。
     - `NOTION_API_KEY`: (任意) 互換用の別名トークン。`NOTION_TOKEN` を優先します。
-    - `NOTION_VERSION`: (任意) Notion-Version ヘッダ。未指定時 `2022-06-28`。
+    - `NOTION_VERSION`: (任意) n8n / n8n-runners 向け Notion-Version ヘッダ。未指定時 `2022-06-28`。OpenClaw Notion bridge は `OPENCLAW_NOTION_VERSION` を正本にし、未指定時 `2025-09-03` を使います。
     - `NOTION_API_BASE_URL`: (任意) Notion API base URL。未指定時 `https://api.notion.com/v1`。
     - `FAIRY_ENABLE_MESSAGE_TRIGGER`: (任意) `true/1` でメンション・返信を `/fairy` と同等に処理。未指定時 `true`。`false/0` の場合は従来の `N8N_WEBHOOK_URL` 経路を使います。
     - `PERMANENT_MEMORY_SYNC_ENABLED`: (任意) `true/1` で恒久記憶同期Webhook受信を有効化。未指定時 `true`。
@@ -193,6 +198,14 @@ OPENCLAW_API_TIMEOUT_MS=180000
 FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS=1094907178671939654
 FAIRY_OPENCLAW_STATE_DIR=/var/lib/dokobasho/fairy-openclaw-state
 ```
+
+#### OpenClaw Notion bridge
+
+`OPENCLAW_NOTION_ENABLED=true` の場合、Notion 読取・書込は `openclaw-api` 内の安全ブリッジだけが実行します。`NOTION_TOKEN` / `OPENCLAW_NOTION_TOKEN` は OpenClaw 子プロセスの env allowlist には含めず、OpenClaw は JSON の `notion_requests` / `notion_writes` だけを返します。
+
+- 許可: 明示された page/block/data source の読取、page 作成、block 追記
+- 禁止: delete、archive、trash、move、duplicate、内容消去
+- 書込は「Notionに保存/追記」などの明示依頼があり、対象 URL/ID が解決できる場合だけ実行します。対象未指定時や検索依頼は実行しません
 
 Phase2 有効化時の allowlist 例:
 

@@ -731,6 +731,34 @@ const normalizeExplicitExternalLinkRequest = ({ content, links, channel }) => {
   };
 };
 
+const isNotionUrl = (value) => {
+  try {
+    const url = new URL(String(value || "").replace(/[)\].,、。]+$/u, ""));
+    const hostname = url.hostname.toLowerCase();
+    return hostname === "notion.so" || hostname.endsWith(".notion.so") ||
+      hostname === "notion.site" || hostname.endsWith(".notion.site");
+  } catch {
+    return false;
+  }
+};
+
+const collectNotionLinks = (content) =>
+  collectLinks(content).filter(isNotionUrl).slice(0, 5);
+
+const hasDestructiveNotionRequest = (content) => {
+  const text = normalizeMessageContent(content);
+  const targetsNotion = /notion/i.test(text) || /ノーション/.test(text) || collectNotionLinks(text).length > 0;
+  if (!targetsNotion) return false;
+  return /(?:削除|消して|消去|アーカイブ|ゴミ箱|ごみ箱|trash|archive|delete|remove|move|duplicate|複製|移動)/i.test(text);
+};
+
+const hasExplicitNotionWriteRequest = (content) => {
+  const text = normalizeMessageContent(content);
+  if (!/notion/i.test(text) && !/ノーション/.test(text) && collectNotionLinks(text).length === 0) return false;
+  if (hasDestructiveNotionRequest(text)) return false;
+  return /(?:書いて|書き込んで|保存して|残して|追加して|追記して|更新して|メモして|記録して|作って|作成して)/.test(text);
+};
+
 const normalizeRoleMentions = (mentions) => {
   if (!mentions || !mentions.roles) return [];
   const roles = mentions.roles;
@@ -947,6 +975,7 @@ const buildOpenClawPayload = ({
     channelRegistry,
   });
   const links = collectLinks(content);
+  const notionLinks = collectNotionLinks(content);
   const linkRequest = normalizeExplicitExternalLinkRequest({
     content: normalizedContent,
     links,
@@ -976,6 +1005,7 @@ const buildOpenClawPayload = ({
       role_mentions: normalizeRoleMentions(message && message.mentions),
       attachments: normalizeAttachments(message && message.attachments),
       links,
+      notion_links: notionLinks,
       ...(linkRequest ? { link_request: linkRequest } : {}),
     },
     context: {
@@ -987,6 +1017,12 @@ const buildOpenClawPayload = ({
       }),
       has_promised_followup: hasExplicitFollowupRequest(normalizedContent),
       matched_followup_ids: [],
+      notion: {
+        links: notionLinks,
+        explicit_write_requested: hasExplicitNotionWriteRequest(normalizedContent),
+        destructive_request: hasDestructiveNotionRequest(normalizedContent),
+        target_provided: notionLinks.length > 0,
+      },
     },
     memory: {
       member_ids: [],
@@ -1149,7 +1185,11 @@ const payloadHasInputRisk = (payload) => {
     Array.isArray(message.links) &&
     message.links.length > 0 &&
     !(message.link_request && message.link_request.allowed === true)
-  ) return "input_external_link";
+  ) {
+    const notionLinks = new Set((Array.isArray(message.notion_links) ? message.notion_links : []).map(String));
+    const nonNotionLinks = message.links.filter((link) => !notionLinks.has(String(link)) && !isNotionUrl(link));
+    if (nonNotionLinks.length > 0) return "input_external_link";
+  }
   return "";
 };
 const runInputRiskGate = (payload) => {

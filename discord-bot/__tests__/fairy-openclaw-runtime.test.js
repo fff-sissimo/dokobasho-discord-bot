@@ -720,6 +720,42 @@ describe("fairy OpenClaw runtime", () => {
     ).toBe("channel_not_verified");
   });
 
+  it("allows Notion links through the input gate with explicit Notion context", () => {
+    const allowedChannelIds = new Set(["1465296404455882860"]);
+    const payload = buildOpenClawPayload({
+      eventType: "message_create",
+      guildId: "840827137451229205",
+      channel: { id: "1465296404455882860", name: "vostok-vol02-general" },
+      message: {
+        id: "msg_notion",
+        author: { id: "user_1", username: "user" },
+        channel: { id: "1465296404455882860", name: "vostok-vol02-general" },
+        createdAt: new Date("2026-05-08T10:00:00.000Z"),
+        mentions: { everyone: false, roles: { map: () => [] } },
+        attachments: [],
+      },
+      content: "<@bot_1> この Notion に追記して https://www.notion.so/0123456789abcdef0123456789abcdef",
+      mentionsBot: true,
+      allowedChannelIds,
+    });
+
+    expect(payload.message.notion_links).toEqual(["https://www.notion.so/0123456789abcdef0123456789abcdef"]);
+    expect(payload.context.notion).toMatchObject({
+      links: ["https://www.notion.so/0123456789abcdef0123456789abcdef"],
+      explicit_write_requested: true,
+      destructive_request: false,
+      target_provided: true,
+    });
+    expect(
+      runOutboundGate({
+        response: validateOpenClawResponse({ action: "reply", body: "追記先を確認したよ" }),
+        channelId: payload.channel.id,
+        allowedChannelIds,
+        payload,
+      })
+    ).toEqual({ ok: true, reason: "ok" });
+  });
+
   it("keeps creation type resolvable only through custom verified registry", () => {
     const channelRegistry = loadOpenClawChannelRegistry({
       channelRegistry: {

@@ -91,6 +91,14 @@ test("trace logging config defaults off unless env enables it", () => {
   assert.equal(parseBoolean("false"), false);
   assert.equal(loadConfig({ OPENCLAW_API_KEY: "secret" }).traceLogs, false);
   assert.equal(loadConfig({ OPENCLAW_API_KEY: "secret", OPENCLAW_TRACE_LOGS: "true" }).traceLogs, true);
+  const notionConfig = loadConfig({
+    OPENCLAW_API_KEY: "secret",
+    OPENCLAW_NOTION_ENABLED: "true",
+    NOTION_API_KEY: "notion_secret",
+  });
+  assert.equal(notionConfig.notion.enabled, true);
+  assert.equal(notionConfig.notion.token, "notion_secret");
+  assert.equal(notionConfig.notion.version, "2025-09-03");
 });
 
 test("discord respond requires bearer auth", async () => {
@@ -146,6 +154,119 @@ test("discord respond returns normalized OpenClaw response", async () => {
     assert.deepEqual(body.approval.mentions, []);
     assert.deepEqual(body.approval.links, []);
     assert.equal(Object.prototype.hasOwnProperty.call(body, "diagnostics"), false);
+  });
+});
+
+test("normalizes Notion requests and drops destructive operations", () => {
+  const response = normalizeOpenClawResponse({
+    action: "reply",
+    body: "確認したよ",
+    notion_requests: [
+      { id: "read_1", operation: "retrieve_page", target: { url: "https://example.notion.site/0123456789abcdef0123456789abcdef" } },
+      { id: "search_1", operation: "search", query: "wide search" },
+      { id: "bad", operation: "delete_page", target: { id: "0123456789abcdef0123456789abcdef" } },
+    ],
+    notion_writes: [
+      { id: "write_1", operation: "append_blocks", target: { id: "0123456789abcdef0123456789abcdef" }, blocks: [] },
+      { id: "update_1", operation: "update_page_properties", target: { id: "0123456789abcdef0123456789abcdef" }, properties: { title: { title: [] } } },
+      { id: "bad_write", operation: "archive", target: { id: "0123456789abcdef0123456789abcdef" } },
+    ],
+  });
+  assert.deepEqual(response.notion_requests.map((item) => item.id), ["read_1"]);
+  assert.deepEqual(response.notion_writes.map((item) => item.id), ["write_1"]);
+});
+
+test("discord respond runs one Notion read tool round before final reply", async () => {
+  let calls = 0;
+  await withServer({
+    notionBridge: {
+      enabled: true,
+      runRead: async (request) => ({ ok: true, operation: request.operation, page: { title: "テストページ" } }),
+      runWrite: async () => { throw new Error("unexpected write"); },
+    },
+    runAgentCommand: async ({ message }) => {
+      calls += 1;
+      if (calls === 1) {
+        return JSON.stringify({
+          schema_version: 1,
+          action: "reply",
+          body: "読むね",
+          notion_requests: [
+            {
+              id: "read_1",
+              operation: "retrieve_page",
+              target: { url: "https://www.notion.so/0123456789abcdef0123456789abcdef" },
+            },
+          ],
+        });
+      }
+      assert.match(message, /tool_results/);
+      return JSON.stringify({
+        schema_version: 1,
+        action: "reply",
+        body: "テストページを確認したよ",
+        confidence: "high",
+      });
+    },
+  }, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/discord/respond`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer secret",
+      },
+      body: JSON.stringify({
+        request_id: "req_notion_read",
+        channel: { id: "1465296404455882860", type: "project", registered: true },
+        message: { id: "m1", content: "この Notion を見て", links: ["https://www.notion.so/0123456789abcdef0123456789abcdef"] },
+        context: {
+          notion: {
+            links: ["https://www.notion.so/0123456789abcdef0123456789abcdef"],
+            target_provided: true,
+          },
+        },
+      }),
+    });
+    const body = await response.json();
+    assert.equal(body.action, "reply");
+    assert.equal(body.body, "テストページを確認したよ");
+    assert.equal(calls, 2);
+  });
+});
+
+test("discord respond denies destructive Notion requests with visible response", async () => {
+  await withServer({
+    notionBridge: { enabled: true },
+    runAgentCommand: async () => JSON.stringify({
+      schema_version: 1,
+      action: "reply",
+      body: "消すね",
+      confidence: "high",
+    }),
+  }, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/discord/respond`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer secret",
+      },
+      body: JSON.stringify({
+        request_id: "req_notion_delete",
+        channel: { id: "1465296404455882860", type: "project", registered: true },
+        message: { id: "m1", content: "この Notion を削除して", links: ["https://www.notion.so/0123456789abcdef0123456789abcdef"] },
+        context: {
+          notion: {
+            links: ["https://www.notion.so/0123456789abcdef0123456789abcdef"],
+            destructive_request: true,
+            target_provided: true,
+          },
+        },
+      }),
+    });
+    const body = await response.json();
+    assert.equal(body.action, "reply");
+    assert.equal(body.reason, "notion_destructive_request_denied");
+    assert.match(body.body, /削除/);
   });
 });
 
@@ -216,6 +337,8 @@ test("normalizes followup state fields as arrays", () => {
       followup_candidates: [],
       checked_followup_ids: ["due_1"],
       closed_followup_ids: [],
+      notion_requests: [],
+      notion_writes: [],
       requires_approval: false,
       approval: {
         target_channel_id: "",
