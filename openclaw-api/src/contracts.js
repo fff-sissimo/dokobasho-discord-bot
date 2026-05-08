@@ -20,8 +20,12 @@ const VALID_FOLLOWUP_BASIS = new Set([
   "due_followup",
   "unknown",
 ]);
+const VALID_NOTION_READ_OPERATIONS = new Set(["search", "retrieve_page", "retrieve_block_children", "query_data_source"]);
+const VALID_NOTION_WRITE_OPERATIONS = new Set(["create_page", "append_blocks", "update_page_properties"]);
+const BLOCKED_NOTION_OPERATION_PATTERN = /delete|archive|trash|move|duplicate|erase|remove/i;
 
 const normalizeString = (value) => String(value || "").replace(/\s+/g, " ").trim();
+const normalizeLongString = (value) => String(value || "").replace(/\r\n/g, "\n").trim().slice(0, 8000);
 const hasOwn = (source, key) => Boolean(source && Object.prototype.hasOwnProperty.call(source, key));
 const pickOwn = (primary, key, fallback) => (hasOwn(primary, key) ? primary[key] : fallback && fallback[key]);
 const normalizeSafeIdentifier = (value) => {
@@ -44,6 +48,8 @@ const buildObserveResponse = (reason) => ({
   followup_candidates: [],
   checked_followup_ids: [],
   closed_followup_ids: [],
+  notion_requests: [],
+  notion_writes: [],
   requires_approval: false,
   approval: {
     target_channel_id: "",
@@ -55,6 +61,55 @@ const buildObserveResponse = (reason) => ({
 });
 
 const normalizeArray = (value) => (Array.isArray(value) ? value : []);
+
+const normalizeNotionTarget = (target) => {
+  const source = target && typeof target === "object" && !Array.isArray(target) ? target : {};
+  return {
+    id: normalizeString(source.id || source.page_id || source.data_source_id || source.database_id).slice(0, 120),
+    url: String(source.url || "").trim().slice(0, 500),
+    type: normalizeString(source.type || source.parent_type).slice(0, 40),
+  };
+};
+
+const normalizeNotionReadRequest = (request) => {
+  const source = request && typeof request === "object" && !Array.isArray(request) ? request : {};
+  const operation = normalizeString(source.operation);
+  if (!VALID_NOTION_READ_OPERATIONS.has(operation) || BLOCKED_NOTION_OPERATION_PATTERN.test(operation)) return null;
+  return {
+    id: normalizeSafeIdentifier(source.id) || `notion_read_${operation}`,
+    operation,
+    query: normalizeString(source.query).slice(0, 200),
+    target: normalizeNotionTarget(source.target),
+    page_size: Number.isFinite(Number(source.page_size))
+      ? Math.max(1, Math.min(Math.floor(Number(source.page_size)), 10))
+      : undefined,
+  };
+};
+
+const normalizeNotionWriteRequest = (request) => {
+  const source = request && typeof request === "object" && !Array.isArray(request) ? request : {};
+  const operation = normalizeString(source.operation);
+  if (!VALID_NOTION_WRITE_OPERATIONS.has(operation) || BLOCKED_NOTION_OPERATION_PATTERN.test(operation)) return null;
+  return {
+    id: normalizeSafeIdentifier(source.id) || `notion_write_${operation}`,
+    operation,
+    target: normalizeNotionTarget(source.target),
+    title: normalizeString(source.title).slice(0, 200),
+    body: normalizeLongString(source.body),
+    properties: source.properties && typeof source.properties === "object" && !Array.isArray(source.properties)
+      ? source.properties
+      : {},
+    archived: source.archived === true,
+    in_trash: source.in_trash === true,
+    erase_content: source.erase_content === true,
+  };
+};
+
+const normalizeNotionRequests = (value) =>
+  normalizeArray(value).map(normalizeNotionReadRequest).filter(Boolean);
+
+const normalizeNotionWrites = (value) =>
+  normalizeArray(value).map(normalizeNotionWriteRequest).filter(Boolean);
 
 const normalizeFollowupMetadata = (candidate) => {
   const source = candidate && typeof candidate === "object" && !Array.isArray(candidate) ? candidate : {};
@@ -127,6 +182,8 @@ const normalizeOpenClawResponse = (value) => {
     followup_candidates: normalizeFollowupCandidates(value.followup_candidates),
     checked_followup_ids: normalizeArray(value.checked_followup_ids),
     closed_followup_ids: normalizeArray(value.closed_followup_ids),
+    notion_requests: normalizeNotionRequests(value.notion_requests),
+    notion_writes: normalizeNotionWrites(value.notion_writes),
     requires_approval: Boolean(value.requires_approval),
     approval: normalizeApproval(value.approval),
   };
@@ -159,16 +216,21 @@ const loadWorkspaceContext = async ({ workspaceDir, promptFiles }) => {
 const buildAgentPrompt = ({ payload, workspaceContext }) => [
   "あなたは Discord 上の `どこばしょのようせい` の OpenClaw 判断 API です。",
   "Discord へ直接投稿せず、必ず JSON だけを返してください。",
-  "返却 JSON は schema_version, action, body, reason, confidence, memory_candidates, followup_candidates, checked_followup_ids, closed_followup_ids, requires_approval, approval を含めてください。",
+  "返却 JSON は schema_version, action, body, reason, confidence, memory_candidates, followup_candidates, checked_followup_ids, closed_followup_ids, notion_requests, notion_writes, requires_approval, approval を含めてください。",
+  "Notion が必要な場合だけ notion_requests または notion_writes に構造化リクエストを入れ、不要な場合は空配列にしてください。",
   "action は observe, reply, offer, assist, draft, publish_blocked のどれかだけです。",
   "everyone/here、role mention、外部 URL、添付、公開告知、運営判断、承認が必要な内容は requires_approval を true にするか publish_blocked にしてください。",
   "approval.mentions は常に空配列にしてください。許可された mention はありません。",
-  "外部 URL が含まれていても、URL 本文やリンク先内容を自動取得・要約・記憶しないでください。ユーザーが貼った URL は文字列として扱い、本文取得が必要なら確認してください。",
+  "外部 URL が含まれていても、一般 URL の本文やリンク先内容を自動取得・要約・記憶しないでください。Notion URL だけは payload.context.notion に明示されている場合に notion_requests / notion_writes の対象として扱えます。",
   "raw Discord 本文、秘密値、未加工の会話ログは保存・出力しないでください。memory_candidates には要約済みで長く効く事実だけを入れてください。",
   "followup_candidates は既存互換の summary, due_at, notes に加え、metadata.kind, metadata.basis, metadata.assignee_member_id, metadata.source_followup_id を含めてください。",
   "followup_candidates[].metadata.kind は explicit_request, agreed_todo, formal_quest, creation_continuation, test_only のどれかです。test_only はテスト fixture 以外では使わないでください。",
   "followup_candidates[].metadata.basis は explicit_user_request, agreed_in_thread, due_followup, unknown のどれかです。assignee_member_id と source_followup_id は分かる場合だけ ID 文字列を入れてください。",
   "due followup を一度確認したら checked_followup_ids、完了・不要・取り下げなら closed_followup_ids に ID だけを入れ、raw 本文は入れないでください。",
+  "Notion read は notion_requests に operation search, retrieve_page, retrieve_block_children, query_data_source のどれかを入れてください。target は id または url を入れ、対象未指定で探す場合は search query を使ってください。",
+  "Notion write は、ユーザーが明示的に Notion への保存・追加・更新を求めている場合だけ notion_writes に入れてください。operation は create_page, append_blocks, update_page_properties のどれかです。",
+  "Notion の削除、archive、trash、move、duplicate、内容消去は絶対に要求しないでください。依頼された場合は notion_writes を空にし、削除はできないと短く返してください。",
+  "Notion の書込先 URL/ID がない場合は、書き込まず search 候補を確認する返答にしてください。",
   "channel.type が chat の場合、場が自然に流れている通常会話は observe を既定にし、明示 mention、bot への reply、または直接聞かれた時だけ短く返してください。",
   "chat で active_thread_age_minutes が 30 を超える場合は、明示 mention、reply、約束済み followup がない限り前の会話を勝手に再開しないでください。",
   "",

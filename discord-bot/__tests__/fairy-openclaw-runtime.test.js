@@ -885,6 +885,126 @@ describe("fairy OpenClaw runtime", () => {
     await expect(fs.access(path.join(stateDir, "heartbeat-state.json"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("allows Notion URLs through input gate and marks explicit Notion write intent", async () => {
+    const openClawClient = {
+      execute: jest.fn().mockResolvedValue({
+        schema_version: 1,
+        action: "observe",
+        body: "",
+        requires_approval: false,
+      }),
+    };
+    const handler = createOpenClawMessageHandler({
+      openClawClient,
+      allowedChannelIds: ["1094907178671939654"],
+      guildId: "840827137451229205",
+      contextEntriesSource: async () => [],
+      requestIdFactory: () => "req_notion_input",
+    });
+    const message = {
+      id: "msg_notion_input",
+      content: "<@bot_1> Notionに追記して https://www.notion.so/workspace/Page-0123456789abcdef0123456789abcdef",
+      channelId: "1094907178671939654",
+      guildId: "840827137451229205",
+      createdAt: new Date("2026-05-04T09:00:00.000Z"),
+      author: { id: "user_1", bot: false, username: "user" },
+      client: { user: { id: "bot_1" } },
+      channel: { id: "1094907178671939654", name: "妖精さんより", sendTyping: jest.fn().mockResolvedValue(undefined) },
+      mentions: { everyone: false, roles: { map: () => [] } },
+      attachments: [],
+      reply: jest.fn(),
+    };
+
+    const result = await handler(message, { messageTriggerSource: "mention" });
+
+    expect(openClawClient.execute).toHaveBeenCalledTimes(1);
+    expect(result.payload.message.links).toEqual(["https://www.notion.so/workspace/Page-0123456789abcdef0123456789abcdef"]);
+    expect(result.payload.message.notion_links).toEqual(["https://www.notion.so/workspace/Page-0123456789abcdef0123456789abcdef"]);
+    expect(result.payload.context.notion).toEqual({
+      links: ["https://www.notion.so/workspace/Page-0123456789abcdef0123456789abcdef"],
+      explicit_write_requested: true,
+      destructive_request: false,
+      target_provided: true,
+    });
+    expect(result.gate.reason).toBe("non_posting_action:observe");
+  });
+
+  it("keeps non-Notion URLs blocked even when Notion support is enabled", () => {
+    const payload = buildOpenClawPayload({
+      eventType: "message_create",
+      guildId: "840827137451229205",
+      channel: { id: "1094907178671939654", name: "妖精さんより" },
+      message: {
+        id: "msg_mixed_link",
+        author: { id: "user_1", bot: false },
+        channel: { id: "1094907178671939654", name: "妖精さんより" },
+        mentions: { everyone: false, roles: { map: () => [] } },
+        attachments: [],
+      },
+      content: "Notionと外部リンク https://www.notion.so/workspace/Page-0123456789abcdef0123456789abcdef https://example.com",
+      mentionsBot: true,
+      allowedChannelIds: new Set(["1094907178671939654"]),
+    });
+
+    expect(
+      runOutboundGate({
+        response: validateOpenClawResponse({ action: "reply", body: "確認しました" }),
+        channelId: "1094907178671939654",
+        allowedChannelIds: new Set(["1094907178671939654"]),
+        payload,
+      }).reason
+    ).toBe("input_external_link");
+  });
+
+  it("treats notion.site share URLs as Notion targets", () => {
+    const payload = buildOpenClawPayload({
+      eventType: "message_create",
+      guildId: "840827137451229205",
+      channel: { id: "1094907178671939654", name: "妖精さんより" },
+      message: {
+        id: "msg_notion_site",
+        author: { id: "user_1", bot: false },
+        channel: { id: "1094907178671939654", name: "妖精さんより" },
+        mentions: { everyone: false, roles: { map: () => [] } },
+        attachments: [],
+      },
+      content: "Notionを読んで https://example.notion.site/Page-0123456789abcdef0123456789abcdef",
+      mentionsBot: true,
+      allowedChannelIds: new Set(["1094907178671939654"]),
+    });
+
+    expect(payload.message.notion_links).toEqual(["https://example.notion.site/Page-0123456789abcdef0123456789abcdef"]);
+    expect(
+      runOutboundGate({
+        response: validateOpenClawResponse({ action: "observe", body: "" }),
+        channelId: "1094907178671939654",
+        allowedChannelIds: new Set(["1094907178671939654"]),
+        payload,
+      }).reason
+    ).not.toBe("input_external_link");
+  });
+
+  it("marks destructive requests against a Notion URL even without the Notion word", () => {
+    const payload = buildOpenClawPayload({
+      eventType: "message_create",
+      guildId: "840827137451229205",
+      channel: { id: "1094907178671939654", name: "妖精さんより" },
+      message: {
+        id: "msg_notion_delete",
+        author: { id: "user_1", bot: false },
+        channel: { id: "1094907178671939654", name: "妖精さんより" },
+        mentions: { everyone: false, roles: { map: () => [] } },
+        attachments: [],
+      },
+      content: "このページを削除して https://www.notion.so/workspace/Page-0123456789abcdef0123456789abcdef",
+      mentionsBot: true,
+      allowedChannelIds: new Set(["1094907178671939654"]),
+    });
+
+    expect(payload.context.notion.destructive_request).toBe(true);
+    expect(payload.context.notion.explicit_write_requested).toBe(false);
+  });
+
   it("stops slash command role mention text before calling OpenClaw or mutating runtime state", async () => {
     const stateDir = await createTmpStateDir();
     const stateStore = createOpenClawStateStore({ stateDir });

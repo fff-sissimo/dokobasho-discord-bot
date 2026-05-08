@@ -7,6 +7,7 @@ const { loadConfig } = require("../src/config");
 const { buildOpenClawArgs, buildOpenClawChildEnv, buildRequestScopedSessionId } = require("../src/openclaw-runner");
 const { createServer } = require("../src/server");
 const { buildAgentPrompt, buildObserveResponse, normalizeOpenClawResponse, parseAgentResponse } = require("../src/contracts");
+const { createNotionBridge, extractNotionId } = require("../src/notion-bridge");
 
 const baseConfig = {
   host: "127.0.0.1",
@@ -23,6 +24,14 @@ const baseConfig = {
   maxBodyBytes: 65536,
   sessionScope: "request",
   promptFiles: ["AGENTS.md"],
+  notion: {
+    enabled: false,
+    token: "",
+    version: "2025-09-03",
+    baseUrl: "https://api.notion.com/v1",
+    maxResults: 5,
+    maxResultChars: 4000,
+  },
 };
 
 const withServer = async (options, fn) => {
@@ -137,6 +146,8 @@ test("normalizes followup state fields as arrays", () => {
       followup_candidates: [],
       checked_followup_ids: ["due_1"],
       closed_followup_ids: [],
+      notion_requests: [],
+      notion_writes: [],
       requires_approval: false,
       approval: {
         target_channel_id: "",
@@ -259,6 +270,8 @@ test("agent prompt includes phase2 chat restraint rules", () => {
   assert.match(prompt, /active_thread_age_minutes が 30 を超える/);
   assert.match(prompt, /checked_followup_ids/);
   assert.match(prompt, /closed_followup_ids/);
+  assert.match(prompt, /notion_requests/);
+  assert.match(prompt, /notion_writes/);
   assert.match(prompt, /metadata\.kind/);
   assert.match(prompt, /explicit_request, agreed_todo, formal_quest, creation_continuation, test_only/);
   assert.match(prompt, /metadata\.basis/);
@@ -302,8 +315,41 @@ test("agent prompt keeps URL, mention, and raw Discord body safety rules", () =>
 
   assert.match(prompt, /approval\.mentions は常に空配列/);
   assert.match(prompt, /許可された mention はありません/);
-  assert.match(prompt, /URL 本文やリンク先内容を自動取得・要約・記憶しない/);
+  assert.match(prompt, /一般 URL の本文やリンク先内容を自動取得・要約・記憶しない/);
   assert.match(prompt, /raw Discord 本文、秘密値、未加工の会話ログは保存・出力しない/);
+});
+
+test("normalizes Notion requests and drops destructive operations", () => {
+  const response = normalizeOpenClawResponse({
+    schema_version: 1,
+    action: "observe",
+    notion_requests: [
+      { id: "read_1", operation: "search", query: "どこでもない場所", page_size: 20 },
+      { id: "bad", operation: "delete_page", target: { id: "abc" } },
+    ],
+    notion_writes: [
+      {
+        id: "write_1",
+        operation: "append_blocks",
+        target: { url: "https://www.notion.so/example-0123456789abcdef0123456789abcdef", type: "page" },
+        body: "追記します",
+      },
+      { id: "bad_write", operation: "archive_page", target: { id: "abc" } },
+    ],
+  });
+
+  assert.deepEqual(response.notion_requests, [
+    {
+      id: "read_1",
+      operation: "search",
+      query: "どこでもない場所",
+      target: { id: "", url: "", type: "" },
+      page_size: 10,
+    },
+  ]);
+  assert.equal(response.notion_writes.length, 1);
+  assert.equal(response.notion_writes[0].operation, "append_blocks");
+  assert.equal(response.notion_writes[0].body, "追記します");
 });
 
 test("agent prompt keeps draft-only boundaries for approval-gated operations", () => {
@@ -483,4 +529,417 @@ test("loadConfig defaults to request scoped sessions with fixed compatibility op
     OPENCLAW_API_KEY: "secret",
     OPENCLAW_AGENT_SESSION_SCOPE: "fixed",
   }).sessionScope, "fixed");
+});
+
+test("loadConfig enables Notion bridge without exposing token to OpenClaw child env", () => {
+  const config = loadConfig({
+    OPENCLAW_API_KEY: "secret",
+    OPENCLAW_NOTION_ENABLED: "true",
+    NOTION_TOKEN: "synthetic-notion-token",
+    OPENCLAW_NOTION_MAX_RESULTS: "3",
+  });
+
+  assert.equal(config.notion.enabled, true);
+  assert.equal(config.notion.token, "synthetic-notion-token");
+  assert.equal(config.notion.version, "2025-09-03");
+  assert.equal(config.notion.maxResults, 3);
+  const childEnv = buildOpenClawChildEnv({ NOTION_TOKEN: "synthetic-notion-token", PATH: "/usr/bin" });
+  assert.equal(childEnv.NOTION_TOKEN, undefined);
+});
+
+test("Notion bridge extracts IDs from Notion URLs and denies destructive writes", async () => {
+  assert.equal(
+    extractNotionId("https://www.notion.so/workspace/Page-0123456789abcdef0123456789abcdef?pvs=4"),
+    "01234567-89ab-cdef-0123-456789abcdef"
+  );
+  const bridge = createNotionBridge({
+    config: {
+      notion: {
+        enabled: true,
+        token: "secret",
+        version: "2025-09-03",
+        baseUrl: "https://api.notion.com/v1",
+        maxResults: 3,
+        maxResultChars: 1000,
+      },
+    },
+    fetchImpl: async () => {
+      throw new Error("fetch should not be called for denied operation");
+    },
+    logger: { warn: () => {} },
+  });
+
+  assert.deepEqual(
+    await bridge.runWrite({
+      operation: "delete_page",
+      target: { id: "0123456789abcdef0123456789abcdef" },
+    }),
+    { ok: false, operation: "delete_page", reason: "notion_write_operation_denied" }
+  );
+  assert.deepEqual(
+    await bridge.runWrite({
+      operation: "append_blocks",
+      target: { id: "0123456789abcdef0123456789abcdef" },
+      archived: true,
+      body: "unsafe",
+    }),
+    { ok: false, operation: "append_blocks", reason: "notion_destructive_write_denied" }
+  );
+});
+
+test("Notion bridge performs search and append through server-side fetch", async () => {
+  const calls = [];
+  const bridge = createNotionBridge({
+    config: {
+      notion: {
+        enabled: true,
+        token: "secret",
+        version: "2025-09-03",
+        baseUrl: "https://api.notion.com/v1",
+        maxResults: 3,
+        maxResultChars: 2000,
+      },
+    },
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return {
+        ok: true,
+        text: async () => JSON.stringify(url.endsWith("/search")
+          ? { object: "list", results: [{ object: "page", id: "page_1", url: "https://www.notion.so/page_1" }] }
+          : { id: "block_1" }),
+      };
+    },
+    logger: { warn: () => {} },
+  });
+
+  const read = await bridge.runRead({ operation: "search", query: "Vostok", page_size: 10 });
+  const write = await bridge.runWrite({
+    operation: "append_blocks",
+    target: { id: "0123456789abcdef0123456789abcdef" },
+    body: "追記本文",
+  });
+
+  assert.equal(read.ok, true);
+  assert.equal(write.ok, true);
+  assert.equal(write.appended_blocks, 1);
+  assert.equal(calls[0].url, "https://api.notion.com/v1/search");
+  assert.equal(calls[0].options.headers.authorization, "Bearer secret");
+  assert.equal(calls[1].options.method, "PATCH");
+});
+
+test("Notion bridge sanitizes large results without breaking JSON structure", async () => {
+  const bridge = createNotionBridge({
+    config: {
+      notion: {
+        enabled: true,
+        token: "secret",
+        version: "2025-09-03",
+        baseUrl: "https://api.notion.com/v1",
+        maxResults: 3,
+        maxResultChars: 800,
+      },
+    },
+    fetchImpl: async () => ({
+      ok: true,
+      text: async () => JSON.stringify({
+        object: "list",
+        results: Array.from({ length: 5 }, (_item, index) => ({
+          object: "page",
+          id: `page_${index}`,
+          url: `https://www.notion.so/page_${index}`,
+          properties: { title: { title: [{ plain_text: "x".repeat(2000) }] } },
+        })),
+      }),
+    }),
+    logger: { warn: () => {} },
+  });
+
+  const read = await bridge.runRead({ operation: "search", query: "large", page_size: 3 });
+
+  assert.equal(read.ok, true);
+  assert.equal(read.result.object, "list");
+  assert.equal(Array.isArray(read.result.results), true);
+  assert.doesNotThrow(() => JSON.stringify(read.result));
+});
+
+test("discord respond runs one Notion read tool round before final reply", async () => {
+  const runAgentCommand = async ({ message }) => {
+    if (!message.includes("tool_results")) {
+      return JSON.stringify({
+        content: JSON.stringify({
+          schema_version: 1,
+          action: "observe",
+          notion_requests: [{ id: "notion_search", operation: "search", query: "どこでもない場所" }],
+        }),
+      });
+    }
+    return JSON.stringify({
+      content: JSON.stringify({
+        schema_version: 1,
+        action: "reply",
+        body: "候補を確認したよ",
+      }),
+    });
+  };
+  const notionBridge = {
+    enabled: true,
+    runRead: async (request) => ({ ok: true, operation: request.operation, result: { results: [{ id: "page_1" }] } }),
+    runWrite: async () => {
+      throw new Error("write should not run");
+    },
+  };
+
+  await withServer({ runAgentCommand, notionBridge }, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/discord/respond`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer secret",
+      },
+      body: JSON.stringify({
+        request_id: "req_notion_read",
+        channel: { id: "1094907178671939654" },
+      }),
+    });
+    const body = await response.json();
+    assert.equal(body.action, "reply");
+    assert.equal(body.body, "候補を確認したよ");
+  });
+});
+
+test("discord respond denies Notion reads to targets not present in the user payload", async () => {
+  const runAgentCommand = async ({ message }) => {
+    if (!message.includes("tool_results")) {
+      return JSON.stringify({
+        content: JSON.stringify({
+          schema_version: 1,
+          action: "observe",
+          notion_requests: [{
+            id: "read_mismatch",
+            operation: "retrieve_page",
+            target: { id: "ffffffffffffffffffffffffffffffff" },
+          }],
+        }),
+      });
+    }
+    assert.match(message, /notion_read_target_mismatch/);
+    return JSON.stringify({
+      content: JSON.stringify({
+        schema_version: 1,
+        action: "reply",
+        body: "対象が違うので読みません",
+      }),
+    });
+  };
+  const notionBridge = {
+    enabled: true,
+    runRead: async () => {
+      throw new Error("read should not run for mismatched target");
+    },
+    runWrite: async () => {
+      throw new Error("write should not run");
+    },
+  };
+
+  await withServer({ runAgentCommand, notionBridge }, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/discord/respond`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer secret",
+      },
+      body: JSON.stringify({
+        request_id: "req_notion_read_mismatch",
+        channel: { id: "1094907178671939654" },
+        context: {
+          notion: {
+            links: ["https://www.notion.so/workspace/Page-0123456789abcdef0123456789abcdef"],
+            target_provided: true,
+          },
+        },
+      }),
+    });
+    const body = await response.json();
+    assert.equal(body.action, "reply");
+    assert.equal(body.body, "対象が違うので読みません");
+  });
+});
+
+test("discord respond executes Notion writes only for explicit write payloads", async () => {
+  const runAgentCommand = async () => JSON.stringify({
+    content: JSON.stringify({
+      schema_version: 1,
+      action: "reply",
+      body: "Notionに追記しました",
+      notion_writes: [{
+        id: "write_1",
+        operation: "append_blocks",
+        target: { id: "0123456789abcdef0123456789abcdef" },
+        body: "追記本文",
+      }],
+    }),
+  });
+  const writeCalls = [];
+  const notionBridge = {
+    enabled: true,
+    runRead: async () => ({ ok: true }),
+    runWrite: async (request) => {
+      writeCalls.push(request);
+      return { ok: true, operation: request.operation };
+    },
+  };
+
+  await withServer({ runAgentCommand, notionBridge }, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/discord/respond`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer secret",
+      },
+      body: JSON.stringify({
+        request_id: "req_notion_write",
+        channel: { id: "1094907178671939654" },
+        context: {
+          notion: {
+            explicit_write_requested: true,
+            target_provided: true,
+            links: ["https://www.notion.so/workspace/Page-0123456789abcdef0123456789abcdef"],
+          },
+        },
+      }),
+    });
+    const body = await response.json();
+    assert.equal(body.action, "reply");
+    assert.equal(writeCalls.length, 1);
+  });
+
+  writeCalls.length = 0;
+  await withServer({ runAgentCommand, notionBridge }, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/discord/respond`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer secret",
+      },
+      body: JSON.stringify({
+        request_id: "req_notion_write_denied",
+        channel: { id: "1094907178671939654" },
+        context: { notion: { explicit_write_requested: false } },
+      }),
+    });
+    const body = await response.json();
+    assert.equal(body.action, "observe");
+    assert.equal(body.reason, "notion_write_requires_explicit_request");
+    assert.equal(writeCalls.length, 0);
+  });
+
+  await withServer({ runAgentCommand, notionBridge }, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/discord/respond`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer secret",
+      },
+      body: JSON.stringify({
+        request_id: "req_notion_write_no_target",
+        channel: { id: "1094907178671939654" },
+        context: { notion: { explicit_write_requested: true, target_provided: false } },
+      }),
+    });
+    const body = await response.json();
+    assert.equal(body.action, "reply");
+    assert.equal(body.reason, "notion_write_target_required");
+    assert.match(body.body, /Notion ページ/);
+    assert.equal(writeCalls.length, 0);
+  });
+});
+
+test("discord respond denies Notion writes to targets not present in the user payload", async () => {
+  const runAgentCommand = async () => JSON.stringify({
+    content: JSON.stringify({
+      schema_version: 1,
+      action: "reply",
+      body: "Notionに追記しました",
+      notion_writes: [{
+        id: "write_1",
+        operation: "append_blocks",
+        target: { id: "ffffffffffffffffffffffffffffffff" },
+        body: "追記本文",
+      }],
+    }),
+  });
+  const notionBridge = {
+    enabled: true,
+    runRead: async () => ({ ok: true }),
+    runWrite: async () => {
+      throw new Error("write should not run for mismatched target");
+    },
+  };
+
+  await withServer({ runAgentCommand, notionBridge }, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/discord/respond`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer secret",
+      },
+      body: JSON.stringify({
+        request_id: "req_notion_write_mismatch",
+        channel: { id: "1094907178671939654" },
+        context: {
+          notion: {
+            explicit_write_requested: true,
+            target_provided: true,
+            links: ["https://www.notion.so/workspace/Page-0123456789abcdef0123456789abcdef"],
+          },
+        },
+      }),
+    });
+    const body = await response.json();
+    assert.equal(body.action, "observe");
+    assert.equal(body.reason, "notion_write_target_mismatch");
+  });
+});
+
+test("discord respond overrides destructive Notion requests with a visible denial", async () => {
+  const runAgentCommand = async () => JSON.stringify({
+    content: JSON.stringify({
+      schema_version: 1,
+      action: "reply",
+      body: "削除しました",
+    }),
+  });
+  const notionBridge = {
+    enabled: true,
+    runRead: async () => ({ ok: true }),
+    runWrite: async () => {
+      throw new Error("write should not run for destructive request");
+    },
+  };
+
+  await withServer({ runAgentCommand, notionBridge }, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/discord/respond`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer secret",
+      },
+      body: JSON.stringify({
+        request_id: "req_notion_delete_denied",
+        channel: { id: "1094907178671939654" },
+        context: {
+          notion: {
+            destructive_request: true,
+            explicit_write_requested: false,
+            target_provided: true,
+            links: ["https://www.notion.so/workspace/Page-0123456789abcdef0123456789abcdef"],
+          },
+        },
+      }),
+    });
+    const body = await response.json();
+    assert.equal(body.action, "reply");
+    assert.equal(body.reason, "notion_destructive_request_denied");
+    assert.match(body.body, /削除/);
+  });
 });
