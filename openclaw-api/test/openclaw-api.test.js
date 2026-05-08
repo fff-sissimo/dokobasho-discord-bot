@@ -1154,9 +1154,32 @@ test("agent prompt keeps draft-only boundaries for approval-gated operations", (
   });
 
   assert.match(prompt, /Discord へ直接投稿せず、必ず JSON だけを返してください/);
-  assert.match(prompt, /公開告知、運営判断、承認が必要な内容/);
-  assert.match(prompt, /requires_approval を true にするか publish_blocked/);
+  assert.match(prompt, /外部投稿文確定\/予約\/運営判断/);
+  assert.match(prompt, /requires_approval\/publish_blocked/);
   assert.match(prompt, /approval\.mentions は常に空配列/);
+});
+
+test("agent prompts treat live thumbnail self-comment consultation as a normal reply", () => {
+  const payload = {
+    channel: { id: "985145703774978059", type: "chat", registered: true },
+    message: {
+      id: "msg_live_thumbnail_comment",
+      author_id: "user_1",
+      content: "生放送のサムネイルに君が登場するんだけど、その中でなにか伝えたいことある？",
+      mentions_bot: true,
+    },
+    context: { recent_messages: [] },
+  };
+  const prompt = buildAgentPrompt({ workspaceContext: "runtime context", payload });
+  const retryPrompt = buildRetryAgentPrompt({ payload });
+  const compactPrompt = buildCompactAgentPrompt({ payload });
+
+  for (const text of [prompt, retryPrompt, compactPrompt]) {
+    assert.match(text, /本人コメント/);
+    assert.match(text, /投稿\/予約\/添付\/URL\/mentionなしなら reply/);
+    assert.match(text, /公開物風だけなら承認不要/);
+    assert.match(text, /外部投稿文確定\/予約\/運営判断/);
+  }
 });
 
 test("retry agent prompt stays short and excludes runtime context sections", () => {
@@ -1182,6 +1205,7 @@ test("retry agent prompt stays short and excludes runtime context sections", () 
   assert.match(retryPrompt, /一人称は `僕`/);
   assert.match(retryPrompt, /説明ではなく短い挨拶そのもの/);
   assert.match(retryPrompt, /改行箇条書き/);
+  assert.match(retryPrompt, /公開物風だけなら承認不要/);
   assert.match(retryPrompt, /payload\.channel\.policy/);
   assert.match(retryPrompt, /vostok_qa_restricted/);
   assert.match(retryPrompt, /# Discord payload/);
@@ -1209,6 +1233,7 @@ test("compact agent prompt stays short and keeps direct-response safety rules", 
   assert.match(compactPrompt, /一人称は `僕`/);
   assert.match(compactPrompt, /説明ではなく短い挨拶そのもの/);
   assert.match(compactPrompt, /改行箇条書き/);
+  assert.match(compactPrompt, /公開物風だけなら承認不要/);
   assert.match(compactPrompt, /OpenClaw 自身の web access を使ってよい/);
   assert.match(compactPrompt, /payload\.message\.web_targets/);
   assert.match(compactPrompt, /API 安全確認済み/);
