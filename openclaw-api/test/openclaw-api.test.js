@@ -181,8 +181,21 @@ test("normalizes response body without flattening intentional line breaks", () =
     },
   });
 
-  assert.equal(response.body, "A=返信量: 短めでOK。\nB=安全gate: 自動返信可。\n\nC=followup: 作成なし。");
-  assert.equal(response.approval.body, "下書き 1\n下書き 2");
+  assert.equal(response.body, "A=返信量: 短めでOK。\n  B=安全gate: 自動返信可。\n\n  C=followup: 作成なし。");
+  assert.equal(response.approval.body, "下書き 1\n  下書き 2");
+});
+
+test("preserves nested markdown indentation in structured body and approval body", () => {
+  const response = normalizeOpenClawResponse({
+    action: "reply",
+    body: "  - 親  \r\n  - 子  \r\n    - 孫  ",
+    approval: {
+      body: "  - 親  \r\n  - 子  \r\n    - 孫  ",
+    },
+  });
+
+  assert.equal(response.body, "- 親\n  - 子\n    - 孫");
+  assert.equal(response.approval.body, "- 親\n  - 子\n    - 孫");
 });
 
 test("normalizes followup state fields as arrays", () => {
@@ -964,7 +977,21 @@ test("non-json text fallback preserves intentional line breaks", () => {
   }));
 
   assert.equal(response.action, "reply");
-  assert.equal(response.body, "A=返信量: 短めでOK。\nB=安全gate: 自動返信可。\n\nC=followup: 作成なし。");
+  assert.equal(response.body, "A=返信量: 短めでOK。\n  B=安全gate: 自動返信可。\n\n  C=followup: 作成なし。");
+  assert.equal(response.reason, "non_json_openclaw_text");
+});
+
+test("non-json text fallback preserves nested markdown indentation", () => {
+  const response = parseAgentResponse(JSON.stringify({
+    payloads: [
+      {
+        text: "  - 親  \r\n  - 子  \r\n    - 孫  ",
+      },
+    ],
+  }));
+
+  assert.equal(response.action, "reply");
+  assert.equal(response.body, "- 親\n  - 子\n    - 孫");
   assert.equal(response.reason, "non_json_openclaw_text");
 });
 

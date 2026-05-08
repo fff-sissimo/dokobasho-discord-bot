@@ -665,11 +665,12 @@ const startTypingKeepalive = ({ channel, logger, intervalMs = TYPING_KEEPALIVE_I
 };
 
 const normalizeMessageContent = (value) => String(value || "").replace(/\s+/g, " ").trim();
+const trimLineEnd = (line) => line.replace(/[^\S\n]+$/g, "");
 const normalizeOutboundMessageContent = (value) =>
   String(value || "")
     .replace(/\r\n?/g, "\n")
     .split("\n")
-    .map((line) => line.replace(/[^\S\n]+/g, " ").trim())
+    .map(trimLineEnd)
     .join("\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();

@@ -888,8 +888,18 @@ describe("fairy OpenClaw runtime", () => {
       reason: "  line\nbreak reason  ",
     });
 
-    expect(response.body).toBe("A=返信量: 短めでOK。\nB=安全gate: 自動返信可。\n\nC=followup: 作成なし。");
+    expect(response.body).toBe("A=返信量: 短めでOK。\n  B=安全gate: 自動返信可。\n\n  C=followup: 作成なし。");
     expect(response.reason).toBe("line break reason");
+  });
+
+  it("preserves nested markdown indentation after validating OpenClaw response", () => {
+    const response = validateOpenClawResponse({
+      schema_version: 1,
+      action: "reply",
+      body: "  - 親  \r\n  - 子  \r\n    - 孫  ",
+    });
+
+    expect(response.body).toBe("- 親\n  - 子\n    - 孫");
   });
 
   it("whitelist-normalizes OpenClaw diagnostics without keeping raw unsafe values", () => {
@@ -1581,7 +1591,7 @@ describe("fairy OpenClaw runtime", () => {
       execute: jest.fn().mockResolvedValue({
         schema_version: 1,
         action: "reply",
-        body: "確認しました",
+        body: "- 親\n  - 子\n    - 孫",
         requires_approval: false,
       }),
     };
@@ -1613,7 +1623,7 @@ describe("fairy OpenClaw runtime", () => {
     expect(result.replyMessageId).toBe("reply_1");
     expect(sendTyping).toHaveBeenCalledTimes(1);
     expect(message.reply).toHaveBeenCalledWith({
-      content: "確認しました",
+      content: "- 親\n  - 子\n    - 孫",
       allowedMentions: SAFE_ALLOWED_MENTIONS,
     });
   });

@@ -37,11 +37,12 @@ const VALID_FOLLOWUP_BASIS = new Set([
 ]);
 
 const normalizeString = (value) => String(value || "").replace(/\s+/g, " ").trim();
+const trimLineEnd = (line) => line.replace(/[^\S\n]+$/g, "");
 const normalizeResponseBodyText = (value) =>
   String(value || "")
     .replace(/\r\n?/g, "\n")
     .split("\n")
-    .map((line) => line.replace(/[^\S\n]+/g, " ").trim())
+    .map(trimLineEnd)
     .join("\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
