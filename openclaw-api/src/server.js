@@ -12,6 +12,7 @@ const {
   parseAgentResponse,
   parseDirectAgentResponse,
 } = require("./contracts");
+const { createN8nDispatcher } = require("./n8n-dispatcher");
 const { createNotionBridge, extractNotionId } = require("./notion-bridge");
 const { runOpenClawAgent } = require("./openclaw-runner");
 
@@ -193,6 +194,15 @@ const hasWriteTargetProvided = (payload) =>
 const hasDestructiveNotionRequest = (payload) =>
   Boolean(payload && payload.context && payload.context.notion && payload.context.notion.destructive_request);
 
+const hasNotionWorkIntent = (payload) => {
+  const notion = payload && payload.context && payload.context.notion ? payload.context.notion : {};
+  return Boolean(
+    notion.explicit_write_requested ||
+    notion.target_provided ||
+    Array.isArray(notion.links) && notion.links.length > 0
+  );
+};
+
 const buildNotionNoticeResponse = (reason, body) => ({
   ...buildObserveResponse(reason),
   action: "reply",
@@ -329,12 +339,98 @@ const executeNotionRound = async ({ payload, response, notionBridge, workspaceCo
   return nextResponse;
 };
 
+const buildN8nNoticeResponse = (reason, body) => ({
+  ...buildObserveResponse(reason),
+  action: "reply",
+  body,
+  confidence: "medium",
+});
+
+const isN8nWriteOperation = (request) =>
+  ["notion.create_page", "notion.append_blocks"].includes(String(request && request.operation || "").trim());
+
+const isN8nTargetedReadOperation = (request) =>
+  ["notion.retrieve_page", "notion.retrieve_block_children", "notion.query_data_source"].includes(
+    String(request && request.operation || "").trim()
+  );
+
+const requestHasTarget = (request) => {
+  const target = request && request.target ? request.target : {};
+  return Boolean(target.id || target.page_id || target.data_source_id || target.database_id || target.url);
+};
+
+const validateN8nWorkflowRequestForPayload = ({ payload, request }) => {
+  if (String(request && request.workflow_key || "") !== "notion.safe_ops") {
+    return { ok: false, reason: "n8n_workflow_not_allowed" };
+  }
+  if (isN8nWriteOperation(request)) {
+    if (!shouldExecuteWrites(payload)) return { ok: false, reason: "notion_write_requires_explicit_request" };
+    if (!hasWriteTargetProvided(payload)) return { ok: false, reason: "notion_write_target_required" };
+    if (!requestHasTarget(request)) return { ok: false, reason: "notion_write_target_required" };
+    if (!requestTargetsAllowedPayloadTarget({ payload, request })) {
+      return { ok: false, reason: "notion_write_target_mismatch" };
+    }
+  }
+  if (isN8nTargetedReadOperation(request) && requestHasTarget(request) && !requestTargetsAllowedPayloadTarget({ payload, request })) {
+    return { ok: false, reason: "notion_read_target_mismatch" };
+  }
+  return { ok: true, reason: "ok" };
+};
+
+const executeN8nWorkflowRound = async ({ payload, response, n8nDispatcher, logger }) => {
+  const requests = Array.isArray(response.n8n_workflow_requests) ? response.n8n_workflow_requests : [];
+  if (requests.length === 0) {
+    if (hasNotionWorkIntent(payload)) {
+      return buildN8nNoticeResponse(
+        "n8n_workflow_request_missing",
+        "Notion 作業を n8n workflow に渡す依頼を作れませんでした。対象と作業内容をもう一度短く教えてください。"
+      );
+    }
+    return response;
+  }
+  const safeReplies = [];
+  const workflowResults = [];
+  for (const request of requests.slice(0, 3)) {
+    const validation = validateN8nWorkflowRequestForPayload({ payload, request });
+    if (!validation.ok) {
+      return buildN8nNoticeResponse(validation.reason, "Notion の対象または実行条件を確認できなかったため、作業を止めました。");
+    }
+    const result = await n8nDispatcher.run({ payload, request });
+    workflowResults.push({
+      id: request.id,
+      workflow_key: request.workflow_key,
+      operation: request.operation,
+      ok: result.ok,
+      reason: result.reason,
+      results: result.results,
+    });
+    if (!result.ok) {
+      if (logger && typeof logger.warn === "function") {
+        logger.warn({
+          request_id: payload.request_id,
+          workflow_key: request.workflow_key,
+          operation: request.operation,
+          reason: result.reason,
+        }, "[openclaw-api] n8n workflow dispatch failed");
+      }
+      return buildN8nNoticeResponse(result.reason, result.safe_reply);
+    }
+    if (result.safe_reply) safeReplies.push(result.safe_reply);
+  }
+  return {
+    ...response,
+    body: safeReplies.length > 0 ? safeReplies.join("\n").slice(0, 1600) : response.body,
+    n8n_workflow_results: workflowResults,
+  };
+};
+
 const createServer = ({
   config = loadConfig(),
   logger = console,
   runAgentCommand = runOpenClawAgent,
   loadContext = loadWorkspaceContext,
   notionBridge = createNotionBridge({ config, logger }),
+  n8nDispatcher = createN8nDispatcher({ config }),
 } = {}) => {
   assertRuntimeConfig(config);
   return http.createServer(async (req, res) => {
@@ -410,7 +506,12 @@ const createServer = ({
         ? await runDirectOpenClawTurn({ config, payload, workspaceContext, runAgentCommand })
         : await runOpenClawTurn({ config, payload, workspaceContext, runAgentCommand });
       const response = directAgent
-        ? initialResponse
+        ? await executeN8nWorkflowRound({
+            payload,
+            response: initialResponse,
+            n8nDispatcher,
+            logger,
+          })
         : await executeNotionRound({
             payload,
             response: initialResponse,
@@ -427,6 +528,9 @@ const createServer = ({
         action: response.action,
         notion_reads: Array.isArray(initialResponse.notion_requests) ? initialResponse.notion_requests.length : 0,
         notion_writes: Array.isArray(response.notion_writes) ? response.notion_writes.length : 0,
+        n8n_workflow_requests: Array.isArray(initialResponse.n8n_workflow_requests)
+          ? initialResponse.n8n_workflow_requests.length
+          : 0,
       }, "[openclaw-api] request completed");
       sendJson(res, 200, response);
     } catch (error) {

@@ -5,6 +5,7 @@ const DEFAULT_PROMPT_FILES = [
   "IDENTITY.md",
   "SOUL.md",
   "TOOLS.md",
+  "skills/n8n-workflow-dispatcher/SKILL.md",
   "HEARTBEAT.md",
   "memory/README.md",
 ];
@@ -21,6 +22,12 @@ const parsePositiveInt = (value, fallback) => {
 };
 
 const parsePromptFiles = (value) =>
+  String(value || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+const parseList = (value) =>
   String(value || "")
     .split(",")
     .map((item) => item.trim())
@@ -58,6 +65,13 @@ const loadConfig = (env = process.env) => {
       maxResults: parsePositiveInt(env.OPENCLAW_NOTION_MAX_RESULTS, 5),
       maxResultChars: parsePositiveInt(env.OPENCLAW_NOTION_MAX_RESULT_CHARS, 4000),
     },
+    n8nDispatch: {
+      enabled: parseBoolean(env.OPENCLAW_N8N_DISPATCH_ENABLED, false),
+      url: String(env.OPENCLAW_N8N_DISPATCH_URL || "").trim(),
+      secret: String(env.OPENCLAW_N8N_DISPATCH_SECRET || "").trim(),
+      allowedWorkflows: parseList(env.OPENCLAW_N8N_ALLOWED_WORKFLOWS || "notion.safe_ops"),
+      timeoutMs: parsePositiveInt(env.OPENCLAW_N8N_DISPATCH_TIMEOUT_MS, 20000),
+    },
   };
 };
 
@@ -67,6 +81,10 @@ const assertRuntimeConfig = (config) => {
   if (!config.workspaceDir) missing.push("OPENCLAW_WORKSPACE_DIR");
   if (!config.command) missing.push("OPENCLAW_COMMAND");
   if (config.notion && config.notion.enabled && !config.notion.token) missing.push("OPENCLAW_NOTION_TOKEN");
+  if (config.n8nDispatch && config.n8nDispatch.enabled) {
+    if (!config.n8nDispatch.url) missing.push("OPENCLAW_N8N_DISPATCH_URL");
+    if (!config.n8nDispatch.secret) missing.push("OPENCLAW_N8N_DISPATCH_SECRET");
+  }
   if (missing.length > 0) {
     throw new Error(`missing OpenClaw API config: ${missing.join(", ")}`);
   }

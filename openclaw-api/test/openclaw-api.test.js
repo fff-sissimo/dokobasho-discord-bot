@@ -15,6 +15,7 @@ const {
   parseAgentResponse,
   parseDirectAgentResponse,
 } = require("../src/contracts");
+const { buildDispatchPayload, createN8nDispatcher } = require("../src/n8n-dispatcher");
 const { createNotionBridge, extractNotionId } = require("../src/notion-bridge");
 
 const baseConfig = {
@@ -39,6 +40,13 @@ const baseConfig = {
     baseUrl: "https://api.notion.com/v1",
     maxResults: 5,
     maxResultChars: 4000,
+  },
+  n8nDispatch: {
+    enabled: false,
+    url: "",
+    secret: "",
+    allowedWorkflows: ["notion.safe_ops"],
+    timeoutMs: 20000,
   },
 };
 
@@ -156,6 +164,7 @@ test("normalizes followup state fields as arrays", () => {
       closed_followup_ids: [],
       notion_requests: [],
       notion_writes: [],
+      n8n_workflow_requests: [],
       requires_approval: false,
       approval: {
         target_channel_id: "",
@@ -389,6 +398,9 @@ test("direct agent prompt includes direct handoff safety boundaries", () => {
 
   assert.match(prompt, /Discord へ直接投稿しない/);
   assert.match(prompt, /最終報告だけ/);
+  assert.match(prompt, /n8n_workflow_requests/);
+  assert.match(prompt, /Notion MCP、Notion token、n8n webhook secret/);
+  assert.match(prompt, /notion\.safe_ops/);
   assert.match(prompt, /Notion は読取、ページ作成、既存ページへの追記だけ許可/);
   assert.match(prompt, /削除、archive、trash、move、duplicate、内容消去/);
   assert.match(prompt, /payload\.message\.web_targets/);
@@ -415,6 +427,37 @@ test("direct agent text output becomes a safe Discord reply", () => {
   assert.doesNotMatch(response.body, /https?:\/\//);
   assert.doesNotMatch(response.body, /@everyone/);
   assert.doesNotMatch(response.body, /secret-value/);
+});
+
+test("direct agent JSON output keeps n8n workflow requests for server-side dispatch", () => {
+  const response = parseDirectAgentResponse(JSON.stringify({
+    payloads: [
+      {
+        text: JSON.stringify({
+          body: "n8n workflow に渡します。",
+          n8n_workflow_requests: [
+            {
+              id: "append_1",
+              workflow_key: "notion.safe_ops",
+              operation: "notion.append_blocks",
+              target: { url: "https://www.notion.so/Page-0123456789abcdef0123456789abcdef" },
+              input: { body: "追記本文" },
+            },
+            {
+              id: "bad",
+              workflow_key: "notion.safe_ops",
+              operation: "notion.archive_page",
+            },
+          ],
+        }),
+      },
+    ],
+  }));
+
+  assert.equal(response.action, "reply");
+  assert.equal(response.n8n_workflow_requests.length, 1);
+  assert.equal(response.n8n_workflow_requests[0].operation, "notion.append_blocks");
+  assert.equal(response.n8n_workflow_requests[0].input.body, "追記本文");
 });
 
 test("direct reply normalization preserves inline hyphen text while normalizing Discord bullet markers", () => {
@@ -566,6 +609,7 @@ test("OpenClaw child env keeps runtime secrets out of the agent process", () => 
     OPENCLAW_API_KEY: "synthetic-api-key",
     BOT_TOKEN: "synthetic-bot-token",
     N8N_WEBHOOK_SECRET: "synthetic-webhook-secret",
+    OPENCLAW_N8N_DISPATCH_SECRET: "synthetic-dispatch-secret",
     NOTION_TOKEN: "synthetic-notion-token",
   });
 
@@ -575,6 +619,7 @@ test("OpenClaw child env keeps runtime secrets out of the agent process", () => 
   assert.equal(childEnv.OPENCLAW_API_KEY, undefined);
   assert.equal(childEnv.BOT_TOKEN, undefined);
   assert.equal(childEnv.N8N_WEBHOOK_SECRET, undefined);
+  assert.equal(childEnv.OPENCLAW_N8N_DISPATCH_SECRET, undefined);
   assert.equal(childEnv.NOTION_TOKEN, undefined);
 });
 
@@ -600,6 +645,71 @@ test("loadConfig enables Notion bridge without exposing token to OpenClaw child 
   assert.equal(config.notion.maxResults, 3);
   const childEnv = buildOpenClawChildEnv({ NOTION_TOKEN: "synthetic-notion-token", PATH: "/usr/bin" });
   assert.equal(childEnv.NOTION_TOKEN, undefined);
+});
+
+test("loadConfig enables n8n dispatch without exposing secret to OpenClaw child env", () => {
+  const config = loadConfig({
+    OPENCLAW_API_KEY: "secret",
+    OPENCLAW_N8N_DISPATCH_ENABLED: "true",
+    OPENCLAW_N8N_DISPATCH_URL: "http://n8n:5678/webhook/openclaw/workflow-dispatch",
+    OPENCLAW_N8N_DISPATCH_SECRET: "synthetic-dispatch-secret",
+    OPENCLAW_N8N_ALLOWED_WORKFLOWS: "notion.safe_ops",
+  });
+
+  assert.equal(config.n8nDispatch.enabled, true);
+  assert.equal(config.n8nDispatch.url, "http://n8n:5678/webhook/openclaw/workflow-dispatch");
+  assert.deepEqual(config.n8nDispatch.allowedWorkflows, ["notion.safe_ops"]);
+  const childEnv = buildOpenClawChildEnv({ OPENCLAW_N8N_DISPATCH_SECRET: "secret", PATH: "/usr/bin" });
+  assert.equal(childEnv.OPENCLAW_N8N_DISPATCH_SECRET, undefined);
+});
+
+test("n8n dispatcher sends only safe metadata and redacts unsafe failure reasons", async () => {
+  const request = {
+    id: "append_1",
+    workflow_key: "notion.safe_ops",
+    operation: "notion.append_blocks",
+    target: { url: "https://www.notion.so/Page-0123456789abcdef0123456789abcdef" },
+    input: { body: "追記本文" },
+  };
+  const payload = {
+    request_id: "req_dispatch",
+    guild_id: "guild_1",
+    channel: { id: "channel_1", type: "project", thread_id: "thread_1" },
+    message: { id: "msg_1", author_id: "user_1", content: "raw token=secret-value" },
+    context: {
+      notion: {
+        links: ["https://www.notion.so/Page-0123456789abcdef0123456789abcdef"],
+        explicit_write_requested: true,
+        target_provided: true,
+      },
+    },
+  };
+  const dispatchPayload = buildDispatchPayload({ payload, request });
+  assert.equal(dispatchPayload.discord.message_id, "msg_1");
+  assert.equal(dispatchPayload.discord.author_id, "user_1");
+  assert.equal(dispatchPayload.message, undefined);
+  assert.doesNotMatch(JSON.stringify(dispatchPayload), /raw token=secret-value/);
+
+  const dispatcher = createN8nDispatcher({
+    config: {
+      n8nDispatch: {
+        enabled: true,
+        url: "http://n8n.local/webhook/openclaw/workflow-dispatch",
+        secret: "secret",
+        allowedWorkflows: ["notion.safe_ops"],
+        timeoutMs: 1000,
+      },
+    },
+    fetchImpl: async () => ({
+      ok: false,
+      status: 500,
+      text: async () => JSON.stringify({ reason: "token=secret-value failed" }),
+    }),
+  });
+  const result = await dispatcher.run({ payload, request });
+  assert.equal(result.ok, false);
+  assert.doesNotMatch(result.reason, /secret-value/);
+  assert.doesNotMatch(result.safe_reply, /secret-value/);
 });
 
 test("Notion bridge extracts IDs from Notion URLs and denies destructive writes", async () => {
@@ -776,11 +886,11 @@ test("discord respond direct mode skips Notion bridge and accepts normal text ou
   const runAgentCommand = async ({ message }) => {
     prompts.push(message);
     assert.match(message, /direct handoff agent/);
-    assert.match(message, /JSON contract の notion_requests \/ notion_writes を作る必要はありません/);
+    assert.match(message, /n8n_workflow_requests/);
     return JSON.stringify({
       payloads: [
         {
-          text: "Notionに追記しました。\n対象: test-page",
+          text: "外部URLを確認しました。\n対象: report",
         },
       ],
     });
@@ -795,6 +905,63 @@ test("discord respond direct mode skips Notion bridge and accepts normal text ou
       },
       body: JSON.stringify({
         request_id: "req_direct_text",
+        execution: { mode: "direct_agent", reason: "web_target" },
+        channel: { id: "1465296404455882860", type: "project" },
+        context: {
+          web: { explicit_requested: true, targets: [] },
+        },
+      }),
+    });
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(body.action, "reply");
+    assert.equal(body.body, "外部URLを確認しました。\n対象: report");
+    assert.equal(prompts.length, 1);
+  });
+});
+
+test("discord respond direct mode dispatches n8n workflow requests with server-side bridge", async () => {
+  const n8nDispatcher = {
+    enabled: true,
+    run: async ({ request }) => {
+      assert.equal(request.workflow_key, "notion.safe_ops");
+      assert.equal(request.operation, "notion.append_blocks");
+      return {
+        ok: true,
+        reason: "ok",
+        safe_reply: "Notionに追記しました。\n対象: test-page",
+        results: [{ id: request.id, operation: request.operation, status: "ok", target_title: "test-page" }],
+      };
+    },
+  };
+  const runAgentCommand = async () => JSON.stringify({
+    payloads: [
+      {
+        text: JSON.stringify({
+          body: "n8n workflow に渡します。",
+          n8n_workflow_requests: [
+            {
+              id: "append_1",
+              workflow_key: "notion.safe_ops",
+              operation: "notion.append_blocks",
+              target: { url: "https://www.notion.so/workspace/Page-0123456789abcdef0123456789abcdef" },
+              input: { body: "追記本文" },
+            },
+          ],
+        }),
+      },
+    ],
+  });
+
+  await withServer({ runAgentCommand, n8nDispatcher }, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/discord/respond`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer secret",
+      },
+      body: JSON.stringify({
+        request_id: "req_direct_n8n",
         execution: { mode: "direct_agent", reason: "notion_target" },
         channel: { id: "1465296404455882860", type: "project" },
         context: {
@@ -810,7 +977,40 @@ test("discord respond direct mode skips Notion bridge and accepts normal text ou
     assert.equal(response.status, 200);
     assert.equal(body.action, "reply");
     assert.equal(body.body, "Notionに追記しました。\n対象: test-page");
-    assert.equal(prompts.length, 1);
+    assert.equal(body.n8n_workflow_results.length, 1);
+  });
+});
+
+test("discord respond direct mode refuses Notion completion without n8n workflow request", async () => {
+  const runAgentCommand = async () => JSON.stringify({
+    payloads: [{ text: "Notionに追記しました。\n対象: test-page" }],
+  });
+
+  await withServer({ runAgentCommand }, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/discord/respond`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer secret",
+      },
+      body: JSON.stringify({
+        request_id: "req_direct_missing_n8n",
+        execution: { mode: "direct_agent", reason: "notion_target" },
+        channel: { id: "1465296404455882860", type: "project" },
+        context: {
+          notion: {
+            explicit_write_requested: true,
+            target_provided: true,
+            links: ["https://www.notion.so/workspace/Page-0123456789abcdef0123456789abcdef"],
+          },
+        },
+      }),
+    });
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(body.action, "reply");
+    assert.equal(body.reason, "n8n_workflow_request_missing");
+    assert.doesNotMatch(body.body, /追記しました/);
   });
 });
 

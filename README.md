@@ -57,8 +57,12 @@ Discord上で動作する多機能ボット。リマインダー機能と `/fair
     - `OPENCLAW_API_URL`: (任意) 旧互換 alias。新規設定では使わず、古い runtime 互換が必要な場合だけ残します。
     - `OPENCLAW_API_KEY`: (`FAIRY_RUNTIME_MODE=openclaw` で必須) OpenClaw 判断 API 用の Bearer token。
     - `OPENCLAW_API_TIMEOUT_MS`: (任意) OpenClaw 判断 API の timeout(ms)。未指定時 `85000`。
-    - `OPENCLAW_NOTION_ENABLED`: (任意) `true/1` で OpenClaw API 側 Notion bridge を有効化。OpenClaw 子プロセスには Notion token を渡しません。
-    - `OPENCLAW_NOTION_TOKEN`: (任意) OpenClaw API 側 Notion bridge 用 token。未指定時は `NOTION_TOKEN` / `NOTION_API_KEY` を参照します。
+    - `OPENCLAW_N8N_DISPATCH_ENABLED`: (任意) `true/1` で OpenClaw direct mode の secret-backed workflow dispatcher を有効化。未指定時は compose 側の設定に従います。
+    - `OPENCLAW_N8N_DISPATCH_URL`: (任意) n8n dispatcher webhook。Docker 内部では `http://n8n:5678/webhook/openclaw/workflow-dispatch`。
+    - `OPENCLAW_N8N_DISPATCH_SECRET`: (推奨) OpenClaw API から n8n dispatcher へ送る共有シークレット。OpenClaw 子プロセスには渡しません。
+    - `OPENCLAW_N8N_ALLOWED_WORKFLOWS`: (任意) direct mode から許可する workflow key。初期値は `notion.safe_ops`。
+    - `OPENCLAW_NOTION_ENABLED`: (任意) `true/1` で OpenClaw API 側 Notion bridge を有効化。本番 direct mode では `false` を正本にし、後方互換 fallback / unit test 用として残します。
+    - `OPENCLAW_NOTION_TOKEN`: (任意) OpenClaw API 側 Notion bridge 用 token。本番 direct mode では n8n 側の `NOTION_TOKEN` を使います。
     - `OPENCLAW_NOTION_VERSION`: (任意) Notion-Version ヘッダ。Notion data source API を使うため未指定時 `2025-09-03`。
     - `OPENCLAW_NOTION_MAX_RESULTS`: (任意) Notion search / query の最大件数。未指定時 `5`。
     - `OPENCLAW_NOTION_MAX_RESULT_CHARS`: (任意) OpenClaw へ戻す Notion 結果の文字数上限。未指定時 `4000`。
@@ -225,9 +229,11 @@ FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS=1094907178671939654,1311647968113332275
 
 #### OpenClaw Notion bridge
 
-Notion / web / project workspace 文脈を使う実作業は、`execution.mode=direct_agent` として `openclaw-api` container 側の OpenClaw に direct handoff します。Discord bot は受信、verified / allowlist 判定、安全化済みメタデータ付与、Discord 返信だけを担当します。
+web / project workspace 文脈を使う実作業は、`execution.mode=direct_agent` として `openclaw-api` container 側の OpenClaw に direct handoff します。Notion など secret-backed 作業は OpenClaw に token を渡さず、OpenClaw が返す `n8n_workflow_requests` を `openclaw-api` が n8n dispatcher webhook へ送ります。Discord bot は受信、verified / allowlist 判定、安全化済みメタデータ付与、Discord 返信だけを担当します。
 
-`OPENCLAW_NOTION_ENABLED=true` の JSON Notion bridge は後方互換 fallback と unit test 対象として残します。fallback では Notion 読取・書込を `openclaw-api` 内の安全ブリッジだけが実行します。`NOTION_TOKEN` / `OPENCLAW_NOTION_TOKEN` は OpenClaw 子プロセスの env allowlist には含めず、OpenClaw は JSON の `notion_requests` / `notion_writes` だけを返します。
+`OPENCLAW_N8N_DISPATCH_ENABLED=true` の direct mode では、`OPENCLAW_N8N_ALLOWED_WORKFLOWS=notion.safe_ops` から開始します。`OPENCLAW_N8N_DISPATCH_SECRET` と Notion token は OpenClaw 子プロセスの env allowlist には含めません。n8n workflow には Discord 送信、reaction、AI Agent、chat trigger、外部公開投稿ノードを入れません。
+
+`OPENCLAW_NOTION_ENABLED=true` の JSON Notion bridge は後方互換 fallback と unit test 対象として残します。本番 direct mode では `OPENCLAW_NOTION_ENABLED=false` を正本にし、Notion token は n8n / n8n-runners 側だけへ渡します。
 
 - 許可: search、page/block/data source の読取、page 作成、block 追記、page property 更新
 - 禁止: delete、archive、trash、move、duplicate、内容消去
