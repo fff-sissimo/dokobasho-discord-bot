@@ -697,7 +697,9 @@ const stripBotMention = (content, botId) => {
 
 const collectLinks = (content) => {
   const matches = String(content || "").match(/https?:\/\/\S+/g);
-  return matches ? matches.slice(0, 10) : [];
+  return matches
+    ? matches.map((link) => link.replace(/[)\].,、。]+$/u, "")).slice(0, 10)
+    : [];
 };
 
 const LINK_REQUEST_MAX_URLS = 3;
@@ -774,6 +776,69 @@ const isNotionUrl = (value) => {
 const collectNotionLinks = (content) =>
   collectLinks(content).filter(isNotionUrl).slice(0, 5);
 
+const isPrivateOrLocalHostname = (hostname) => {
+  const normalized = String(hostname || "").toLowerCase().replace(/^\[|\]$/g, "");
+  if (!normalized) return true;
+  if (["localhost", "localhost.localdomain"].includes(normalized)) return true;
+  if (normalized.endsWith(".local") || normalized.endsWith(".internal")) return true;
+  if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(normalized)) {
+    const parts = normalized.split(".").map(Number);
+    if (parts.some((part) => part < 0 || part > 255)) return true;
+    const [a, b] = parts;
+    return a === 10 ||
+      a === 127 ||
+      a === 0 ||
+      a === 169 && b === 254 ||
+      a === 172 && b >= 16 && b <= 31 ||
+      a === 192 && b === 168;
+  }
+  if (
+    normalized === "::1" ||
+    normalized === "::" ||
+    normalized.startsWith("fc") ||
+    normalized.startsWith("fd") ||
+    normalized.startsWith("fe80:") ||
+    normalized.startsWith("::ffff:127.") ||
+    normalized.startsWith("::ffff:10.") ||
+    normalized.startsWith("::ffff:169.254.") ||
+    normalized.startsWith("::ffff:172.") ||
+    normalized.startsWith("::ffff:192.168.")
+  ) return true;
+  return false;
+};
+
+const hasSecretLikeUrlPart = (url) => {
+  const source = `${url.pathname || ""} ${url.search || ""}`;
+  return /(?:api[_-]?key|token|secret|password|passwd|authorization|bearer|basic)[=/:]/i.test(source);
+};
+
+const normalizeSafeWebTarget = (value) => {
+  try {
+    const url = new URL(String(value || "").trim());
+    if (!/^https?:$/.test(url.protocol)) return null;
+    if (url.username || url.password) return null;
+    if (String(url.href).length > 500) return null;
+    if (isPrivateOrLocalHostname(url.hostname)) return null;
+    if (hasSecretLikeUrlPart(url)) return null;
+    return {
+      url: url.href,
+      hostname: url.hostname.toLowerCase(),
+    };
+  } catch {
+    return null;
+  }
+};
+
+const collectSafeWebTargets = (links) => {
+  const sourceLinks = Array.isArray(links) ? links : collectLinks(links);
+  if (sourceLinks.length === 0 || sourceLinks.length > LINK_REQUEST_MAX_URLS) return [];
+  return sourceLinks
+    .filter((link) => !isNotionUrl(link))
+    .map(normalizeSafeWebTarget)
+    .filter(Boolean)
+    .slice(0, 5);
+};
+
 const hasDestructiveNotionRequest = (content) => {
   const text = normalizeMessageContent(content);
   const targetsNotion = /notion/i.test(text) || /ノーション/.test(text) || collectNotionLinks(text).length > 0;
@@ -786,6 +851,59 @@ const hasExplicitNotionWriteRequest = (content) => {
   if (!/notion/i.test(text) && !/ノーション/.test(text) && collectNotionLinks(text).length === 0) return false;
   if (hasDestructiveNotionRequest(text)) return false;
   return /(?:書いて|書き込んで|保存して|残して|追加して|追記して|更新して|メモして|記録して|作って|作成して)/.test(text);
+};
+
+const isDiceShortcutRequest = (content) => {
+  const text = normalizeMessageContent(content).toLowerCase();
+  if (!text) return false;
+  return /^(?:dice|ダイス|サイコロ)(?:\s+\d*d\d+(?:\s*(?:を)?\s*\d+\s*回(?:だけ)?)?)?$/.test(text);
+};
+
+const isSimpleGreetingOrShortChat = (content) => {
+  const text = normalizeMessageContent(content);
+  if (!text || text.length > 24) return false;
+  return /^(?:おはよう|こんにちは|こんばんは|やっほ|やほ|hi|hello|ありがとう|ありがと|助かった|了解|ok|test|テスト)$/i.test(text);
+};
+
+const hasExplicitWebRequest = (content) => {
+  const text = normalizeMessageContent(content);
+  if (/(?:投稿案|告知文案|文案|自動投稿せず|扱いだけ確認)/.test(text)) return false;
+  return /(?:拾|読んで|読み|見て|確認して|調べて|調査して|要約して|まとめて|整理して|抽出して|取得して|参照して|使って)/.test(text);
+};
+
+const hasProjectWorkIntent = (content) => {
+  const text = normalizeMessageContent(content);
+  return /(?:整理して|まとめて|作って|作成して|追記して|更新して|書いて|調べて|調査して|実装|レビュー|確認して)/.test(text);
+};
+
+const chooseExecutionMode = (payload, { explicitTrigger = false } = {}) => {
+  const channelType = String(payload && payload.channel && payload.channel.type || "").trim();
+  const content = String(payload && payload.message && payload.message.content || "");
+  const notion = payload && payload.context && payload.context.notion ? payload.context.notion : {};
+  const web = payload && payload.context && payload.context.web ? payload.context.web : {};
+  if (!explicitTrigger) return { mode: "json_contract", reason: "not_explicit_trigger" };
+  if (isDiceShortcutRequest(content)) return { mode: "json_contract", reason: "dice_shortcut" };
+  if (isSimpleGreetingOrShortChat(content)) return { mode: "json_contract", reason: "short_chat" };
+  if (channelType !== "chat" && channelType !== "project") {
+    return { mode: "json_contract", reason: `channel_type:${channelType || "unknown"}` };
+  }
+  if (Array.isArray(notion.links) && notion.links.length > 0) {
+    return { mode: "direct_agent", reason: notion.destructive_request ? "notion_destructive_refusal" : "notion_target" };
+  }
+  if (notion.explicit_write_requested) return { mode: "direct_agent", reason: "notion_write_intent" };
+  if (Array.isArray(web.targets) && web.targets.length > 0 && hasExplicitWebRequest(content)) {
+    return { mode: "direct_agent", reason: "web_target" };
+  }
+  if (
+    Array.isArray(payload && payload.message && payload.message.links) &&
+    payload.message.links.some((link) => !isNotionUrl(link))
+  ) {
+    return { mode: "json_contract", reason: "external_link_without_explicit_web" };
+  }
+  if (channelType === "project" && hasProjectWorkIntent(content)) {
+    return { mode: "direct_agent", reason: "project_work" };
+  }
+  return { mode: "json_contract", reason: "default_contract" };
 };
 
 const normalizeRoleMentions = (mentions) => {
@@ -1051,8 +1169,12 @@ const buildOpenClawPayload = ({
     links: links.length > 0 ? links : linkCandidates.map((candidate) => candidate.url),
     channel: resolvedChannel,
   });
+  const explicitWebRequested = hasExplicitWebRequest(normalizedContent) || Boolean(linkRequest);
+  const webTargets = explicitWebRequested
+    ? collectSafeWebTargets(links.length > 0 ? links : linkCandidates.map((candidate) => candidate.url))
+    : [];
 
-  return {
+  const payload = {
     schema_version: 1,
     source: "discord",
     event_type: eventType,
@@ -1077,6 +1199,7 @@ const buildOpenClawPayload = ({
       links,
       notion_links: notionLinks,
       ...(linkRequest ? { link_request: linkRequest } : {}),
+      web_targets: webTargets,
     },
     context: {
       recent_messages: recentMessages,
@@ -1094,6 +1217,10 @@ const buildOpenClawPayload = ({
         destructive_request: hasDestructiveNotionRequest(normalizedContent),
         target_provided: notionLinks.length > 0,
       },
+      web: {
+        explicit_requested: explicitWebRequested,
+        targets: webTargets,
+      },
     },
     memory: {
       member_ids: [],
@@ -1101,6 +1228,10 @@ const buildOpenClawPayload = ({
       daily_refs: [],
     },
   };
+  payload.execution = chooseExecutionMode(payload, {
+    explicitTrigger: Boolean(isReplyToBot || mentionsBot),
+  });
+  return payload;
 };
 
 const applyRuntimeStateToPayload = async ({ payload, stateStore, logger }) => {
@@ -1254,12 +1385,20 @@ const payloadHasInputRisk = (payload) => {
   if (Array.isArray(message.attachments) && message.attachments.length > 0) return "input_attachment";
   if (
     Array.isArray(message.links) &&
-    message.links.length > 0 &&
-    !(message.link_request && message.link_request.allowed === true)
+    message.links.length > 0
   ) {
     const notionLinks = new Set((Array.isArray(message.notion_links) ? message.notion_links : []).map(String));
     const nonNotionLinks = message.links.filter((link) => !notionLinks.has(String(link)) && !isNotionUrl(link));
-    if (nonNotionLinks.length > 0) return "input_external_link";
+    if (nonNotionLinks.length > 0) {
+      const webTargets = new Set((Array.isArray(message.web_targets) ? message.web_targets : []).map((target) => String(target && target.url || "")));
+      const normalizedTargets = nonNotionLinks.map(normalizeSafeWebTarget);
+      const hasUnsafeUrl = normalizedTargets.some((target) => !target);
+      if (hasUnsafeUrl) return "input_unsafe_url";
+      const directMode = payload && payload.execution && payload.execution.mode === "direct_agent";
+      const allTargetsForwarded = normalizedTargets.every((target) => webTargets.has(target.url));
+      if (directMode && !allTargetsForwarded) return "input_unsafe_url";
+      if (!directMode) return "input_external_link";
+    }
   }
   return "";
 };

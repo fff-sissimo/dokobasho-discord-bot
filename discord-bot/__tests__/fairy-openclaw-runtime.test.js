@@ -872,7 +872,7 @@ describe("fairy OpenClaw runtime", () => {
     });
     expect(ambiguousDbHandoff.message.link_request).toBeUndefined();
 
-    for (const payload of [nonExplicit, withCredentials, tooManyLinks, postDraftRequest, ambiguousDbHandoff]) {
+    for (const payload of [nonExplicit, tooManyLinks, postDraftRequest, ambiguousDbHandoff]) {
       expect(payload.message.link_request).toBeUndefined();
       expect(
         runOutboundGate({
@@ -883,6 +883,15 @@ describe("fairy OpenClaw runtime", () => {
         }).reason
       ).toBe("input_external_link");
     }
+    expect(withCredentials.message.link_request).toBeUndefined();
+    expect(
+      runOutboundGate({
+        response: validateOpenClawResponse({ action: "reply", body: "確認しました" }),
+        channelId: withCredentials.channel.id,
+        allowedChannelIds,
+        payload: withCredentials,
+      }).reason
+    ).toBe("input_unsafe_url");
     expect(unknownChannel.message.link_request).toBeUndefined();
     expect(
       runOutboundGate({

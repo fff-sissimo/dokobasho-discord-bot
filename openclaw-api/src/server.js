@@ -9,11 +9,14 @@ const { assertRuntimeConfig, loadConfig } = require("./config");
 const {
   buildAgentPrompt,
   buildCompactAgentPrompt,
+  buildDirectAgentPrompt,
+  buildDirectFailureResponse,
   buildObserveResponse,
   buildRetryAgentPrompt,
   loadWorkspaceContext,
   normalizeSafeDiagnostics,
   parseAgentResponse,
+  parseDirectAgentResponse,
 } = require("./contracts");
 const { createNotionBridge, extractNotionId } = require("./notion-bridge");
 const { runOpenClawAgent } = require("./openclaw-runner");
@@ -67,6 +70,9 @@ const hasWriteTargetProvided = (payload) =>
 
 const hasDestructiveNotionRequest = (payload) =>
   Boolean(payload && payload.context && payload.context.notion && payload.context.notion.destructive_request);
+
+const isDirectAgentPayload = (payload) =>
+  String(payload && payload.execution && payload.execution.mode || "").trim() === "direct_agent";
 
 const buildNotionNoticeResponse = (reason, body) => ({
   ...buildObserveResponse(reason),
@@ -319,6 +325,85 @@ const validateExternalUrl = (rawUrl) => {
   if (net.isIP(hostname) && isBlockedIpAddress(hostname)) return null;
   parsed.hash = "";
   return parsed;
+};
+
+const collectLinks = (content) => {
+  const matches = String(content || "").match(/https?:\/\/\S+/g);
+  return matches
+    ? matches.map((link) => link.replace(/[)\].,、。]+$/u, "")).slice(0, 10)
+    : [];
+};
+
+const isNotionUrl = (value) => {
+  try {
+    const url = new URL(String(value || "").replace(/[)\].,、。]+$/u, ""));
+    const hostname = url.hostname.toLowerCase();
+    return hostname === "notion.so" || hostname.endsWith(".notion.so") ||
+      hostname === "notion.site" || hostname.endsWith(".notion.site");
+  } catch {
+    return false;
+  }
+};
+
+const isSafeDirectWebTarget = (target) => {
+  if (!target || typeof target !== "object" || Array.isArray(target)) return false;
+  const parsed = validateExternalUrl(target.url);
+  if (!parsed) return false;
+  if (String(parsed.href).length > 500) return false;
+  const host = parsed.hostname.toLowerCase();
+  if (host.endsWith(".local") || host.endsWith(".internal")) return false;
+  if (/(?:api[_-]?key|token|secret|password|passwd|authorization|bearer|basic)[=/:]/i.test(`${parsed.pathname || ""} ${parsed.search || ""}`)) {
+    return false;
+  }
+  const hostname = String(target.hostname || "").trim().toLowerCase();
+  return !hostname || hostname === host;
+};
+
+const validateDirectAgentPayload = (payload) => {
+  const channelType = String(payload && payload.channel && payload.channel.type || "").trim();
+  if (channelType !== "chat" && channelType !== "project") {
+    return { ok: false, reason: "direct_channel_type_denied" };
+  }
+  const message = payload && payload.message && typeof payload.message === "object" && !Array.isArray(payload.message)
+    ? payload.message
+    : {};
+  const content = String(message.content || "");
+  if (/@everyone|@here/i.test(content) || message.mentions_everyone === true) {
+    return { ok: false, reason: "direct_input_everyone_or_here" };
+  }
+  if (/<@&\d+>/i.test(content) || Array.isArray(message.role_mentions) && message.role_mentions.length > 0) {
+    return { ok: false, reason: "direct_input_role_mention" };
+  }
+  if (Array.isArray(message.attachments) && message.attachments.length > 0) {
+    return { ok: false, reason: "direct_input_attachment" };
+  }
+  const webTargets = Array.isArray(message.web_targets) ? message.web_targets : [];
+  const forwardedWebUrls = new Set(webTargets.map((target) => {
+    const parsed = validateExternalUrl(target && target.url);
+    return parsed ? parsed.href : "";
+  }).filter(Boolean));
+  const rawLinks = [
+    ...(Array.isArray(message.links) ? message.links.map(String) : []),
+    ...collectLinks(content),
+  ].filter(Boolean);
+  const nonNotionLinks = rawLinks.filter((link) => !isNotionUrl(link));
+  if (nonNotionLinks.length > 0) {
+    const explicitWebRequested = Boolean(payload && payload.context && payload.context.web && payload.context.web.explicit_requested);
+    if (!explicitWebRequested) return { ok: false, reason: "direct_web_requires_explicit_request" };
+    for (const link of nonNotionLinks) {
+      const parsed = validateExternalUrl(link);
+      if (!parsed || !isSafeDirectWebTarget({ url: parsed.href })) {
+        return { ok: false, reason: "direct_web_target_denied" };
+      }
+      if (!forwardedWebUrls.has(parsed.href)) return { ok: false, reason: "direct_web_target_mismatch" };
+    }
+  }
+  if (webTargets.length > 0) {
+    const explicitWebRequested = Boolean(payload && payload.context && payload.context.web && payload.context.web.explicit_requested);
+    if (!explicitWebRequested) return { ok: false, reason: "direct_web_requires_explicit_request" };
+    if (!webTargets.every(isSafeDirectWebTarget)) return { ok: false, reason: "direct_web_target_denied" };
+  }
+  return { ok: true, reason: "ok" };
 };
 
 const resolvePublicAddress = async (hostname, lookupImpl = dns.lookup) => {
@@ -842,6 +927,7 @@ const executeOpenClawPrompt = async ({
   projectPayload = true,
   timeoutMs,
   promptBuilder = buildAgentPrompt,
+  responseParser = parseAgentResponse,
   sessionAttempt,
   logger,
   trace,
@@ -932,7 +1018,7 @@ const executeOpenClawPrompt = async ({
       stdout_bytes: Buffer.byteLength(String(stdout || ""), "utf8"),
     });
   }
-  const response = parseAgentResponse(stdout);
+  const response = responseParser(stdout);
   if (trace) {
     trace({
       stage: "openclaw_parse_end",
@@ -1134,6 +1220,7 @@ const createServer = ({
 
     const requestId = String(payload.request_id || "").trim();
     const requestStartedAt = Date.now();
+    const directAgent = isDirectAgentPayload(payload);
     let effectiveFirstAttemptTimeoutMs = 0;
     let lastStage = "request_received";
     const trace = (entry) => {
@@ -1150,13 +1237,41 @@ const createServer = ({
       });
     };
     try {
-      const compactFirst = isCompactFirstRequest(payload);
-      const attemptMode = compactFirst ? "compact_first" : "full_first";
+      const directGate = directAgent ? validateDirectAgentPayload(payload) : { ok: true, reason: "ok" };
+      if (!directGate.ok) {
+        const response = buildObserveResponse(directGate.reason);
+        logger.info({
+          request_id: requestId,
+          channel_id: payload.channel && payload.channel.id,
+          execution_mode: "direct_agent",
+          action: response.action,
+          gate_reason: directGate.reason,
+        }, "[openclaw-api] request completed");
+        sendJson(res, 200, response);
+        return;
+      }
+      if (directAgent && hasDestructiveNotionRequest(payload)) {
+        const response = buildNotionNoticeResponse(
+          "notion_destructive_request_denied",
+          "Notion の削除、アーカイブ、移動、複製はできません。必要なら、内容の確認や追記だけ手伝います。"
+        );
+        logger.info({
+          request_id: requestId,
+          channel_id: payload.channel && payload.channel.id,
+          execution_mode: "direct_agent",
+          action: response.action,
+        }, "[openclaw-api] request completed");
+        sendJson(res, 200, response);
+        return;
+      }
+      const compactFirst = !directAgent && isCompactFirstRequest(payload);
+      const attemptMode = directAgent ? "direct_agent" : compactFirst ? "compact_first" : "full_first";
       trace({
         stage: "request_received",
         event_type: safeLogText(payload.event_type, { maxLength: 32 }),
         message_id: payload.message && payload.message.id,
         attempt_mode: attemptMode,
+        execution_mode: directAgent ? "direct_agent" : "json_contract",
         compact_first: compactFirst,
       });
       let workspaceContext = "";
@@ -1238,7 +1353,10 @@ const createServer = ({
             payload,
             workspaceContext,
             runAgentCommand,
+            projectPayload: !directAgent,
             timeoutMs: firstTimeoutMs,
+            promptBuilder: directAgent ? buildDirectAgentPrompt : buildAgentPrompt,
+            responseParser: directAgent ? parseDirectAgentResponse : parseAgentResponse,
             logger,
             trace,
             attempt: "first",
@@ -1253,11 +1371,15 @@ const createServer = ({
         firstAttemptElapsedMs = error && Number.isFinite(Number(error.attempt_elapsed_ms))
           ? Number(error.attempt_elapsed_ms)
           : 0;
+        if (directAgent) {
+          throw error;
+        }
         if (!isRetryableInitialError(error)) {
           throw error;
         }
       }
       if (
+        !directAgent &&
         !initialError &&
         result &&
         result.response.action === "observe" &&
@@ -1387,18 +1509,20 @@ const createServer = ({
         }
       }
       let response = result.response;
-      response = await executeNotionRound({
-        payload,
-        response,
-        notionBridge,
-        workspaceContext,
-        config,
-        runAgentCommand,
-        logger,
-        trace,
-        timeoutMs: remainingRequestTimeoutMs({ config, requestStartedAt }),
-        attemptMode,
-      });
+      if (!directAgent) {
+        response = await executeNotionRound({
+          payload,
+          response,
+          notionBridge,
+          workspaceContext,
+          config,
+          runAgentCommand,
+          logger,
+          trace,
+          timeoutMs: remainingRequestTimeoutMs({ config, requestStartedAt }),
+          attemptMode,
+        });
+      }
       const metrics = {
         request_id: requestId,
         reason_code: response.reason,
@@ -1429,6 +1553,7 @@ const createServer = ({
       logger.info({
         request_id: requestId,
         channel_id: payload.channel && payload.channel.id,
+        execution_mode: directAgent ? "direct_agent" : "json_contract",
         action: response.action,
         reason: safeLogIdentifier(response.reason),
         confidence: safeLogText(response.confidence, { maxLength: 24 }),
@@ -1528,7 +1653,7 @@ const createServer = ({
       if (error && Number.isFinite(Number(error.stderr_line_count))) {
         diagnostics.stderr_line_count = Number(error.stderr_line_count);
       }
-      sendJson(res, 200, buildObserveResponse(reason, diagnostics));
+      sendJson(res, 200, directAgent ? buildDirectFailureResponse(error) : buildObserveResponse(reason, diagnostics));
     }
   });
 };
