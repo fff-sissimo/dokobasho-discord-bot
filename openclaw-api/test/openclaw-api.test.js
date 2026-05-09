@@ -29,6 +29,7 @@ const {
 const {
   buildAgentPrompt,
   buildCompactAgentPrompt,
+  buildDirectAgentPrompt,
   buildObserveResponse,
   buildRetryAgentPrompt,
   extractMarkdownSections,
@@ -36,7 +37,11 @@ const {
   normalizeOpenClawResponse,
   normalizeSafeDiagnostics,
   parseAgentResponse,
+  parseDirectAgentResponse,
 } = require("../src/contracts");
+const {
+  createN8nDispatcher,
+} = require("../src/n8n-dispatcher");
 const {
   createNotionBridge,
 } = require("../src/notion-bridge");
@@ -778,6 +783,7 @@ test("normalizes followup state fields as arrays", () => {
       closed_followup_ids: [],
       notion_requests: [],
       notion_writes: [],
+      n8n_workflow_requests: [],
       requires_approval: false,
       approval: {
         target_channel_id: "",
@@ -1144,6 +1150,31 @@ test("agent prompt allows shared Notion data source search without destructive w
   assert.match(prompt, /削除\/archive\/trash\/move\/duplicate\/消去は禁止/);
 });
 
+test("direct agent prompt routes secret-backed Notion work through n8n workflow requests", () => {
+  const prompt = buildDirectAgentPrompt({
+    workspaceContext: "runtime context",
+    payload: {
+      channel: { id: "1465296404455882860", type: "project" },
+      message: { id: "msg_1", content: "Notionに追記して" },
+      context: {
+        notion: {
+          links: ["https://www.notion.so/0123456789abcdef0123456789abcdef"],
+          explicit_write_requested: true,
+          target_provided: true,
+        },
+      },
+    },
+  });
+
+  assert.match(prompt, /Discord へ直接投稿しない/);
+  assert.match(prompt, /Notion MCP、Notion token、n8n webhook secret/);
+  assert.match(prompt, /n8n_workflow_requests/);
+  assert.match(prompt, /workflow_key `notion\.safe_ops`/);
+  assert.match(prompt, /削除、archive、trash、move、duplicate/);
+  assert.match(prompt, /OpenClaw は n8n を直接呼ばず/);
+  assert.doesNotMatch(prompt, /Notion token を使って実行/);
+});
+
 test("agent prompt keeps draft-only boundaries for approval-gated operations", () => {
   const prompt = buildAgentPrompt({
     workspaceContext: "runtime context",
@@ -1418,6 +1449,32 @@ test("parses OpenClaw CLI payload text output", () => {
   }));
   assert.equal(response.action, "observe");
   assert.equal(response.reason, "ok");
+});
+
+test("direct agent parser keeps n8n workflow requests from normal JSON output", () => {
+  const response = parseDirectAgentResponse(JSON.stringify({
+    body: "Notionに追記します。",
+    n8n_workflow_requests: [
+      {
+        id: "append_1",
+        workflow_key: "notion.safe_ops",
+        operation: "notion.append_blocks",
+        target: { url: "https://www.notion.so/0123456789abcdef0123456789abcdef" },
+        input: { body: "追記内容" },
+      },
+      {
+        id: "bad_delete",
+        workflow_key: "notion.safe_ops",
+        operation: "notion.delete_page",
+        target: { id: "0123456789abcdef0123456789abcdef" },
+      },
+    ],
+  }));
+
+  assert.equal(response.action, "reply");
+  assert.equal(response.body, "Notionに追記します。");
+  assert.equal(response.n8n_workflow_requests.length, 1);
+  assert.equal(response.n8n_workflow_requests[0].operation, "notion.append_blocks");
 });
 
 test("parses OpenClaw CLI payload when text contains fenced prompt examples", () => {
@@ -4039,6 +4096,7 @@ test("OpenClaw child env keeps runtime secrets out of the agent process", () => 
     OPENCLAW_API_KEY: "synthetic-api-key",
     BOT_TOKEN: "synthetic-bot-token",
     N8N_WEBHOOK_SECRET: "synthetic-webhook-secret",
+    OPENCLAW_N8N_DISPATCH_SECRET: "synthetic-dispatch-secret",
     NOTION_TOKEN: "synthetic-notion-token",
   });
 
@@ -4048,7 +4106,195 @@ test("OpenClaw child env keeps runtime secrets out of the agent process", () => 
   assert.equal(childEnv.OPENCLAW_API_KEY, undefined);
   assert.equal(childEnv.BOT_TOKEN, undefined);
   assert.equal(childEnv.N8N_WEBHOOK_SECRET, undefined);
+  assert.equal(childEnv.OPENCLAW_N8N_DISPATCH_SECRET, undefined);
   assert.equal(childEnv.NOTION_TOKEN, undefined);
+});
+
+test("n8n dispatcher sends only safe metadata while keeping the webhook secret in headers", async () => {
+  const calls = [];
+  const dispatcher = createN8nDispatcher({
+    config: {
+      n8nDispatch: {
+        enabled: true,
+        url: "https://n8n.example/webhook/openclaw/workflow-dispatch",
+        secret: "synthetic-dispatch-secret",
+        allowedWorkflows: ["notion.safe_ops"],
+        timeoutMs: 1000,
+      },
+    },
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options, body: JSON.parse(options.body) });
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({
+          ok: true,
+          safe_reply: "追記しました。",
+          results: [
+            {
+              id: "append_1",
+              workflow_key: "notion.safe_ops",
+              operation: "notion.append_blocks",
+              status: "ok",
+              target_id: "0123456789abcdef0123456789abcdef",
+              target_title: "Test",
+            },
+          ],
+        }),
+      };
+    },
+  });
+
+  const payload = {
+    request_id: "req_n8n",
+    guild_id: "guild_1",
+    channel: { id: "channel_1", type: "project", thread_id: "thread_1", parent_channel_id: "parent_1" },
+    message: { id: "msg_1", author_id: "user_1", content: "raw body should not be sent" },
+    context: {
+      notion: {
+        links: ["https://www.notion.so/0123456789abcdef0123456789abcdef"],
+        explicit_write_requested: true,
+        target_provided: true,
+      },
+    },
+  };
+  const request = {
+    id: "append_1",
+    workflow_key: "notion.safe_ops",
+    operation: "notion.append_blocks",
+    target: { url: "https://www.notion.so/0123456789abcdef0123456789abcdef" },
+    input: { body: "追記内容" },
+  };
+
+  const result = await dispatcher.run({ payload, request });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.safe_reply, "追記しました。");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].options.headers["x-webhook-secret"], "synthetic-dispatch-secret");
+  assert.equal(calls[0].body.discord.message_id, "msg_1");
+  assert.equal(calls[0].body.discord.author_id, "user_1");
+  assert.equal(calls[0].body.message, undefined);
+  assert.doesNotMatch(JSON.stringify(calls[0].body), /raw body should not be sent/);
+  assert.doesNotMatch(JSON.stringify(calls[0].body), /synthetic-dispatch-secret/);
+});
+
+test("direct mode dispatches Notion n8n workflow requests and returns the safe workflow reply", async () => {
+  const dispatchCalls = [];
+  await withServer({
+    n8nDispatcher: {
+      run: async ({ payload, request }) => {
+        dispatchCalls.push({ payload, request });
+        return {
+          ok: true,
+          reason: "n8n_dispatch_completed",
+          safe_reply: "Notionに追記しました。",
+          results: [
+            {
+              id: request.id,
+              workflow_key: request.workflow_key,
+              operation: request.operation,
+              status: "ok",
+              target_id: "0123456789abcdef0123456789abcdef",
+              target_title: "Test",
+            },
+          ],
+        };
+      },
+    },
+    runAgentCommand: async ({ message }) => {
+      assert.match(message, /direct handoff agent/);
+      assert.match(message, /n8n_workflow_requests/);
+      return JSON.stringify({
+        body: "Notionに追記します。",
+        n8n_workflow_requests: [
+          {
+            id: "append_1",
+            workflow_key: "notion.safe_ops",
+            operation: "notion.append_blocks",
+            target: { url: "https://www.notion.so/0123456789abcdef0123456789abcdef" },
+            input: { body: "追記内容" },
+          },
+        ],
+      });
+    },
+  }, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/discord/respond`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer secret",
+      },
+      body: JSON.stringify({
+        request_id: "req_direct_n8n",
+        execution: { mode: "direct_agent" },
+        channel: { id: "1465296404455882860", type: "project", registered: true },
+        message: {
+          id: "msg_1",
+          author_id: "user_1",
+          content: "この Notion に追記して",
+          links: ["https://www.notion.so/0123456789abcdef0123456789abcdef"],
+        },
+        context: {
+          notion: {
+            links: ["https://www.notion.so/0123456789abcdef0123456789abcdef"],
+            explicit_write_requested: true,
+            target_provided: true,
+          },
+        },
+      }),
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.action, "reply");
+    assert.equal(body.body, "Notionに追記しました。");
+    assert.equal(body.n8n_workflow_results.length, 1);
+  });
+
+  assert.equal(dispatchCalls.length, 1);
+  assert.equal(dispatchCalls[0].request.operation, "notion.append_blocks");
+});
+
+test("direct mode refuses Notion work when OpenClaw does not emit an n8n workflow request", async () => {
+  await withServer({
+    n8nDispatcher: {
+      run: async () => {
+        throw new Error("unexpected n8n dispatch");
+      },
+    },
+    runAgentCommand: async () => "Notionに追記しました。",
+  }, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/discord/respond`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer secret",
+      },
+      body: JSON.stringify({
+        request_id: "req_direct_missing_n8n",
+        execution: { mode: "direct_agent" },
+        channel: { id: "1465296404455882860", type: "project", registered: true },
+        message: {
+          id: "msg_1",
+          author_id: "user_1",
+          content: "この Notion に追記して",
+          links: ["https://www.notion.so/0123456789abcdef0123456789abcdef"],
+        },
+        context: {
+          notion: {
+            links: ["https://www.notion.so/0123456789abcdef0123456789abcdef"],
+            explicit_write_requested: true,
+            target_provided: true,
+          },
+        },
+      }),
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.action, "reply");
+    assert.equal(body.reason, "n8n_workflow_request_missing");
+    assert.match(body.body, /n8n workflow/);
+  });
 });
 
 test("loadConfig defaults to request scoped sessions with fixed compatibility opt-out", () => {
@@ -4061,10 +4307,29 @@ test("loadConfig defaults to request scoped sessions with fixed compatibility op
   assert.equal(config.traceLogs, false);
   assert.equal(config.cleanupSessionState, true);
   assert.equal(config.maxWorkspaceContextChars, 4000);
-  assert.equal(config.promptFiles.includes("TOOLS.md"), false);
+  assert.equal(config.promptFiles.includes("TOOLS.md"), true);
+  assert.equal(config.promptFiles.includes("skills/n8n-workflow-dispatcher/SKILL.md"), true);
   assert.equal(config.promptFiles.includes("OPEN_ITEMS.md"), false);
   assert.equal(config.promptFiles.includes("ROADMAP.md"), false);
-  assert.deepEqual(config.promptFiles, ["RUNTIME_PROMPT.md", "IDENTITY.md", "SOUL.md", "MEMORY.md"]);
+  assert.deepEqual(config.promptFiles, [
+    "RUNTIME_PROMPT.md",
+    "IDENTITY.md",
+    "SOUL.md",
+    "TOOLS.md",
+    "skills/n8n-workflow-dispatcher/SKILL.md",
+    "MEMORY.md",
+  ]);
+  const n8nConfig = loadConfig({
+    OPENCLAW_API_KEY: "secret",
+    OPENCLAW_N8N_DISPATCH_ENABLED: "true",
+    OPENCLAW_N8N_DISPATCH_URL: "https://n8n.example/webhook/openclaw/workflow-dispatch",
+    OPENCLAW_N8N_DISPATCH_SECRET: "synthetic-dispatch-secret",
+    OPENCLAW_N8N_ALLOWED_WORKFLOWS: "notion.safe_ops",
+  });
+  assert.equal(n8nConfig.n8nDispatch.enabled, true);
+  assert.equal(n8nConfig.n8nDispatch.url, "https://n8n.example/webhook/openclaw/workflow-dispatch");
+  assert.equal(n8nConfig.n8nDispatch.secret, "synthetic-dispatch-secret");
+  assert.deepEqual(n8nConfig.n8nDispatch.allowedWorkflows, ["notion.safe_ops"]);
   assert.equal(loadConfig({
     OPENCLAW_API_KEY: "secret",
     OPENCLAW_AGENT_SESSION_SCOPE: "fixed",

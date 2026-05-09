@@ -18,6 +18,7 @@ const {
   parseAgentResponse,
   parseDirectAgentResponse,
 } = require("./contracts");
+const { createN8nDispatcher } = require("./n8n-dispatcher");
 const { createNotionBridge, extractNotionId } = require("./notion-bridge");
 const { runOpenClawAgent } = require("./openclaw-runner");
 
@@ -70,6 +71,15 @@ const hasWriteTargetProvided = (payload) =>
 
 const hasDestructiveNotionRequest = (payload) =>
   Boolean(payload && payload.context && payload.context.notion && payload.context.notion.destructive_request);
+
+const hasNotionWorkIntent = (payload) => {
+  const notion = payload && payload.context && payload.context.notion ? payload.context.notion : {};
+  return Boolean(
+    notion.explicit_write_requested ||
+    notion.target_provided ||
+    Array.isArray(notion.links) && notion.links.length > 0
+  );
+};
 
 const isDirectAgentPayload = (payload) =>
   String(payload && payload.execution && payload.execution.mode || "").trim() === "direct_agent";
@@ -1164,6 +1174,91 @@ const executeNotionRound = async ({
   return nextResponse;
 };
 
+const buildN8nNoticeResponse = (reason, body) => ({
+  ...buildObserveResponse(reason),
+  action: "reply",
+  body,
+  confidence: "medium",
+});
+
+const isN8nWriteOperation = (request) =>
+  ["notion.create_page", "notion.append_blocks"].includes(String(request && request.operation || "").trim());
+
+const isN8nTargetedReadOperation = (request) =>
+  ["notion.retrieve_page", "notion.retrieve_block_children", "notion.query_data_source"].includes(
+    String(request && request.operation || "").trim()
+  );
+
+const requestHasTarget = (request) => {
+  const target = request && request.target ? request.target : {};
+  return Boolean(target.id || target.page_id || target.data_source_id || target.database_id || target.url);
+};
+
+const validateN8nWorkflowRequestForPayload = ({ payload, request }) => {
+  if (String(request && request.workflow_key || "") !== "notion.safe_ops") {
+    return { ok: false, reason: "n8n_workflow_not_allowed" };
+  }
+  if (isN8nWriteOperation(request)) {
+    if (!shouldExecuteWrites(payload)) return { ok: false, reason: "notion_write_requires_explicit_request" };
+    if (!hasWriteTargetProvided(payload)) return { ok: false, reason: "notion_write_target_required" };
+    if (!requestHasTarget(request)) return { ok: false, reason: "notion_write_target_required" };
+    if (!requestTargetsAllowedPayloadTarget({ payload, request })) {
+      return { ok: false, reason: "notion_write_target_mismatch" };
+    }
+  }
+  if (isN8nTargetedReadOperation(request) && requestHasTarget(request) && !requestTargetsAllowedPayloadTarget({ payload, request })) {
+    return { ok: false, reason: "notion_read_target_mismatch" };
+  }
+  return { ok: true, reason: "ok" };
+};
+
+const executeN8nWorkflowRound = async ({ payload, response, n8nDispatcher, logger }) => {
+  const requests = Array.isArray(response.n8n_workflow_requests) ? response.n8n_workflow_requests : [];
+  if (requests.length === 0) {
+    if (hasNotionWorkIntent(payload)) {
+      return buildN8nNoticeResponse(
+        "n8n_workflow_request_missing",
+        "Notion 作業を n8n workflow に渡す依頼を作れませんでした。対象と作業内容をもう一度短く教えてください。"
+      );
+    }
+    return response;
+  }
+  const safeReplies = [];
+  const workflowResults = [];
+  for (const request of requests.slice(0, 3)) {
+    const validation = validateN8nWorkflowRequestForPayload({ payload, request });
+    if (!validation.ok) {
+      return buildN8nNoticeResponse(validation.reason, "Notion の対象または実行条件を確認できなかったため、作業を止めました。");
+    }
+    const result = await n8nDispatcher.run({ payload, request });
+    workflowResults.push({
+      id: request.id,
+      workflow_key: request.workflow_key,
+      operation: request.operation,
+      ok: result.ok,
+      reason: result.reason,
+      results: result.results,
+    });
+    if (!result.ok) {
+      if (logger && typeof logger.warn === "function") {
+        logger.warn({
+          request_id: payload.request_id,
+          workflow_key: request.workflow_key,
+          operation: request.operation,
+          reason: result.reason,
+        }, "[openclaw-api] n8n workflow dispatch failed");
+      }
+      return buildN8nNoticeResponse(result.reason, result.safe_reply);
+    }
+    if (result.safe_reply) safeReplies.push(result.safe_reply);
+  }
+  return {
+    ...response,
+    body: safeReplies.length > 0 ? safeReplies.join("\n").slice(0, 1600) : response.body,
+    n8n_workflow_results: workflowResults,
+  };
+};
+
 const firstAttemptTimeoutMs = ({ config, requestStartedAt }) =>
   Math.min(
     remainingRequestTimeoutMs({ config, requestStartedAt }),
@@ -1186,6 +1281,7 @@ const createServer = ({
   runAgentCommand = runOpenClawAgent,
   loadContext = loadWorkspaceContext,
   notionBridge = createNotionBridge({ config, logger }),
+  n8nDispatcher = createN8nDispatcher({ config }),
 } = {}) => {
   assertRuntimeConfig(config);
   return http.createServer(async (req, res) => {
@@ -1509,7 +1605,14 @@ const createServer = ({
         }
       }
       let response = result.response;
-      if (!directAgent) {
+      if (directAgent) {
+        response = await executeN8nWorkflowRound({
+          payload,
+          response,
+          n8nDispatcher,
+          logger,
+        });
+      } else {
         response = await executeNotionRound({
           payload,
           response,
@@ -1537,6 +1640,9 @@ const createServer = ({
         retry_elapsed_ms: retryElapsedMs,
         workspace_context_chars: workspaceContext.length,
         stdout_bytes: result.stdout_bytes || 0,
+        n8n_workflow_requests: Array.isArray(result.response.n8n_workflow_requests)
+          ? result.response.n8n_workflow_requests.length
+          : 0,
         last_stage: "request_completed",
         retry_skip_reason: retrySkipReason,
       };
@@ -1573,6 +1679,7 @@ const createServer = ({
         first_attempt_timeout_ms: metrics.first_attempt_timeout_ms,
         workspace_context_chars: metrics.workspace_context_chars,
         stdout_bytes: metrics.stdout_bytes,
+        n8n_workflow_requests: metrics.n8n_workflow_requests,
         stage: metrics.last_stage,
         retry_last_stage: metrics.retry_last_stage,
         retry_skip_reason: metrics.retry_skip_reason,
