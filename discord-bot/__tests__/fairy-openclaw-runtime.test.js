@@ -267,7 +267,7 @@ describe("fairy OpenClaw runtime", () => {
     ).toThrow("841686630271418429");
   });
 
-  it("rejects default project and ops allowlist entries until explicitly verified", () => {
+  it("keeps canonical verified project/chat entries and rejects pending project or ops entries", () => {
     const baseEnv = {
       FAIRY_RUNTIME_MODE: "openclaw",
       OPENCLAW_API_BASE_URL: "https://openclaw.example/discord/respond",
@@ -275,31 +275,37 @@ describe("fairy OpenClaw runtime", () => {
       GUILD_ID: "guild_1",
     };
 
-    expect(DEFAULT_CHANNEL_REGISTRY["1465296404455882860"].status).toBe("pending");
+    expect(DEFAULT_CHANNEL_REGISTRY["985145703774978059"]).toEqual({
+      name: "配信部屋",
+      type: "chat",
+      status: "verified",
+    });
+    expect(DEFAULT_CHANNEL_REGISTRY["1465296404455882860"].status).toBe("verified");
+    expect(DEFAULT_CHANNEL_REGISTRY["1466404431217164288"].status).toBe("verified");
+    expect(DEFAULT_CHANNEL_REGISTRY["1465295987236143319"].status).toBe("pending");
     expect(DEFAULT_CHANNEL_REGISTRY["840827137451229208"].status).toBe("known");
-
-    expect(() =>
-      createOpenClawRuntimeConfig({
-        ...baseEnv,
-        FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS: "1094907178671939654,1465296404455882860",
-      })
-    ).toThrow("1465296404455882860");
-
-    expect(() =>
-      createOpenClawRuntimeConfig({
-        ...baseEnv,
-        FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS: "1094907178671939654,840827137451229208",
-      })
-    ).toThrow("840827137451229208");
 
     expect(
       createOpenClawRuntimeConfig({
         ...baseEnv,
         FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS: "1094907178671939654,1465296404455882860",
-        FAIRY_OPENCLAW_CHANNEL_REGISTRY_JSON:
-          '{"1465296404455882860":{"name":"vostok-vol02-general","type":"project","status":"verified"}}',
       }).channelRegistry["1465296404455882860"].status
     ).toBe("verified");
+
+    expect(
+      createOpenClawRuntimeConfig({
+        ...baseEnv,
+        FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS: "985145703774978059,1466404431217164288",
+      }).allowedChannelIds
+    ).toEqual(["985145703774978059", "1466404431217164288"]);
+
+    expect(() =>
+      createOpenClawRuntimeConfig({
+        ...baseEnv,
+        FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS: "1094907178671939654,1465295987236143319",
+      })
+    ).toThrow("1465295987236143319");
+
     expect(
       createOpenClawRuntimeConfig({
         ...baseEnv,
@@ -308,6 +314,13 @@ describe("fairy OpenClaw runtime", () => {
           '[{"channel_id":"1465295987236143319","name":"vostok-vol02-pd","type":"project","status":"verified"}]',
       }).channelRegistry["1465295987236143319"].status
     ).toBe("verified");
+
+    expect(() =>
+      createOpenClawRuntimeConfig({
+        ...baseEnv,
+        FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS: "1094907178671939654,840827137451229208",
+      })
+    ).toThrow("840827137451229208");
   });
 
   it("uses the canonical verified idea board registry by default", () => {
@@ -927,6 +940,280 @@ describe("fairy OpenClaw runtime", () => {
       target_provided: true,
     });
     expect(result.gate.reason).toBe("non_posting_action:observe");
+  });
+
+  it("selects direct handoff for explicit Notion and safe external URL work in verified project channels", async () => {
+    const openClawClient = {
+      execute: jest.fn().mockResolvedValue({
+        schema_version: 1,
+        action: "observe",
+        body: "",
+        requires_approval: false,
+      }),
+    };
+    const handler = createOpenClawMessageHandler({
+      openClawClient,
+      allowedChannelIds: ["1465296404455882860"],
+      guildId: "840827137451229205",
+      contextEntriesSource: async () => [],
+      requestIdFactory: () => "req_direct_project",
+    });
+    const message = {
+      id: "msg_direct_project",
+      content: "<@bot_1> Notion DB URLと外部URLを使って整理して https://www.notion.so/workspace/DB-0123456789abcdef0123456789abcdef https://example.com/report",
+      channelId: "1465296404455882860",
+      guildId: "840827137451229205",
+      createdAt: new Date("2026-05-08T09:00:00.000Z"),
+      author: { id: "user_1", bot: false, username: "user" },
+      client: { user: { id: "bot_1" } },
+      channel: { id: "1465296404455882860", name: "vostok-vol02-general", sendTyping: jest.fn().mockResolvedValue(undefined) },
+      mentions: { everyone: false, roles: { map: () => [] } },
+      attachments: [],
+      reply: jest.fn(),
+    };
+
+    const result = await handler(message, { messageTriggerSource: "mention" });
+
+    expect(openClawClient.execute).toHaveBeenCalledTimes(1);
+    expect(result.payload.channel.type).toBe("project");
+    expect(result.payload.execution).toEqual({ mode: "direct_agent", reason: "notion_target" });
+    expect(result.payload.message.web_targets).toEqual([
+      { url: "https://example.com/report", hostname: "example.com" },
+    ]);
+    expect(result.payload.context.web).toEqual({
+      explicit_requested: true,
+      targets: [{ url: "https://example.com/report", hostname: "example.com" }],
+    });
+  });
+
+  it("keeps simple greetings and dice shortcuts on the JSON contract path", async () => {
+    const openClawClient = {
+      execute: jest.fn().mockResolvedValue({
+        schema_version: 1,
+        action: "observe",
+        body: "",
+        requires_approval: false,
+      }),
+    };
+    const handler = createOpenClawMessageHandler({
+      openClawClient,
+      allowedChannelIds: ["840827137451229210"],
+      guildId: "840827137451229205",
+      contextEntriesSource: async () => [],
+      requestIdFactory: () => "req_short_or_dice",
+    });
+    const baseMessage = {
+      channelId: "840827137451229210",
+      guildId: "840827137451229205",
+      createdAt: new Date("2026-05-08T09:00:00.000Z"),
+      author: { id: "user_1", bot: false, username: "user" },
+      client: { user: { id: "bot_1" } },
+      channel: { id: "840827137451229210", name: "はじまりの酒場", sendTyping: jest.fn().mockResolvedValue(undefined) },
+      mentions: { everyone: false, roles: { map: () => [] } },
+      attachments: [],
+      reply: jest.fn(),
+    };
+
+    const greeting = await handler({ ...baseMessage, id: "msg_greeting", content: "<@bot_1> おはよう" }, { messageTriggerSource: "mention" });
+    const dice = await handler({ ...baseMessage, id: "msg_dice", content: "<@bot_1> dice 1d6 を1回だけ" }, { messageTriggerSource: "mention" });
+
+    expect(greeting.payload.execution).toEqual({ mode: "json_contract", reason: "short_chat" });
+    expect(dice.payload.execution).toEqual({ mode: "json_contract", reason: "dice_shortcut" });
+  });
+
+  it("uses parent allowlist for project threads while preserving thread metadata for direct payloads", async () => {
+    const openClawClient = {
+      execute: jest.fn().mockResolvedValue({
+        schema_version: 1,
+        action: "observe",
+        body: "",
+        requires_approval: false,
+      }),
+    };
+    const handler = createOpenClawMessageHandler({
+      openClawClient,
+      allowedChannelIds: ["1465296404455882860"],
+      guildId: "840827137451229205",
+      contextEntriesSource: async () => [],
+      requestIdFactory: () => "req_direct_thread",
+    });
+    const parentChannel = { id: "1465296404455882860", name: "vostok-vol02-general", parentId: "category_1" };
+    const threadChannel = {
+      id: "146999999999999999",
+      name: "Notion整理スレッド",
+      isThread: () => true,
+      parentId: "1465296404455882860",
+      parent: parentChannel,
+      sendTyping: jest.fn().mockResolvedValue(undefined),
+    };
+    const message = {
+      id: "msg_direct_thread",
+      content: "<@bot_1> Notionを読んで要点を整理して https://www.notion.so/workspace/Page-0123456789abcdef0123456789abcdef",
+      channelId: "146999999999999999",
+      guildId: "840827137451229205",
+      createdAt: new Date("2026-05-08T09:00:00.000Z"),
+      author: { id: "user_1", bot: false, username: "user" },
+      client: { user: { id: "bot_1" } },
+      channel: threadChannel,
+      mentions: { everyone: false, roles: { map: () => [] } },
+      attachments: [],
+      reply: jest.fn(),
+    };
+
+    const result = await handler(message, { messageTriggerSource: "mention" });
+
+    expect(openClawClient.execute).toHaveBeenCalledTimes(1);
+    expect(result.payload.channel).toEqual({
+      id: "1465296404455882860",
+      name: "Notion整理スレッド",
+      type: "project",
+      registered: true,
+      thread_id: "146999999999999999",
+      parent_channel_id: "1465296404455882860",
+      category_id: "category_1",
+    });
+    expect(result.payload.execution.mode).toBe("direct_agent");
+  });
+
+  it("blocks unsafe external URLs before direct handoff", async () => {
+    const openClawClient = { execute: jest.fn() };
+    const handler = createOpenClawMessageHandler({
+      openClawClient,
+      allowedChannelIds: ["840827137451229210"],
+      guildId: "840827137451229205",
+      contextEntriesSource: async () => [],
+      requestIdFactory: () => "req_unsafe_url",
+    });
+    const message = {
+      id: "msg_unsafe_url",
+      content: "<@bot_1> このURLを見て http://localhost:3000/admin",
+      channelId: "840827137451229210",
+      guildId: "840827137451229205",
+      createdAt: new Date("2026-05-08T09:00:00.000Z"),
+      author: { id: "user_1", bot: false, username: "user" },
+      client: { user: { id: "bot_1" } },
+      channel: { id: "840827137451229210", name: "はじまりの酒場", sendTyping: jest.fn() },
+      mentions: { everyone: false, roles: { map: () => [] } },
+      attachments: [],
+      reply: jest.fn().mockResolvedValue({ id: "reply_unsafe_url" }),
+    };
+
+    const result = await handler(message, { messageTriggerSource: "mention" });
+
+    expect(result.gate).toEqual({ ok: false, reason: "input_unsafe_url" });
+    expect(openClawClient.execute).not.toHaveBeenCalled();
+    expect(message.reply).toHaveBeenCalledWith({
+      content: "-# 今回は自動送信せず止めました。",
+      allowedMentions: SAFE_ALLOWED_MENTIONS,
+    });
+  });
+
+  it("blocks IPv6 localhost URLs before direct handoff", async () => {
+    const openClawClient = { execute: jest.fn() };
+    const handler = createOpenClawMessageHandler({
+      openClawClient,
+      allowedChannelIds: ["840827137451229210"],
+      guildId: "840827137451229205",
+      contextEntriesSource: async () => [],
+      requestIdFactory: () => "req_ipv6_unsafe_url",
+    });
+    const message = {
+      id: "msg_ipv6_unsafe_url",
+      content: "<@bot_1> このURLを見て http://[::1]/admin",
+      channelId: "840827137451229210",
+      guildId: "840827137451229205",
+      createdAt: new Date("2026-05-08T09:00:00.000Z"),
+      author: { id: "user_1", bot: false, username: "user" },
+      client: { user: { id: "bot_1" } },
+      channel: { id: "840827137451229210", name: "はじまりの酒場", sendTyping: jest.fn() },
+      mentions: { everyone: false, roles: { map: () => [] } },
+      attachments: [],
+      reply: jest.fn().mockResolvedValue({ id: "reply_ipv6_unsafe_url" }),
+    };
+
+    const result = await handler(message, { messageTriggerSource: "mention" });
+
+    expect(result.gate).toEqual({ ok: false, reason: "input_unsafe_url" });
+    expect(openClawClient.execute).not.toHaveBeenCalled();
+  });
+
+  it("does not attach web_targets or direct handoff when URL reading is not explicit", async () => {
+    const openClawClient = { execute: jest.fn() };
+    const handler = createOpenClawMessageHandler({
+      openClawClient,
+      allowedChannelIds: ["1465296404455882860"],
+      guildId: "840827137451229205",
+      contextEntriesSource: async () => [],
+      requestIdFactory: () => "req_url_not_explicit",
+    });
+    const message = {
+      id: "msg_url_not_explicit",
+      content: "<@bot_1> 実装してください https://example.com/spec",
+      channelId: "1465296404455882860",
+      guildId: "840827137451229205",
+      createdAt: new Date("2026-05-08T09:00:00.000Z"),
+      author: { id: "user_1", bot: false, username: "user" },
+      client: { user: { id: "bot_1" } },
+      channel: { id: "1465296404455882860", name: "vostok-vol02-general", sendTyping: jest.fn() },
+      mentions: { everyone: false, roles: { map: () => [] } },
+      attachments: [],
+      reply: jest.fn().mockResolvedValue({ id: "reply_url_not_explicit" }),
+    };
+
+    const result = await handler(message, { messageTriggerSource: "mention" });
+
+    expect(result.payload.execution).toEqual({
+      mode: "json_contract",
+      reason: "external_link_without_explicit_web",
+    });
+    expect(result.payload.message.web_targets).toEqual([]);
+    expect(result.payload.context.web).toEqual({ explicit_requested: false, targets: [] });
+    expect(result.gate).toEqual({ ok: false, reason: "input_external_link" });
+    expect(openClawClient.execute).not.toHaveBeenCalled();
+  });
+
+  it("returns safe diagnostics and sanitized error_code when direct handoff execution fails", async () => {
+    const error = new Error("raw token=secret-value should stay out of the user reply");
+    error.code = "OPENCLAW_API_TIMEOUT";
+    const logger = { warn: jest.fn() };
+    const openClawClient = { execute: jest.fn().mockRejectedValue(error) };
+    const handler = createOpenClawMessageHandler({
+      openClawClient,
+      allowedChannelIds: ["1465296404455882860"],
+      guildId: "840827137451229205",
+      contextEntriesSource: async () => [],
+      requestIdFactory: () => "req_direct_failure",
+      logger,
+    });
+    const message = {
+      id: "msg_direct_failure",
+      content: "<@bot_1> Notionを読んで整理して https://www.notion.so/workspace/Page-0123456789abcdef0123456789abcdef",
+      channelId: "1465296404455882860",
+      guildId: "840827137451229205",
+      createdAt: new Date("2026-05-08T09:00:00.000Z"),
+      author: { id: "user_1", bot: false, username: "user" },
+      client: { user: { id: "bot_1" } },
+      channel: { id: "1465296404455882860", name: "vostok-vol02-general", sendTyping: jest.fn().mockResolvedValue(undefined) },
+      mentions: { everyone: false, roles: { map: () => [] } },
+      attachments: [],
+      reply: jest.fn().mockResolvedValue({ id: "reply_direct_failure" }),
+    };
+
+    const result = await handler(message, { messageTriggerSource: "mention" });
+
+    expect(result.errorCode).toBe("OPENCLAW_API_TIMEOUT");
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        error_code: "OPENCLAW_API_TIMEOUT",
+        requestId: "req_direct_failure",
+      }),
+      "[fairy-openclaw] message failed"
+    );
+    expect(message.reply).toHaveBeenCalledWith({
+      content: "-# OpenClaw 直接実行に失敗しました。時間をおいてもう一度試してください。",
+      allowedMentions: SAFE_ALLOWED_MENTIONS,
+    });
+    expect(message.reply.mock.calls[0][0].content).not.toContain("token=secret");
   });
 
   it("keeps non-Notion URLs blocked even when Notion support is enabled", () => {

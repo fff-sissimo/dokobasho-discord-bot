@@ -225,11 +225,14 @@ FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS=1094907178671939654,1311647968113332275
 
 #### OpenClaw Notion bridge
 
-`OPENCLAW_NOTION_ENABLED=true` の場合、Notion 読取・書込は `openclaw-api` 内の安全ブリッジだけが実行します。`NOTION_TOKEN` / `OPENCLAW_NOTION_TOKEN` は OpenClaw 子プロセスの env allowlist には含めず、OpenClaw は JSON の `notion_requests` / `notion_writes` だけを返します。
+Notion / web / project workspace 文脈を使う実作業は、`execution.mode=direct_agent` として `openclaw-api` container 側の OpenClaw に direct handoff します。Discord bot は受信、verified / allowlist 判定、安全化済みメタデータ付与、Discord 返信だけを担当します。
+
+`OPENCLAW_NOTION_ENABLED=true` の JSON Notion bridge は後方互換 fallback と unit test 対象として残します。fallback では Notion 読取・書込を `openclaw-api` 内の安全ブリッジだけが実行します。`NOTION_TOKEN` / `OPENCLAW_NOTION_TOKEN` は OpenClaw 子プロセスの env allowlist には含めず、OpenClaw は JSON の `notion_requests` / `notion_writes` だけを返します。
 
 - 許可: search、page/block/data source の読取、page 作成、block 追記、page property 更新
 - 禁止: delete、archive、trash、move、duplicate、内容消去
-- Notion URL は Discord input gate で Notion target として扱い、一般外部 URL は既存どおり自動送信を止めます
+- direct handoff の Notion 境界: 読取、page 作成、block 追記だけを主経路にし、削除、archive、trash、move、duplicate、内容消去は拒否します
+- Notion URL は Discord input gate で Notion target として扱い、明示 URL 読取依頼の一般外部 URL は安全化済み `web_targets` として direct handoff に渡します。unsafe URL、添付、everyone/here、role mention は従来どおり gate で止めます
 - 書込は「Notionに保存/追記/更新」などの明示依頼があり、対象 URL/ID が解決できる場合だけ実行します。対象未指定時は search 候補の確認で止めます
 
 送信直前 gate は、allowlist 外チャンネル、承認必須応答、everyone/here、role mention、添付、外部 URL を自動送信しません。

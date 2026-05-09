@@ -6,7 +6,15 @@ const { test } = require("node:test");
 const { loadConfig } = require("../src/config");
 const { buildOpenClawArgs, buildOpenClawChildEnv, buildRequestScopedSessionId } = require("../src/openclaw-runner");
 const { createServer } = require("../src/server");
-const { buildAgentPrompt, buildObserveResponse, normalizeOpenClawResponse, parseAgentResponse } = require("../src/contracts");
+const {
+  buildAgentPrompt,
+  buildDirectAgentPrompt,
+  buildObserveResponse,
+  normalizeDirectReplyText,
+  normalizeOpenClawResponse,
+  parseAgentResponse,
+  parseDirectAgentResponse,
+} = require("../src/contracts");
 const { createNotionBridge, extractNotionId } = require("../src/notion-bridge");
 
 const baseConfig = {
@@ -367,6 +375,53 @@ test("agent prompt keeps draft-only boundaries for approval-gated operations", (
   assert.match(prompt, /approval\.mentions は常に空配列/);
 });
 
+test("direct agent prompt includes direct handoff safety boundaries", () => {
+  const prompt = buildDirectAgentPrompt({
+    workspaceContext: "runtime context",
+    payload: {
+      request_id: "req_direct_prompt",
+      execution: { mode: "direct_agent", reason: "notion_target" },
+      message: {
+        web_targets: [{ url: "https://example.com/report", hostname: "example.com" }],
+      },
+    },
+  });
+
+  assert.match(prompt, /Discord へ直接投稿しない/);
+  assert.match(prompt, /最終報告だけ/);
+  assert.match(prompt, /Notion は読取、ページ作成、既存ページへの追記だけ許可/);
+  assert.match(prompt, /削除、archive、trash、move、duplicate、内容消去/);
+  assert.match(prompt, /payload\.message\.web_targets/);
+  assert.match(prompt, /公開投稿、予約投稿/);
+  assert.match(prompt, /不足情報を1つ/);
+});
+
+test("direct agent text output becomes a safe Discord reply", () => {
+  const response = parseDirectAgentResponse(JSON.stringify({
+    payloads: [
+      {
+        text: [
+          "Notionに追記しました。",
+          "対象: Page abc123",
+          "参考 https://example.com/raw @everyone token=secret-value",
+        ].join("\n"),
+      },
+    ],
+  }));
+
+  assert.equal(response.action, "reply");
+  assert.match(response.body, /Notionに追記しました/);
+  assert.match(response.body, /\[link\]/);
+  assert.doesNotMatch(response.body, /https?:\/\//);
+  assert.doesNotMatch(response.body, /@everyone/);
+  assert.doesNotMatch(response.body, /secret-value/);
+});
+
+test("direct reply normalization preserves inline hyphen text while normalizing Discord bullet markers", () => {
+  assert.equal(normalizeDirectReplyText("A - B - C"), "A - B - C");
+  assert.equal(normalizeDirectReplyText("* A\n• B"), "- A\n- B");
+});
+
 test("parses OpenClaw CLI payload text output", () => {
   const response = parseAgentResponse(JSON.stringify({
     payloads: [
@@ -704,6 +759,220 @@ test("discord respond runs one Notion read tool round before final reply", async
     const body = await response.json();
     assert.equal(body.action, "reply");
     assert.equal(body.body, "候補を確認したよ");
+  });
+});
+
+test("discord respond direct mode skips Notion bridge and accepts normal text output", async () => {
+  const notionBridge = {
+    enabled: true,
+    runRead: async () => {
+      throw new Error("direct mode should not use bridge reads");
+    },
+    runWrite: async () => {
+      throw new Error("direct mode should not use bridge writes");
+    },
+  };
+  const prompts = [];
+  const runAgentCommand = async ({ message }) => {
+    prompts.push(message);
+    assert.match(message, /direct handoff agent/);
+    assert.match(message, /JSON contract の notion_requests \/ notion_writes を作る必要はありません/);
+    return JSON.stringify({
+      payloads: [
+        {
+          text: "Notionに追記しました。\n対象: test-page",
+        },
+      ],
+    });
+  };
+
+  await withServer({ runAgentCommand, notionBridge }, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/discord/respond`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer secret",
+      },
+      body: JSON.stringify({
+        request_id: "req_direct_text",
+        execution: { mode: "direct_agent", reason: "notion_target" },
+        channel: { id: "1465296404455882860", type: "project" },
+        context: {
+          notion: {
+            explicit_write_requested: true,
+            target_provided: true,
+            links: ["https://www.notion.so/workspace/Page-0123456789abcdef0123456789abcdef"],
+          },
+        },
+      }),
+    });
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(body.action, "reply");
+    assert.equal(body.body, "Notionに追記しました。\n対象: test-page");
+    assert.equal(prompts.length, 1);
+  });
+});
+
+test("discord respond direct mode returns safe diagnostics on OpenClaw failure", async () => {
+  await withServer({
+    runAgentCommand: async () => {
+      const error = new Error("raw token=secret-value");
+      error.code = "OPENCLAW_TIMEOUT";
+      throw error;
+    },
+  }, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/discord/respond`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer secret",
+      },
+      body: JSON.stringify({
+        request_id: "req_direct_failure",
+        execution: { mode: "direct_agent", reason: "web_target" },
+        channel: { id: "840827137451229210", type: "chat" },
+      }),
+    });
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(body.action, "reply");
+    assert.equal(body.reason, "OPENCLAW_TIMEOUT");
+    assert.match(body.body, /direct mode/);
+    assert.doesNotMatch(body.body, /token=secret/);
+  });
+});
+
+test("discord respond direct mode denies destructive Notion requests before running OpenClaw", async () => {
+  await withServer({
+    runAgentCommand: async () => {
+      throw new Error("direct destructive request should not run OpenClaw");
+    },
+  }, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/discord/respond`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer secret",
+      },
+      body: JSON.stringify({
+        request_id: "req_direct_delete_denied",
+        execution: { mode: "direct_agent", reason: "notion_destructive_refusal" },
+        channel: { id: "1465296404455882860", type: "project" },
+        context: {
+          notion: {
+            destructive_request: true,
+            explicit_write_requested: false,
+            target_provided: true,
+            links: ["https://www.notion.so/workspace/Page-0123456789abcdef0123456789abcdef"],
+          },
+        },
+      }),
+    });
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(body.action, "reply");
+    assert.equal(body.reason, "notion_destructive_request_denied");
+    assert.match(body.body, /削除/);
+  });
+});
+
+test("discord respond direct mode revalidates forged direct payload boundaries", async () => {
+  const runAgentCommand = async () => {
+    throw new Error("invalid direct payload should not run OpenClaw");
+  };
+
+  await withServer({ runAgentCommand }, async (baseUrl) => {
+    const cases = [
+      {
+        name: "ops channel",
+        payload: {
+          request_id: "req_direct_ops_forged",
+          execution: { mode: "direct_agent", reason: "forged" },
+          channel: { id: "840827137451229208", type: "ops" },
+        },
+        reason: "direct_channel_type_denied",
+      },
+      {
+        name: "web without explicit request",
+        payload: {
+          request_id: "req_direct_web_without_explicit",
+          execution: { mode: "direct_agent", reason: "forged" },
+          channel: { id: "840827137451229210", type: "chat" },
+          message: { web_targets: [{ url: "https://example.com/report", hostname: "example.com" }] },
+          context: { web: { explicit_requested: false } },
+        },
+        reason: "direct_web_requires_explicit_request",
+      },
+      {
+        name: "unsafe ipv6 web target",
+        payload: {
+          request_id: "req_direct_ipv6_web",
+          execution: { mode: "direct_agent", reason: "forged" },
+          channel: { id: "840827137451229210", type: "chat" },
+          message: { web_targets: [{ url: "http://[::1]/admin", hostname: "[::1]" }] },
+          context: { web: { explicit_requested: true } },
+        },
+        reason: "direct_web_target_denied",
+      },
+      {
+        name: "raw content unsafe url",
+        payload: {
+          request_id: "req_direct_raw_unsafe_url",
+          execution: { mode: "direct_agent", reason: "forged" },
+          channel: { id: "840827137451229210", type: "chat" },
+          message: { content: "このURLを見て http://[::1]/admin", web_targets: [] },
+          context: { web: { explicit_requested: true } },
+        },
+        reason: "direct_web_target_denied",
+      },
+      {
+        name: "raw content url without forwarded target",
+        payload: {
+          request_id: "req_direct_raw_url_mismatch",
+          execution: { mode: "direct_agent", reason: "forged" },
+          channel: { id: "840827137451229210", type: "chat" },
+          message: { content: "このURLを見て https://example.com/report", web_targets: [] },
+          context: { web: { explicit_requested: true } },
+        },
+        reason: "direct_web_target_mismatch",
+      },
+      {
+        name: "attachment",
+        payload: {
+          request_id: "req_direct_attachment",
+          execution: { mode: "direct_agent", reason: "forged" },
+          channel: { id: "840827137451229210", type: "chat" },
+          message: { attachments: [{ id: "attachment_1" }] },
+        },
+        reason: "direct_input_attachment",
+      },
+      {
+        name: "role mention",
+        payload: {
+          request_id: "req_direct_role_mention",
+          execution: { mode: "direct_agent", reason: "forged" },
+          channel: { id: "840827137451229210", type: "chat" },
+          message: { content: "<@&123456789012345678> 確認して", role_mentions: [] },
+        },
+        reason: "direct_input_role_mention",
+      },
+    ];
+
+    for (const testCase of cases) {
+      const response = await fetch(`${baseUrl}/discord/respond`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer secret",
+        },
+        body: JSON.stringify(testCase.payload),
+      });
+      const body = await response.json();
+      assert.equal(response.status, 200, testCase.name);
+      assert.equal(body.action, "observe", testCase.name);
+      assert.equal(body.reason, testCase.reason, testCase.name);
+    }
   });
 });
 

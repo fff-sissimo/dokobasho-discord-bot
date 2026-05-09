@@ -22,13 +22,14 @@ const TYPING_KEEPALIVE_INTERVAL_MS = 7500;
 const DEFAULT_CHANNEL_REGISTRY = Object.freeze({
   "1094907178671939654": Object.freeze({ name: "妖精さんより", type: "sandbox", status: "verified" }),
   "840827137451229210": Object.freeze({ name: "はじまりの酒場", type: "chat", status: "verified" }),
+  "985145703774978059": Object.freeze({ name: "配信部屋", type: "chat", status: "verified" }),
   "841686630271418429": Object.freeze({ name: "らくがきちょう", type: "creation", status: "known" }),
   "1311647968113332275": Object.freeze({ name: "アイデアボード", type: "board", status: "verified" }),
-  "1465296404455882860": Object.freeze({ name: "vostok-vol02-general", type: "project", status: "pending" }),
+  "1465296404455882860": Object.freeze({ name: "vostok-vol02-general", type: "project", status: "verified" }),
   "1465295987236143319": Object.freeze({ name: "vostok-vol02-pd", type: "project", status: "pending" }),
   "1465296093427531960": Object.freeze({ name: "vostok-vol02-music", type: "project", status: "pending" }),
   "1465296285341847765": Object.freeze({ name: "vostok-vol02-artwork", type: "project", status: "pending" }),
-  "1466404431217164288": Object.freeze({ name: "vostok-vol02-qa", type: "project", status: "pending" }),
+  "1466404431217164288": Object.freeze({ name: "vostok-vol02-qa", type: "project", status: "verified" }),
   "840827137451229208": Object.freeze({ name: "更新・進行状況", type: "ops", status: "known" }),
   "852073750294822922": Object.freeze({ name: "管理用", type: "ops", status: "known" }),
 });
@@ -568,14 +569,19 @@ const createOpenClawClient = ({
         });
       } catch (error) {
         if (error instanceof Error && error.name === "AbortError") {
-          throw new Error(`OpenClaw request timed out: timeoutMs=${timeoutMs}`);
+          const timeoutError = new Error(`OpenClaw request timed out: timeoutMs=${timeoutMs}`);
+          timeoutError.code = "OPENCLAW_API_TIMEOUT";
+          throw timeoutError;
         }
+        if (error && !error.code) error.code = "OPENCLAW_API_REQUEST_FAILED";
         throw error;
       } finally {
         clearTimeout(timer);
       }
       if (!response.ok) {
-        throw new Error(`OpenClaw request failed: status=${response.status}`);
+        const error = new Error(`OpenClaw request failed: status=${response.status}`);
+        error.code = "OPENCLAW_API_HTTP_STATUS";
+        throw error;
       }
       return response.json();
     },
@@ -634,7 +640,9 @@ const stripBotMention = (content, botId) => {
 
 const collectLinks = (content) => {
   const matches = String(content || "").match(/https?:\/\/\S+/g);
-  return matches ? matches.slice(0, 10) : [];
+  return matches
+    ? matches.map((link) => link.replace(/[)\].,、。]+$/u, "")).slice(0, 10)
+    : [];
 };
 
 const isNotionUrl = (value) => {
@@ -651,6 +659,64 @@ const isNotionUrl = (value) => {
 const collectNotionLinks = (content) =>
   collectLinks(content).filter(isNotionUrl).slice(0, 5);
 
+const isPrivateOrLocalHostname = (hostname) => {
+  const normalized = String(hostname || "").toLowerCase().replace(/^\[|\]$/g, "");
+  if (!normalized) return true;
+  if (["localhost", "localhost.localdomain"].includes(normalized)) return true;
+  if (normalized.endsWith(".local") || normalized.endsWith(".internal")) return true;
+  if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(normalized)) {
+    const parts = normalized.split(".").map(Number);
+    if (parts.some((part) => part < 0 || part > 255)) return true;
+    const [a, b] = parts;
+    return a === 10 ||
+      a === 127 ||
+      a === 0 ||
+      a === 169 && b === 254 ||
+      a === 172 && b >= 16 && b <= 31 ||
+      a === 192 && b === 168;
+  }
+  if (
+    normalized === "::1" ||
+    normalized === "::" ||
+    normalized.startsWith("fc") ||
+    normalized.startsWith("fd") ||
+    normalized.startsWith("fe80:") ||
+    normalized.startsWith("::ffff:127.") ||
+    normalized.startsWith("::ffff:10.") ||
+    normalized.startsWith("::ffff:192.168.")
+  ) return true;
+  return false;
+};
+
+const hasSecretLikeUrlPart = (url) => {
+  const source = `${url.pathname || ""} ${url.search || ""}`;
+  return /(?:api[_-]?key|token|secret|password|passwd|authorization|bearer|basic)[=/:]/i.test(source);
+};
+
+const normalizeSafeWebTarget = (value) => {
+  try {
+    const url = new URL(String(value || "").trim());
+    if (!/^https?:$/.test(url.protocol)) return null;
+    if (url.username || url.password) return null;
+    if (String(url.href).length > 500) return null;
+    if (isPrivateOrLocalHostname(url.hostname)) return null;
+    if (hasSecretLikeUrlPart(url)) return null;
+    return {
+      url: url.href,
+      hostname: url.hostname.toLowerCase(),
+    };
+  } catch {
+    return null;
+  }
+};
+
+const collectSafeWebTargets = (content) =>
+  collectLinks(content)
+    .filter((link) => !isNotionUrl(link))
+    .map(normalizeSafeWebTarget)
+    .filter(Boolean)
+    .slice(0, 5);
+
 const hasExplicitNotionWriteRequest = (content) => {
   const text = normalizeMessageContent(content);
   if (!/notion/i.test(text) && !/ノーション/.test(text)) return false;
@@ -663,6 +729,58 @@ const hasDestructiveNotionRequest = (content) => {
   const targetsNotion = /notion/i.test(text) || /ノーション/.test(text) || collectNotionLinks(text).length > 0;
   if (!targetsNotion) return false;
   return /(?:削除|消して|消去|アーカイブ|ゴミ箱|ごみ箱|trash|archive|delete|remove|move|duplicate|複製|移動)/i.test(text);
+};
+
+const isDiceShortcutRequest = (content) => {
+  const text = normalizeMessageContent(content).toLowerCase();
+  if (!text) return false;
+  return /^(?:dice|ダイス|サイコロ)(?:\s+\d*d\d+(?:\s*(?:を)?\s*\d+\s*回(?:だけ)?)?)?$/.test(text);
+};
+
+const isSimpleGreetingOrShortChat = (content) => {
+  const text = normalizeMessageContent(content);
+  if (!text || text.length > 24) return false;
+  return /^(?:おはよう|こんにちは|こんばんは|やっほ|やほ|hi|hello|ありがとう|ありがと|助かった|了解|ok|test|テスト)$/i.test(text);
+};
+
+const hasExplicitWebRequest = (content) => {
+  const text = normalizeMessageContent(content);
+  return /(?:読んで|見て|確認して|調べて|調査して|要約して|まとめて|整理して|参照して|使って)/.test(text);
+};
+
+const hasProjectWorkIntent = (content) => {
+  const text = normalizeMessageContent(content);
+  return /(?:整理して|まとめて|作って|作成して|追記して|更新して|書いて|調べて|調査して|実装|レビュー|確認して)/.test(text);
+};
+
+const chooseExecutionMode = (payload, { explicitTrigger = false } = {}) => {
+  const channelType = String(payload && payload.channel && payload.channel.type || "").trim();
+  const content = String(payload && payload.message && payload.message.content || "");
+  const notion = payload && payload.context && payload.context.notion ? payload.context.notion : {};
+  const web = payload && payload.context && payload.context.web ? payload.context.web : {};
+  if (!explicitTrigger) return { mode: "json_contract", reason: "not_explicit_trigger" };
+  if (isDiceShortcutRequest(content)) return { mode: "json_contract", reason: "dice_shortcut" };
+  if (isSimpleGreetingOrShortChat(content)) return { mode: "json_contract", reason: "short_chat" };
+  if (channelType !== "chat" && channelType !== "project") {
+    return { mode: "json_contract", reason: `channel_type:${channelType || "unknown"}` };
+  }
+  if (Array.isArray(notion.links) && notion.links.length > 0) {
+    return { mode: "direct_agent", reason: notion.destructive_request ? "notion_destructive_refusal" : "notion_target" };
+  }
+  if (notion.explicit_write_requested) return { mode: "direct_agent", reason: "notion_write_intent" };
+  if (Array.isArray(web.targets) && web.targets.length > 0 && hasExplicitWebRequest(content)) {
+    return { mode: "direct_agent", reason: "web_target" };
+  }
+  if (
+    Array.isArray(payload && payload.message && payload.message.links) &&
+    payload.message.links.some((link) => !isNotionUrl(link))
+  ) {
+    return { mode: "json_contract", reason: "external_link_without_explicit_web" };
+  }
+  if (channelType === "project" && hasProjectWorkIntent(content)) {
+    return { mode: "direct_agent", reason: "project_work" };
+  }
+  return { mode: "json_contract", reason: "default_contract" };
 };
 
 const normalizeRoleMentions = (mentions) => {
@@ -824,8 +942,10 @@ const buildOpenClawPayload = ({
   const recentMessages = normalizeContextEntries(contextEntries);
   const links = collectLinks(content);
   const notionLinks = collectNotionLinks(content);
+  const explicitWebRequested = hasExplicitWebRequest(normalizedContent);
+  const webTargets = explicitWebRequested ? collectSafeWebTargets(content) : [];
 
-  return {
+  const payload = {
     schema_version: 1,
     source: "discord",
     event_type: eventType,
@@ -854,6 +974,7 @@ const buildOpenClawPayload = ({
       attachments: normalizeAttachments(message && message.attachments),
       links,
       notion_links: notionLinks,
+      web_targets: webTargets,
     },
     context: {
       recent_messages: recentMessages,
@@ -870,6 +991,10 @@ const buildOpenClawPayload = ({
         destructive_request: hasDestructiveNotionRequest(normalizedContent),
         target_provided: notionLinks.length > 0,
       },
+      web: {
+        explicit_requested: explicitWebRequested,
+        targets: webTargets,
+      },
     },
     memory: {
       member_ids: [],
@@ -877,6 +1002,10 @@ const buildOpenClawPayload = ({
       daily_refs: [],
     },
   };
+  payload.execution = chooseExecutionMode(payload, {
+    explicitTrigger: Boolean(isReplyToBot || mentionsBot),
+  });
+  return payload;
 };
 
 const applyRuntimeStateToPayload = async ({ payload, stateStore, logger }) => {
@@ -1001,7 +1130,16 @@ const payloadHasInputRisk = (payload) => {
   if (Array.isArray(message.links) && message.links.length > 0) {
     const notionLinks = new Set((Array.isArray(message.notion_links) ? message.notion_links : []).map(String));
     const nonNotionLinks = message.links.filter((link) => !notionLinks.has(String(link)) && !isNotionUrl(link));
-    if (nonNotionLinks.length > 0) return "input_external_link";
+    if (nonNotionLinks.length > 0) {
+      const webTargets = new Set((Array.isArray(message.web_targets) ? message.web_targets : []).map((target) => String(target && target.url || "")));
+      const normalizedTargets = nonNotionLinks.map(normalizeSafeWebTarget);
+      const hasUnsafeUrl = normalizedTargets.some((target) => !target);
+      if (hasUnsafeUrl) return "input_unsafe_url";
+      const directMode = payload && payload.execution && payload.execution.mode === "direct_agent";
+      const allTargetsForwarded = normalizedTargets.every((target) => webTargets.has(target.url));
+      if (directMode && !allTargetsForwarded) return "input_unsafe_url";
+      if (!directMode) return "input_external_link";
+    }
   }
   return "";
 };
@@ -1067,6 +1205,7 @@ const MESSAGE_VISIBLE_GATE_REASONS = new Set([
   "input_role_mention",
   "input_attachment",
   "input_external_link",
+  "input_unsafe_url",
   "ops_draft_only",
   "draft",
   "non_posting_action:draft",
@@ -1075,6 +1214,11 @@ const MESSAGE_VISIBLE_GATE_REASONS = new Set([
 ]);
 const shouldReplyWithGateBlockedMessage = (reason) => MESSAGE_VISIBLE_GATE_REASONS.has(String(reason || ""));
 const isExplicitMessageTrigger = (source) => source === "mention" || source === "reply";
+const sanitizeErrorCode = (error, fallback = "OPENCLAW_CLIENT_ERROR") => {
+  const raw = String(error && (error.code || error.name) || fallback).trim().toUpperCase();
+  const safe = raw.replace(/[^A-Z0-9_:-]+/g, "_").slice(0, 64);
+  return safe || fallback;
+};
 
 const createOpenClawInteractionHandler = ({
   openClawClient,
@@ -1149,9 +1293,15 @@ const createOpenClawInteractionHandler = ({
       await interaction.editReply({ content: response.body, allowedMentions: SAFE_ALLOWED_MENTIONS });
       return { handled: true, requestId: payload.request_id, payload, response, gate };
     } catch (error) {
-      if (logger) logger.warn({ err: error, requestId: payload.request_id }, "[fairy-openclaw] interaction failed");
+      if (logger) {
+        logger.warn({
+          err: error,
+          error_code: sanitizeErrorCode(error),
+          requestId: payload.request_id,
+        }, "[fairy-openclaw] interaction failed");
+      }
       await interaction.editReply({ content: buildSafeFailureMessage(), allowedMentions: SAFE_ALLOWED_MENTIONS });
-      return { handled: true, requestId: payload.request_id, payload, error: String(error) };
+      return { handled: true, requestId: payload.request_id, payload, error: String(error), errorCode: sanitizeErrorCode(error) };
     }
   };
 };
@@ -1253,13 +1403,20 @@ const createOpenClawMessageHandler = ({
         replyMessageId: sentMessage && sentMessage.id,
       };
     } catch (error) {
-      if (logger) logger.warn({ err: error, requestId: payload.request_id }, "[fairy-openclaw] message failed");
+      if (logger) {
+        logger.warn({
+          err: error,
+          error_code: sanitizeErrorCode(error),
+          requestId: payload.request_id,
+        }, "[fairy-openclaw] message failed");
+      }
       const sentMessage = await message.reply({ content: buildSafeFailureMessage(), allowedMentions: SAFE_ALLOWED_MENTIONS });
       return {
         handled: true,
         requestId: payload.request_id,
         payload,
         error: String(error),
+        errorCode: sanitizeErrorCode(error),
         replyMessageId: sentMessage && sentMessage.id,
       };
     } finally {
@@ -1285,6 +1442,7 @@ module.exports = {
   resolveOpenClawApiUrl,
   resolveOpenClawStateDir,
   runOutboundGate,
+  sanitizeErrorCode,
   validateOpenClawChannelRegistry,
   validateOpenClawResponse,
 };
