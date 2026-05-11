@@ -526,6 +526,10 @@ const createServer = ({
         channel_id: payload.channel && payload.channel.id,
         execution_mode: directAgent ? "direct_agent" : "json_contract",
         action: response.action,
+        conversation_scope: payload.context && payload.context.conversation && payload.context.conversation.scope,
+        conversation_used_messages: payload.context && payload.context.conversation && payload.context.conversation.used_messages,
+        conversation_truncated: payload.context && payload.context.conversation && payload.context.conversation.truncated,
+        conversation_target_fetches: payload.context && payload.context.conversation && payload.context.conversation.target_fetches,
         notion_reads: Array.isArray(initialResponse.notion_requests) ? initialResponse.notion_requests.length : 0,
         notion_writes: Array.isArray(response.notion_writes) ? response.notion_writes.length : 0,
         n8n_workflow_requests: Array.isArray(initialResponse.n8n_workflow_requests)

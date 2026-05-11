@@ -74,6 +74,10 @@ Discord上で動作する多機能ボット。リマインダー機能と `/fair
     - `NOTION_VERSION`: (任意) n8n / n8n-runners 向け Notion-Version ヘッダ。未指定時 `2022-06-28`。OpenClaw Notion bridge は `OPENCLAW_NOTION_VERSION` を正本にし、未指定時 `2025-09-03` を使います。
     - `NOTION_API_BASE_URL`: (任意) Notion API base URL。未指定時 `https://api.notion.com/v1`。
     - `FAIRY_ENABLE_MESSAGE_TRIGGER`: (任意) `true/1` でメンション・返信を `/fairy` と同等に処理。未指定時 `true`。`false/0` の場合は従来の `N8N_WEBHOOK_URL` 経路を使います。
+    - `FAIRY_CONTEXT_MAX_MESSAGES`: (任意) `/fairy` / mention / bot reply で OpenClaw へ渡す Discord 会話履歴の最大件数。未指定時 `80`、上限 `100`。
+    - `FAIRY_CONTEXT_MAX_CHARS`: (任意) Discord 会話履歴本文の合計文字数上限。未指定時 `18000`、上限 `24000`。OpenClaw API の request body 上限に収まるよう大きくしすぎないでください。
+    - `FAIRY_CONTEXT_AROUND_LIMIT`: (任意) Discord URL や reply 参照 message 周辺を取得する件数。未指定時 `50`。
+    - `FAIRY_CONTEXT_MAX_FETCH_BATCHES`: (任意) 通常履歴をさかのぼる fetch 回数。未指定時 `3`。
     - `PERMANENT_MEMORY_SYNC_ENABLED`: (任意) `true/1` で恒久記憶同期Webhook受信を有効化。未指定時 `true`。
     - `PERMANENT_MEMORY_SYNC_PORT`: (任意) 同期Webhook受信ポート。未指定時 `8789`。
     - `PERMANENT_MEMORY_SYNC_PATH`: (任意) 同期Webhook受信パス。未指定時 `/internal/permanent-memory/sync`。

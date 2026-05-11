@@ -393,6 +393,24 @@ test("direct agent prompt includes direct handoff safety boundaries", () => {
       message: {
         web_targets: [{ url: "https://example.com/report", hostname: "example.com" }],
       },
+      context: {
+        conversation: {
+          scope: "thread",
+          fetched_messages: 80,
+          used_messages: 42,
+          truncated: true,
+          target_fetches: 1,
+        },
+        recent_messages: [
+          {
+            message_id: "ctx_1",
+            author_id: "bot_1",
+            author_is_bot: true,
+            context_source: "reply_reference",
+            content: "前回の返答",
+          },
+        ],
+      },
     },
   });
 
@@ -406,6 +424,10 @@ test("direct agent prompt includes direct handoff safety boundaries", () => {
   assert.match(prompt, /payload\.message\.web_targets/);
   assert.match(prompt, /公開投稿、予約投稿/);
   assert.match(prompt, /不足情報を1つ/);
+  assert.match(prompt, /payload\.context\.recent_messages/);
+  assert.match(prompt, /payload\.context\.conversation/);
+  assert.match(prompt, /author_is_bot=true/);
+  assert.match(prompt, /context_source に discord_url または reply_reference/);
 });
 
 test("direct agent text output becomes a safe Discord reply", () => {
