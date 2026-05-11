@@ -104,7 +104,7 @@ describe("discord context collector", () => {
     });
     expect(result.entries[0].context_source).toContain("discord_url");
     expect(result.entries[0].context_source).toContain("discord_url_target");
-    expect(result.meta).toMatchObject({ scope: "thread", target_fetches: 1 });
+    expect(result.meta).toMatchObject({ scope: "thread", target_fetches: 1, target_message_count: 1 });
   });
 
   it("does not fetch Discord URL context from unapproved channels", async () => {
@@ -129,6 +129,7 @@ describe("discord context collector", () => {
     expect(result.entries).toEqual([]);
     expect(result.meta.target_fetches).toBe(0);
     expect(result.meta.target_fetch_failures).toBe(1);
+    expect(result.meta.target_message_count).toBe(1);
   });
 
   it("keeps explicit target context when recent fetch fails", async () => {

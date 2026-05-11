@@ -231,6 +231,57 @@ describe("fairy OpenClaw runtime", () => {
     expect(payload.context.matched_followup_ids).toEqual([]);
   });
 
+  it("keeps safe context diagnostics in the conversation meta without raw target data", () => {
+    const allowedChannelIds = new Set(["1465296404455882860"]);
+    const payload = buildOpenClawPayload({
+      eventType: "message_create",
+      guildId: "840827137451229205",
+      channel: { id: "1465296404455882860", name: "vostok-vol02-general" },
+      message: {
+        id: "msg_context_diag",
+        author: { id: "user_1", bot: false },
+        channel: { id: "1465296404455882860", name: "vostok-vol02-general" },
+        createdAt: new Date("2026-05-08T10:00:00.000Z"),
+        mentions: { everyone: false, roles: { map: () => [] } },
+        attachments: [],
+      },
+      content: "前後の文脈を見て整理して",
+      mentionsBot: true,
+      allowedChannelIds,
+      contextEntries: {
+        entries: [
+          {
+            message_id: "ctx_diag_1",
+            author_user_id: "user_1",
+            author_is_bot: false,
+            content: "対象の前後文脈",
+            created_at: "2026-05-08T09:59:00.000Z",
+          },
+        ],
+        meta: {
+          reason: "partial_fetch_failed",
+          error_code: "DiscordAPIError[50001]",
+          fetch_batches: 1,
+          target_fetches: 1,
+          target_fetch_failures: 1,
+          target_messages: [
+            { channel_id: "1465296404455882860", message_id: "1503204999902003261", source: "discord_url" },
+          ],
+        },
+      },
+    });
+
+    expect(payload.context.conversation).toMatchObject({
+      reason: "partial_fetch_failed",
+      error_code: "DiscordAPIError_50001_",
+      fetch_batches: 1,
+      target_fetches: 1,
+      target_fetch_failures: 1,
+      target_message_count: 1,
+    });
+    expect(payload.context.conversation).not.toHaveProperty("target_messages");
+  });
+
   it("uses the v1 channel registry for phase2 chat payloads", () => {
     const allowedChannelIds = new Set(["1094907178671939654", "840827137451229210"]);
     const payload = buildOpenClawPayload({
@@ -997,7 +1048,7 @@ describe("fairy OpenClaw runtime", () => {
     expect(openClawClient.execute).not.toHaveBeenCalled();
     expect(message.channel.sendTyping).not.toHaveBeenCalled();
     expect(message.reply).toHaveBeenCalledWith({
-      content: "-# 今回は自動送信せず止めました。",
+      content: "-# URL まわりは安全確認が必要なので、ここでは止めておきます。",
       allowedMentions: SAFE_ALLOWED_MENTIONS,
     });
     await expect(fs.access(path.join(stateDir, "followups.json"))).rejects.toMatchObject({ code: "ENOENT" });
@@ -1125,6 +1176,20 @@ describe("fairy OpenClaw runtime", () => {
 
     expect(greeting.payload.execution).toEqual({ mode: "json_contract", reason: "short_chat" });
     expect(dice.payload.execution).toEqual({ mode: "json_contract", reason: "dice_shortcut" });
+
+    for (const [index, content] of ["おつかれさま！", "ありがとー", "それでOK", "なるほど", "草", "助かる"].entries()) {
+      const result = await handler(
+        { ...baseMessage, id: `msg_short_chat_${index}`, content: `<@bot_1> ${content}` },
+        { messageTriggerSource: "mention" }
+      );
+      expect(result.payload.execution).toEqual({ mode: "json_contract", reason: "short_chat" });
+    }
+
+    const workRequest = await handler(
+      { ...baseMessage, id: "msg_short_work", content: "<@bot_1> Notionに追記して" },
+      { messageTriggerSource: "mention" }
+    );
+    expect(workRequest.payload.execution).toEqual({ mode: "direct_agent", reason: "notion_write_intent" });
   });
 
   it("uses parent allowlist for project threads while preserving thread metadata for direct payloads", async () => {
@@ -1209,7 +1274,7 @@ describe("fairy OpenClaw runtime", () => {
     expect(result.gate).toEqual({ ok: false, reason: "input_unsafe_url" });
     expect(openClawClient.execute).not.toHaveBeenCalled();
     expect(message.reply).toHaveBeenCalledWith({
-      content: "-# 今回は自動送信せず止めました。",
+      content: "-# URL まわりは安全確認が必要なので、ここでは止めておきます。",
       allowedMentions: SAFE_ALLOWED_MENTIONS,
     });
   });
@@ -1315,8 +1380,9 @@ describe("fairy OpenClaw runtime", () => {
       }),
       "[fairy-openclaw] message failed"
     );
+    expect(JSON.stringify(logger.warn.mock.calls)).not.toContain("token=secret");
     expect(message.reply).toHaveBeenCalledWith({
-      content: "-# OpenClaw 直接実行に失敗しました。時間をおいてもう一度試してください。",
+      content: "-# ちょっと時間がかかりすぎました。少し範囲をしぼって、もう一度呼んでください。",
       allowedMentions: SAFE_ALLOWED_MENTIONS,
     });
     expect(message.reply.mock.calls[0][0].content).not.toContain("token=secret");
@@ -1430,7 +1496,7 @@ describe("fairy OpenClaw runtime", () => {
     expect(openClawClient.execute).not.toHaveBeenCalled();
     expect(interaction.deferReply).toHaveBeenCalledTimes(1);
     expect(interaction.editReply).toHaveBeenCalledWith({
-      content: "-# 今回は自動送信せず止めました。",
+      content: "-# mention が外へ飛ばないように、ここでは止めておきます。",
       allowedMentions: SAFE_ALLOWED_MENTIONS,
     });
     await expect(fs.access(path.join(stateDir, "followups.json"))).rejects.toMatchObject({ code: "ENOENT" });
@@ -1744,16 +1810,19 @@ describe("fairy OpenClaw runtime", () => {
         name: "external link",
         response: { schema_version: 1, action: "reply", body: "see https://example.com", requires_approval: false },
         reason: "external_link",
+        expectedContent: "-# URL まわりは安全確認が必要なので、ここでは止めておきます。",
       },
       {
         name: "everyone mention",
         response: { schema_version: 1, action: "reply", body: "hi @everyone", requires_approval: false },
         reason: "blocked_mention",
+        expectedContent: "-# mention が外へ飛ばないように、ここでは止めておきます。",
       },
       {
         name: "requires approval",
         response: { schema_version: 1, action: "reply", body: "承認待ち", requires_approval: true },
         reason: "requires_approval",
+        expectedContent: "-# これは人の確認が必要そうなので、自動送信せず止めておきます。",
       },
       {
         name: "approval side effect",
@@ -1765,16 +1834,19 @@ describe("fairy OpenClaw runtime", () => {
           approval: { attachments: ["file_1"] },
         },
         reason: "approval_side_effect",
+        expectedContent: "-# これは人の確認が必要そうなので、自動送信せず止めておきます。",
       },
       {
         name: "draft",
         response: { schema_version: 1, action: "draft", body: "下書きです", requires_approval: false },
         reason: "non_posting_action:draft",
+        expectedContent: "-# これは人の確認が必要そうなので、自動送信せず止めておきます。",
       },
       {
         name: "publish blocked",
         response: { schema_version: 1, action: "publish_blocked", body: "公開停止", requires_approval: false },
         reason: "non_posting_action:publish_blocked",
+        expectedContent: "-# これは人の確認が必要そうなので、自動送信せず止めておきます。",
       },
     ];
 
@@ -1808,7 +1880,7 @@ describe("fairy OpenClaw runtime", () => {
       expect(result.gate.reason).toBe(testCase.reason);
       expect(result.replyMessageId).toBe(`reply_${testCase.name}`);
       expect(message.reply).toHaveBeenCalledWith({
-        content: "-# 今回は自動送信せず止めました。",
+        content: testCase.expectedContent,
         allowedMentions: SAFE_ALLOWED_MENTIONS,
       });
     }

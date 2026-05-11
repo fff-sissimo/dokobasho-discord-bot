@@ -54,6 +54,7 @@ const loadConfig = (env = process.env) => {
     timeoutSeconds: parsePositiveInt(env.OPENCLAW_AGENT_TIMEOUT_SECONDS, 60),
     requestTimeoutMs: parsePositiveInt(env.OPENCLAW_REQUEST_TIMEOUT_MS, 70000),
     maxBodyBytes: parsePositiveInt(env.OPENCLAW_API_MAX_BODY_BYTES, 65536),
+    requestAuditPath: String(env.OPENCLAW_REQUEST_AUDIT_PATH || "data/request-audit.jsonl").trim(),
     promptFiles: parsePromptFiles(env.OPENCLAW_PROMPT_FILES).length > 0
       ? parsePromptFiles(env.OPENCLAW_PROMPT_FILES)
       : DEFAULT_PROMPT_FILES,

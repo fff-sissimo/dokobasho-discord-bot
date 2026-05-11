@@ -1,6 +1,8 @@
 "use strict";
 
 const http = require("node:http");
+const fs = require("node:fs/promises");
+const path = require("node:path");
 
 const { assertRuntimeConfig, loadConfig } = require("./config");
 const {
@@ -55,6 +57,127 @@ const readJsonBody = (req, maxBodyBytes) =>
 const isAuthorized = (req, apiKey) => {
   const header = String(req.headers.authorization || "").trim();
   return header === `Bearer ${apiKey}`;
+};
+
+const normalizeAuditIdentifier = (value, maxLength = 80) => {
+  const text = String(value || "").trim();
+  if (!text || /https?:\/\//i.test(text)) return "";
+  if (/(?:api[_-]?key|token|secret|password|passwd|authorization|bearer|basic)[=/:]/i.test(text)) return "";
+  if (/(?:^|[\s"'`({\[])(?:bearer|basic)\s+[a-z0-9._~+/=-]{8,}/i.test(text)) return "";
+  if (/(?:^|[\s"'`({\[])(?:sk-proj-[a-z0-9_-]{12,}|sk-[a-z0-9_-]{12,}|ghp_[a-z0-9_]{12,}|github_pat_[a-z0-9_]{12,})/i.test(text)) return "";
+  const normalized = text.replace(/[^A-Za-z0-9_.:-]+/g, "-").replace(/^-+|-+$/g, "");
+  if (/(?:bearer|basic)-[a-z0-9._~+/=-]{8,}/i.test(normalized)) return "";
+  if (/(?:sk-proj-[a-z0-9_-]{12,}|sk-[a-z0-9_-]{12,}|ghp_[a-z0-9_]{12,}|github_pat_[a-z0-9_]{12,})/i.test(normalized)) return "";
+  return normalized.slice(0, maxLength);
+};
+
+const normalizeAuditCode = (value, maxLength = 80) => {
+  const text = String(value || "").trim();
+  if (!/^[A-Za-z][A-Za-z0-9_.:-]*$/.test(text)) return "";
+  return normalizeAuditIdentifier(text, maxLength);
+};
+
+const normalizeAuditCodeWithFallback = (value, fallback, maxLength = 80) =>
+  normalizeAuditCode(value, maxLength) || normalizeAuditCode(fallback, maxLength) || "UNKNOWN";
+
+const normalizeAuditNumber = (value) => Number.isFinite(Number(value)) ? Number(value) : undefined;
+
+const buildSafeRequestLogFields = ({ payload, requestId, directAgent, response, initialResponse, gateReason }) => {
+  const conversation = payload && payload.context && payload.context.conversation ? payload.context.conversation : {};
+  return {
+    request_id: normalizeAuditIdentifier(requestId),
+    channel_id: normalizeAuditIdentifier(payload && payload.channel && payload.channel.id, 40),
+    execution_mode: directAgent ? "direct_agent" : "json_contract",
+    action: normalizeAuditCode(response && response.action, 40),
+    gate_reason: normalizeAuditCode(gateReason, 80),
+    conversation_scope: normalizeAuditCode(conversation.scope, 40),
+    conversation_used_messages: normalizeAuditNumber(conversation.used_messages),
+    conversation_truncated: payload && payload.context && payload.context.conversation
+      ? conversation.truncated === true
+      : undefined,
+    conversation_reason: normalizeAuditCode(conversation.reason, 80),
+    conversation_error_code: normalizeAuditCode(conversation.error_code, 80),
+    conversation_target_fetches: normalizeAuditNumber(conversation.target_fetches),
+    conversation_target_fetch_failures: normalizeAuditNumber(conversation.target_fetch_failures),
+    conversation_target_message_count: normalizeAuditNumber(conversation.target_message_count),
+    notion_reads: Array.isArray(initialResponse && initialResponse.notion_requests) ? initialResponse.notion_requests.length : 0,
+    notion_writes: Array.isArray(response && response.notion_writes) ? response.notion_writes.length : 0,
+    n8n_workflow_requests: Array.isArray(initialResponse && initialResponse.n8n_workflow_requests)
+      ? initialResponse.n8n_workflow_requests.length
+      : 0,
+  };
+};
+
+const buildRequestAuditRecord = ({ payload, requestId, directAgent, response, initialResponse, status, reason, gateReason, errorCode }) => ({
+  ts: new Date().toISOString(),
+  request_id: normalizeAuditIdentifier(requestId),
+  channel_id: normalizeAuditIdentifier(payload && payload.channel && payload.channel.id, 40),
+  channel_type: normalizeAuditCode(payload && payload.channel && payload.channel.type, 40),
+  execution_mode: directAgent ? "direct_agent" : "json_contract",
+  execution_reason: normalizeAuditCode(payload && payload.execution && payload.execution.reason, 80),
+  status,
+  action: normalizeAuditCode(response && response.action, 40),
+  reason: normalizeAuditCode(reason || response && response.reason, 80),
+  gate_reason: normalizeAuditCode(gateReason, 80),
+  error_code: normalizeAuditCode(errorCode, 80),
+  conversation_scope: normalizeAuditCode(
+    payload && payload.context && payload.context.conversation && payload.context.conversation.scope,
+    40
+  ),
+  conversation_reason: normalizeAuditCode(
+    payload && payload.context && payload.context.conversation && payload.context.conversation.reason,
+    80
+  ),
+  conversation_error_code: normalizeAuditCode(
+    payload && payload.context && payload.context.conversation && payload.context.conversation.error_code,
+    80
+  ),
+  conversation_used_messages: payload && payload.context && payload.context.conversation &&
+    Number.isFinite(Number(payload.context.conversation.used_messages))
+    ? Number(payload.context.conversation.used_messages)
+    : undefined,
+  conversation_truncated: payload && payload.context && payload.context.conversation
+    ? payload.context.conversation.truncated === true
+    : undefined,
+  conversation_target_fetches: payload && payload.context && payload.context.conversation &&
+    Number.isFinite(Number(payload.context.conversation.target_fetches))
+    ? Number(payload.context.conversation.target_fetches)
+    : undefined,
+  conversation_target_fetch_failures: payload && payload.context && payload.context.conversation &&
+    Number.isFinite(Number(payload.context.conversation.target_fetch_failures))
+    ? Number(payload.context.conversation.target_fetch_failures)
+    : undefined,
+  conversation_target_message_count: payload && payload.context && payload.context.conversation &&
+    Number.isFinite(Number(payload.context.conversation.target_message_count))
+    ? Number(payload.context.conversation.target_message_count)
+    : undefined,
+  notion_reads: Array.isArray(initialResponse && initialResponse.notion_requests)
+    ? initialResponse.notion_requests.length
+    : 0,
+  notion_writes: Array.isArray(response && response.notion_writes) ? response.notion_writes.length : 0,
+  n8n_workflow_requests: Array.isArray(initialResponse && initialResponse.n8n_workflow_requests)
+    ? initialResponse.n8n_workflow_requests.length
+    : 0,
+});
+
+const writeRequestAudit = async ({ config, logger, record }) => {
+  const auditPath = String(config && config.requestAuditPath || "").trim();
+  if (!auditPath) return;
+  try {
+    await fs.mkdir(path.dirname(auditPath), { recursive: true });
+    await fs.appendFile(auditPath, `${JSON.stringify(record)}\n`, { encoding: "utf8" });
+  } catch (error) {
+    if (logger && typeof logger.warn === "function") {
+      logger.warn({
+        request_id: record && record.request_id,
+        error_code: normalizeAuditCodeWithFallback(
+          error && (error.code || error.name),
+          "REQUEST_AUDIT_WRITE_FAILED",
+          64
+        ),
+      }, "[openclaw-api] request audit write failed");
+    }
+  }
 };
 
 const runOpenClawTurn = async ({ config, payload, workspaceContext, runAgentCommand }) => {
@@ -321,9 +444,9 @@ const executeNotionRound = async ({ payload, response, notionBridge, workspaceCo
     if (failed) {
       if (logger && typeof logger.warn === "function") {
         logger.warn({
-          request_id: payload.request_id,
-          notion_operation: failed.operation,
-          notion_reason: failed.reason,
+          request_id: normalizeAuditIdentifier(payload.request_id),
+          notion_operation: normalizeAuditCode(failed.operation, 40),
+          notion_reason: normalizeAuditCode(failed.reason, 80),
         }, "[openclaw-api] notion write denied or failed");
       }
       return {
@@ -407,10 +530,10 @@ const executeN8nWorkflowRound = async ({ payload, response, n8nDispatcher, logge
     if (!result.ok) {
       if (logger && typeof logger.warn === "function") {
         logger.warn({
-          request_id: payload.request_id,
-          workflow_key: request.workflow_key,
-          operation: request.operation,
-          reason: result.reason,
+          request_id: normalizeAuditIdentifier(payload.request_id),
+          workflow_key: normalizeAuditCode(request.workflow_key, 80),
+          operation: normalizeAuditCode(request.operation, 80),
+          reason: normalizeAuditCode(result.reason, 80),
         }, "[openclaw-api] n8n workflow dispatch failed");
       }
       return buildN8nNoticeResponse(result.reason, result.safe_reply);
@@ -474,14 +597,28 @@ const createServer = ({
         if (!directGate.ok) {
           const response = buildObserveResponse(directGate.reason);
           logger.info({
-            request_id: requestId,
-            channel_id: payload.channel && payload.channel.id,
-            execution_mode: "direct_agent",
-            action: response.action,
-            gate_reason: directGate.reason,
-            notion_reads: 0,
-            notion_writes: 0,
+            ...buildSafeRequestLogFields({
+              payload,
+              requestId,
+              directAgent,
+              response,
+              initialResponse: null,
+              gateReason: directGate.reason,
+            }),
           }, "[openclaw-api] request completed");
+          await writeRequestAudit({
+            config,
+            logger,
+            record: buildRequestAuditRecord({
+              payload,
+              requestId,
+              directAgent,
+              response,
+              initialResponse: null,
+              status: "blocked",
+              gateReason: directGate.reason,
+            }),
+          });
           sendJson(res, 200, response);
           return;
         }
@@ -492,13 +629,27 @@ const createServer = ({
           "Notion の削除、アーカイブ、移動、複製はできません。必要なら、内容の確認や追記だけ手伝います。"
         );
         logger.info({
-          request_id: requestId,
-          channel_id: payload.channel && payload.channel.id,
-          execution_mode: "direct_agent",
-          action: response.action,
-          notion_reads: 0,
-          notion_writes: 0,
+          ...buildSafeRequestLogFields({
+            payload,
+            requestId,
+            directAgent,
+            response,
+            initialResponse: null,
+          }),
         }, "[openclaw-api] request completed");
+        await writeRequestAudit({
+          config,
+          logger,
+          record: buildRequestAuditRecord({
+            payload,
+            requestId,
+            directAgent,
+            response,
+            initialResponse: null,
+            status: "blocked",
+            reason: response.reason,
+          }),
+        });
         sendJson(res, 200, response);
         return;
       }
@@ -522,35 +673,55 @@ const createServer = ({
             logger,
           });
       logger.info({
-        request_id: requestId,
-        channel_id: payload.channel && payload.channel.id,
-        execution_mode: directAgent ? "direct_agent" : "json_contract",
-        action: response.action,
-        conversation_scope: payload.context && payload.context.conversation && payload.context.conversation.scope,
-        conversation_used_messages: payload.context && payload.context.conversation && payload.context.conversation.used_messages,
-        conversation_truncated: payload.context && payload.context.conversation && payload.context.conversation.truncated,
-        conversation_target_fetches: payload.context && payload.context.conversation && payload.context.conversation.target_fetches,
-        notion_reads: Array.isArray(initialResponse.notion_requests) ? initialResponse.notion_requests.length : 0,
-        notion_writes: Array.isArray(response.notion_writes) ? response.notion_writes.length : 0,
-        n8n_workflow_requests: Array.isArray(initialResponse.n8n_workflow_requests)
-          ? initialResponse.n8n_workflow_requests.length
-          : 0,
+        ...buildSafeRequestLogFields({
+          payload,
+          requestId,
+          directAgent,
+          response,
+          initialResponse,
+        }),
       }, "[openclaw-api] request completed");
+      await writeRequestAudit({
+        config,
+        logger,
+        record: buildRequestAuditRecord({
+          payload,
+          requestId,
+          directAgent,
+          response,
+          initialResponse,
+          status: "completed",
+        }),
+      });
       sendJson(res, 200, response);
     } catch (error) {
+      const failureResponse = isDirectAgentPayload(payload)
+        ? buildDirectFailureResponse(error)
+        : buildObserveResponse(error && error.code ? error.code : "openclaw_execution_failed");
       logger.warn({
-        request_id: requestId,
-        channel_id: payload.channel && payload.channel.id,
-        err: error && error.message,
-        code: error && error.code,
+        request_id: normalizeAuditIdentifier(requestId),
+        channel_id: normalizeAuditIdentifier(payload && payload.channel && payload.channel.id, 40),
+        error_code: normalizeAuditCodeWithFallback(
+          error && (error.code || error.name),
+          "OPENCLAW_EXECUTION_FAILED",
+          64
+        ),
       }, "[openclaw-api] request failed");
-      sendJson(
-        res,
-        200,
-        isDirectAgentPayload(payload)
-          ? buildDirectFailureResponse(error)
-          : buildObserveResponse(error && error.code ? error.code : "openclaw_execution_failed")
-      );
+      await writeRequestAudit({
+        config,
+        logger,
+        record: buildRequestAuditRecord({
+          payload,
+          requestId,
+          directAgent: isDirectAgentPayload(payload),
+          response: failureResponse,
+          initialResponse: null,
+          status: "failed",
+          reason: error && error.code ? error.code : "openclaw_execution_failed",
+          errorCode: error && (error.code || error.name),
+        }),
+      });
+      sendJson(res, 200, failureResponse);
     }
   });
 };
@@ -574,6 +745,8 @@ if (require.main === module) {
 }
 
 module.exports = {
+  buildRequestAuditRecord,
   createServer,
   readJsonBody,
+  writeRequestAudit,
 };

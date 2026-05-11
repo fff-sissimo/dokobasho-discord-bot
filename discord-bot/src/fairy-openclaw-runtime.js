@@ -601,7 +601,7 @@ const startTypingKeepalive = ({ channel, logger, intervalMs = TYPING_KEEPALIVE_I
     } catch (error) {
       if (!loggedFailure && logger && typeof logger.warn === "function") {
         loggedFailure = true;
-        logger.warn({ err: error }, "[fairy-openclaw] failed to send typing indicator");
+        logger.warn(buildSafeErrorLogFields(error, "DISCORD_TYPING_FAILED"), "[fairy-openclaw] failed to send typing indicator");
       }
     }
   };
@@ -737,10 +737,23 @@ const isDiceShortcutRequest = (content) => {
   return /^(?:dice|ダイス|サイコロ)(?:\s+\d*d\d+(?:\s*(?:を)?\s*\d+\s*回(?:だけ)?)?)?$/.test(text);
 };
 
+const hasWorkIntentSignal = (content) => {
+  const text = normalizeMessageContent(content);
+  if (!text) return false;
+  if (collectLinks(text).length > 0) return true;
+  if (/notion|ノーション|discord(?:app)?\.com\/channels/i.test(text)) return true;
+  return hasExplicitWebRequest(text) ||
+    hasExplicitNotionWriteRequest(text) ||
+    hasDestructiveNotionRequest(text) ||
+    hasProjectWorkIntent(text);
+};
+
 const isSimpleGreetingOrShortChat = (content) => {
   const text = normalizeMessageContent(content);
-  if (!text || text.length > 24) return false;
-  return /^(?:おはよう|こんにちは|こんばんは|やっほ|やほ|hi|hello|ありがとう|ありがと|助かった|了解|ok|test|テスト)$/i.test(text);
+  if (!text || text.length > 40) return false;
+  if (hasWorkIntentSignal(text)) return false;
+  const compact = text.replace(/[\s!！?？。．、,.〜~ー…]+/g, "").toLowerCase();
+  return /^(?:おはよう|おはよ|こんにちは|こんばんは|やっほ|やほ|hi|hello|おつかれさま|お疲れ様|おつ|ありがとう|ありがと|ありがとー|助かった|助かる|了解|りょ|ok|okay|それでok|それでokay|なるほど|いいね|よさそう|草|w|test|テスト)$/.test(compact);
 };
 
 const hasExplicitWebRequest = (content) => {
@@ -859,10 +872,17 @@ const normalizeContextEntries = (entries) => {
 
 const normalizeConversationMeta = ({ meta, recentMessages, now }) => {
   const safeMeta = meta && typeof meta === "object" && !Array.isArray(meta) ? meta : {};
+  const targetMessageCount = Number.isFinite(safeMeta.target_message_count)
+    ? safeMeta.target_message_count
+    : Array.isArray(safeMeta.target_messages)
+      ? safeMeta.target_messages.length
+      : 0;
   return {
     scope: String(safeMeta.scope || "channel").slice(0, 40),
     source: "discord_history",
     generated_at: now,
+    reason: String(safeMeta.reason || "ok").replace(/[^A-Za-z0-9_:-]+/g, "_").slice(0, 64) || "ok",
+    error_code: String(safeMeta.error_code || "").replace(/[^A-Za-z0-9_:-]+/g, "_").slice(0, 64),
     requested_messages: Number.isFinite(safeMeta.requested_messages) ? safeMeta.requested_messages : recentMessages.length,
     fetched_messages: Number.isFinite(safeMeta.fetched_messages) ? safeMeta.fetched_messages : recentMessages.length,
     used_messages: recentMessages.length,
@@ -874,6 +894,7 @@ const normalizeConversationMeta = ({ meta, recentMessages, now }) => {
     fetch_batches: Number.isFinite(safeMeta.fetch_batches) ? safeMeta.fetch_batches : 0,
     target_fetches: Number.isFinite(safeMeta.target_fetches) ? safeMeta.target_fetches : 0,
     target_fetch_failures: Number.isFinite(safeMeta.target_fetch_failures) ? safeMeta.target_fetch_failures : 0,
+    target_message_count: targetMessageCount,
     included_bot_messages: recentMessages.filter((entry) => entry.author_is_bot === true).length,
     oldest_message_id: String(safeMeta.oldest_message_id || (recentMessages[0] && recentMessages[0].message_id) || ""),
     newest_message_id: String(safeMeta.newest_message_id || (recentMessages[recentMessages.length - 1] && recentMessages[recentMessages.length - 1].message_id) || ""),
@@ -1081,7 +1102,10 @@ const applyRuntimeStateToPayload = async ({ payload, stateStore, logger }) => {
     }
   } catch (error) {
     if (logger && typeof logger.warn === "function") {
-      logger.warn({ err: error, requestId: payload.request_id }, "[fairy-openclaw] failed to load runtime state");
+      logger.warn({
+        ...buildSafeErrorLogFields(error, "RUNTIME_STATE_LOAD_FAILED"),
+        requestId: payload.request_id,
+      }, "[fairy-openclaw] failed to load runtime state");
     }
   }
   return payload;
@@ -1111,13 +1135,26 @@ const saveResponseFollowupCandidates = async ({ payload, response, stateStore, l
     }
   }
   try {
-    return await stateStore.addFollowupCandidates({
+    const saved = await stateStore.addFollowupCandidates({
       metadata,
       candidates: response.followup_candidates,
     });
+    if (saved.length > 0 && logger && typeof logger.info === "function") {
+      logger.info({
+        requestId: payload.request_id,
+        channel_id: metadata.channel_id,
+        channel_type: metadata.channel_type,
+        saved_count: saved.length,
+        followup_ids: saved.map((followup) => normalizeSafeIdentifier(followup && followup.id)).filter(Boolean).slice(0, 20),
+      }, "[fairy-openclaw] followup candidates saved");
+    }
+    return saved;
   } catch (error) {
     if (logger && typeof logger.warn === "function") {
-      logger.warn({ err: error, requestId: payload.request_id }, "[fairy-openclaw] failed to save followup candidates");
+      logger.warn({
+        ...buildSafeErrorLogFields(error, "FOLLOWUP_SAVE_FAILED"),
+        requestId: payload.request_id,
+      }, "[fairy-openclaw] failed to save followup candidates");
     }
     return [];
   }
@@ -1132,10 +1169,24 @@ const applyResponseFollowupTransitions = async ({ payload, response, stateStore,
         : [];
     const closed =
       typeof stateStore.closeFollowups === "function" ? await stateStore.closeFollowups(response.closed_followup_ids) : [];
+    if ((checked.length > 0 || closed.length > 0) && logger && typeof logger.info === "function") {
+      logger.info({
+        requestId: payload.request_id,
+        channel_id: payload.channel && payload.channel.id,
+        channel_type: payload.channel && payload.channel.type,
+        checked_count: checked.length,
+        checked_ids: checked.map((followup) => normalizeSafeIdentifier(followup && followup.id)).filter(Boolean).slice(0, 20),
+        closed_count: closed.length,
+        closed_ids: closed.map((followup) => normalizeSafeIdentifier(followup && followup.id)).filter(Boolean).slice(0, 20),
+      }, "[fairy-openclaw] followup transitions applied");
+    }
     return { checked, closed };
   } catch (error) {
     if (logger && typeof logger.warn === "function") {
-      logger.warn({ err: error, requestId: payload.request_id }, "[fairy-openclaw] failed to update followup state");
+      logger.warn({
+        ...buildSafeErrorLogFields(error, "FOLLOWUP_UPDATE_FAILED"),
+        requestId: payload.request_id,
+      }, "[fairy-openclaw] failed to update followup state");
     }
     return { checked: [], closed: [] };
   }
@@ -1244,8 +1295,50 @@ const runOutboundGate = ({ response, channelId, allowedChannelIds, payload, chan
   return { ok: true, reason: "ok" };
 };
 
-const buildSafeFailureMessage = () => "-# OpenClaw 直接実行に失敗しました。時間をおいてもう一度試してください。";
-const buildGateBlockedMessage = () => "-# 今回は自動送信せず止めました。";
+const buildSafeFailureMessage = (errorCode = "") => {
+  const code = String(errorCode || "").toUpperCase();
+  if (code.includes("TIMEOUT") || code.includes("ABORT")) {
+    return "-# ちょっと時間がかかりすぎました。少し範囲をしぼって、もう一度呼んでください。";
+  }
+  if (code.includes("PAYLOAD") || code.includes("CONTEXT") || code.includes("TOO_LARGE")) {
+    return "-# 文脈が多くて読み切れませんでした。少し範囲をしぼって、もう一度呼んでください。";
+  }
+  return "-# うまく返せませんでした。少し時間をおいて、もう一度呼んでください。";
+};
+const buildGateBlockedMessage = (reason = "") => {
+  const normalizedReason = String(reason || "");
+  if (normalizedReason === "input_attachment") {
+    return "-# 添付まわりは自動では扱わず止めておきます。";
+  }
+  if (
+    normalizedReason === "input_everyone_or_here" ||
+    normalizedReason === "input_role_mention" ||
+    normalizedReason === "blocked_mention"
+  ) {
+    return "-# mention が外へ飛ばないように、ここでは止めておきます。";
+  }
+  if (
+    normalizedReason === "input_external_link" ||
+    normalizedReason === "input_unsafe_url" ||
+    normalizedReason === "external_link"
+  ) {
+    return "-# URL まわりは安全確認が必要なので、ここでは止めておきます。";
+  }
+  if (normalizedReason === "secret_like_output") {
+    return "-# 秘密っぽい文字が混ざりそうなので、送らず止めておきます。";
+  }
+  if (
+    normalizedReason === "requires_approval" ||
+    normalizedReason === "approval_side_effect" ||
+    normalizedReason === "ops_draft_only" ||
+    normalizedReason === "draft" ||
+    normalizedReason === "publish_blocked" ||
+    normalizedReason.startsWith("non_posting_action:")
+  ) {
+    return "-# これは人の確認が必要そうなので、自動送信せず止めておきます。";
+  }
+  return "-# 今回は自動送信せず止めておきます。";
+};
 const MESSAGE_VISIBLE_GATE_REASONS = new Set([
   "blocked_mention",
   "external_link",
@@ -1270,6 +1363,22 @@ const sanitizeErrorCode = (error, fallback = "OPENCLAW_CLIENT_ERROR") => {
   const safe = raw.replace(/[^A-Z0-9_:-]+/g, "_").slice(0, 64);
   return safe || fallback;
 };
+const buildSafeErrorLogFields = (error, fallback = "OPENCLAW_CLIENT_ERROR") => ({
+  error_code: sanitizeErrorCode(error, fallback),
+});
+
+const logOutboundGate = ({ logger, payload, response, gate, channelId }) => {
+  if (!logger || typeof logger.info !== "function") return;
+  logger.info({
+    requestId: payload && payload.request_id,
+    channel_id: String(channelId || (payload && payload.channel && payload.channel.id) || ""),
+    channel_type: payload && payload.channel && payload.channel.type,
+    action: response && response.action,
+    requires_approval: Boolean(response && response.requires_approval),
+    gate_result: gate && gate.ok ? "ok" : "deny",
+    gate_reason: gate && gate.reason,
+  }, "[fairy-openclaw] outbound gate evaluated");
+};
 
 const createOpenClawInteractionHandler = ({
   openClawClient,
@@ -1288,13 +1397,13 @@ const createOpenClawInteractionHandler = ({
     }
     if (String(interaction.guildId || "") !== String(guildId)) {
       const gate = { ok: false, reason: "guild_mismatch" };
-      await interaction.reply({ content: buildGateBlockedMessage(), ephemeral: true, allowedMentions: SAFE_ALLOWED_MENTIONS });
+      await interaction.reply({ content: buildGateBlockedMessage(gate.reason), ephemeral: true, allowedMentions: SAFE_ALLOWED_MENTIONS });
       return { handled: true, gate };
     }
     const operationChannelId = resolveOperationChannelId(interaction.channel, interaction.channelId);
     if (!allowed.has(operationChannelId)) {
       const gate = { ok: false, reason: "channel_not_verified" };
-      await interaction.reply({ content: buildGateBlockedMessage(), ephemeral: true, allowedMentions: SAFE_ALLOWED_MENTIONS });
+      await interaction.reply({ content: buildGateBlockedMessage(gate.reason), ephemeral: true, allowedMentions: SAFE_ALLOWED_MENTIONS });
       return { handled: true, gate };
     }
     await interaction.deferReply({ ephemeral: false });
@@ -1329,7 +1438,7 @@ const createOpenClawInteractionHandler = ({
     payload.request_id = requestIdFactory();
     const inputGate = runInputRiskGate(payload);
     if (!inputGate.ok) {
-      await interaction.editReply({ content: buildGateBlockedMessage(), allowedMentions: SAFE_ALLOWED_MENTIONS });
+      await interaction.editReply({ content: buildGateBlockedMessage(inputGate.reason), allowedMentions: SAFE_ALLOWED_MENTIONS });
       return { handled: true, requestId: payload.request_id, payload, gate: inputGate };
     }
     await applyRuntimeStateToPayload({ payload, stateStore, logger });
@@ -1344,8 +1453,9 @@ const createOpenClawInteractionHandler = ({
         payload,
         channelMetadata: payload.channel,
       });
+      logOutboundGate({ logger, payload, response, gate, channelId: operationChannelId });
       if (!gate.ok) {
-        await interaction.editReply({ content: buildGateBlockedMessage(), allowedMentions: SAFE_ALLOWED_MENTIONS });
+        await interaction.editReply({ content: buildGateBlockedMessage(gate.reason), allowedMentions: SAFE_ALLOWED_MENTIONS });
         return { handled: true, requestId: payload.request_id, payload, response, gate };
       }
       await interaction.editReply({ content: response.body, allowedMentions: SAFE_ALLOWED_MENTIONS });
@@ -1353,13 +1463,18 @@ const createOpenClawInteractionHandler = ({
     } catch (error) {
       if (logger) {
         logger.warn({
-          err: error,
-          error_code: sanitizeErrorCode(error),
+          ...buildSafeErrorLogFields(error),
           requestId: payload.request_id,
         }, "[fairy-openclaw] interaction failed");
       }
-      await interaction.editReply({ content: buildSafeFailureMessage(), allowedMentions: SAFE_ALLOWED_MENTIONS });
-      return { handled: true, requestId: payload.request_id, payload, error: String(error), errorCode: sanitizeErrorCode(error) };
+      await interaction.editReply({ content: buildSafeFailureMessage(sanitizeErrorCode(error)), allowedMentions: SAFE_ALLOWED_MENTIONS });
+      return {
+        handled: true,
+        requestId: payload.request_id,
+        payload,
+        error: sanitizeErrorCode(error),
+        errorCode: sanitizeErrorCode(error),
+      };
     }
   };
 };
@@ -1412,7 +1527,7 @@ const createOpenClawMessageHandler = ({
     if (!inputGate.ok) {
       if (isExplicitMessageTrigger(runtimeOptions.messageTriggerSource)) {
         const sentMessage = await message.reply({
-          content: buildGateBlockedMessage(),
+          content: buildGateBlockedMessage(inputGate.reason),
           allowedMentions: SAFE_ALLOWED_MENTIONS,
         });
         return {
@@ -1438,13 +1553,14 @@ const createOpenClawMessageHandler = ({
         payload,
         channelMetadata: payload.channel,
       });
+      logOutboundGate({ logger, payload, response, gate, channelId: operationChannelId });
       if (!gate.ok) {
         if (
           shouldReplyWithGateBlockedMessage(gate.reason) &&
           isExplicitMessageTrigger(runtimeOptions.messageTriggerSource)
         ) {
           const sentMessage = await message.reply({
-            content: buildGateBlockedMessage(),
+            content: buildGateBlockedMessage(gate.reason),
             allowedMentions: SAFE_ALLOWED_MENTIONS,
           });
           return {
@@ -1470,17 +1586,16 @@ const createOpenClawMessageHandler = ({
     } catch (error) {
       if (logger) {
         logger.warn({
-          err: error,
-          error_code: sanitizeErrorCode(error),
+          ...buildSafeErrorLogFields(error),
           requestId: payload.request_id,
         }, "[fairy-openclaw] message failed");
       }
-      const sentMessage = await message.reply({ content: buildSafeFailureMessage(), allowedMentions: SAFE_ALLOWED_MENTIONS });
+      const sentMessage = await message.reply({ content: buildSafeFailureMessage(sanitizeErrorCode(error)), allowedMentions: SAFE_ALLOWED_MENTIONS });
       return {
         handled: true,
         requestId: payload.request_id,
         payload,
-        error: String(error),
+        error: sanitizeErrorCode(error),
         errorCode: sanitizeErrorCode(error),
         replyMessageId: sentMessage && sentMessage.id,
       };

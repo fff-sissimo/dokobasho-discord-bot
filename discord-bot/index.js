@@ -293,9 +293,17 @@ client.on("messageCreate", async (message) => {
             reply_message_id: result.replyMessageId || "",
             operation_channel_id: result.payload && result.payload.channel && result.payload.channel.id,
             thread_id: result.payload && result.payload.channel && result.payload.channel.thread_id,
+            execution_mode: result.payload && result.payload.execution && result.payload.execution.mode,
+            execution_reason: result.payload && result.payload.execution && result.payload.execution.reason,
             conversation_used_messages: conversation && conversation.used_messages,
             conversation_truncated: conversation && conversation.truncated,
+            conversation_reason: conversation && conversation.reason,
+            conversation_error_code: conversation && conversation.error_code,
+            conversation_fetch_batches: conversation && conversation.fetch_batches,
             conversation_target_fetches: conversation && conversation.target_fetches,
+            conversation_target_fetch_failures: conversation && conversation.target_fetch_failures,
+            conversation_target_message_count: conversation && conversation.target_message_count,
+            gate_reason: result.gate && result.gate.reason,
           },
           `[fairy] message-trigger handled`
         );

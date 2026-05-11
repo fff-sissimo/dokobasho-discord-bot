@@ -1,11 +1,20 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const fs = require("node:fs/promises");
+const os = require("node:os");
+const path = require("node:path");
 const { test } = require("node:test");
 
 const { loadConfig } = require("../src/config");
-const { buildOpenClawArgs, buildOpenClawChildEnv, buildRequestScopedSessionId } = require("../src/openclaw-runner");
-const { createServer } = require("../src/server");
+const {
+  buildOpenClawArgs,
+  buildOpenClawChildEnv,
+  buildRequestScopedSessionId,
+  normalizePromptCacheKey,
+  PROMPT_CACHE_KEY_MAX_LENGTH,
+} = require("../src/openclaw-runner");
+const { buildRequestAuditRecord, createServer, writeRequestAudit } = require("../src/server");
 const {
   buildAgentPrompt,
   buildDirectAgentPrompt,
@@ -129,6 +138,113 @@ test("discord respond returns normalized OpenClaw response", async () => {
     assert.deepEqual(body.approval.mentions, []);
     assert.deepEqual(body.approval.links, []);
   });
+});
+
+test("discord respond writes a body-free request audit record", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-audit-"));
+  const auditPath = path.join(tempDir, "request-audit.jsonl");
+  const logger = { info: () => {}, warn: () => {} };
+  const infoCalls = [];
+  logger.info = (...args) => infoCalls.push(args);
+  await withServer({
+    config: { ...baseConfig, requestAuditPath: auditPath },
+    logger,
+    runAgentCommand: async () => JSON.stringify({
+      content: JSON.stringify({
+        schema_version: 1,
+        action: "reply",
+        body: "確認しました",
+      }),
+    }),
+  }, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/discord/respond`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer secret",
+      },
+      body: JSON.stringify({
+        request_id: "req_audit_1",
+        channel: { id: "1094907178671939654", type: "project" },
+        execution: { mode: "json_contract", reason: "project_work" },
+        message: { content: "secret raw discord body" },
+        context: {
+          conversation: {
+            scope: "thread",
+            reason: "Bearer abcdefghijklmnopqrstuvwxyz",
+            error_code: "https://example.com/raw?token=secret-value",
+            used_messages: 42,
+            truncated: true,
+            target_fetches: 1,
+            target_fetch_failures: 1,
+            target_message_count: 2,
+          },
+        },
+      }),
+    });
+    assert.equal(response.status, 200);
+  });
+
+  const records = (await fs.readFile(auditPath, "utf8")).trim().split("\n").map(JSON.parse);
+  assert.equal(records.length, 1);
+  assert.deepEqual(records[0], {
+    ts: records[0].ts,
+    request_id: "req_audit_1",
+    channel_id: "1094907178671939654",
+    channel_type: "project",
+    execution_mode: "json_contract",
+    execution_reason: "project_work",
+    status: "completed",
+    action: "reply",
+    reason: "",
+    gate_reason: "",
+    error_code: "",
+    conversation_scope: "thread",
+    conversation_reason: "",
+    conversation_error_code: "",
+    conversation_used_messages: 42,
+    conversation_truncated: true,
+    conversation_target_fetches: 1,
+    conversation_target_fetch_failures: 1,
+    conversation_target_message_count: 2,
+    notion_reads: 0,
+    notion_writes: 0,
+    n8n_workflow_requests: 0,
+  });
+  assert.doesNotMatch(JSON.stringify(records[0]), /secret raw discord body/);
+  const safeLog = JSON.stringify(infoCalls);
+  assert.doesNotMatch(safeLog, /Bearer|abcdefghijklmnopqrstuvwxyz|https?:\/\/|secret-value/);
+});
+
+test("discord respond failure logs only safe error codes", async () => {
+  const warnCalls = [];
+  const logger = { info: () => {}, warn: (...args) => warnCalls.push(args) };
+  await withServer({
+    config: { ...baseConfig, requestAuditPath: "" },
+    logger,
+    runAgentCommand: async () => {
+      const error = new Error("raw token=secret-value");
+      error.code = "https://example.com/raw?token=secret-value";
+      throw error;
+    },
+  }, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/discord/respond`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer secret",
+      },
+      body: JSON.stringify({
+        request_id: "req_failure_log",
+        channel: { id: "1094907178671939654", type: "chat" },
+      }),
+    });
+    assert.equal(response.status, 200);
+  });
+
+  const logs = JSON.stringify(warnCalls);
+  assert.match(logs, /OPENCLAW_EXECUTION_FAILED/);
+  assert.doesNotMatch(logs, /https?:\/\/|token=secret-value|secret-value/);
 });
 
 test("normalizes approval mentions to an empty array", () => {
@@ -623,6 +739,101 @@ test("request scoped session id falls back to a prompt hash and fixed scope keep
   );
 });
 
+test("request scoped session id is capped to the OpenClaw prompt cache key length", () => {
+  const longSessionId = "dokobasho-fairy-discord-v1-" + "s".repeat(80);
+  const longRequestId = "req_" + "r".repeat(120);
+  const scoped = buildRequestScopedSessionId({
+    sessionId: longSessionId,
+    sessionScope: "request",
+    requestId: longRequestId,
+    message: "prompt with raw body that must not be embedded",
+  });
+
+  assert.equal(scoped.length <= PROMPT_CACHE_KEY_MAX_LENGTH, true);
+  assert.doesNotMatch(scoped, /raw body/);
+  assert.doesNotMatch(scoped, /r{80}/);
+
+  const fixed = buildRequestScopedSessionId({
+    sessionId: longSessionId,
+    sessionScope: "fixed",
+    requestId: longRequestId,
+    message: "prompt",
+  });
+  assert.equal(fixed.length <= PROMPT_CACHE_KEY_MAX_LENGTH, true);
+});
+
+test("prompt cache key normalization hashes unsafe URL or secret-like values", () => {
+  const unsafeUrl = normalizePromptCacheKey({
+    value: "https://example.com/path?token=secret-value",
+    prefix: "req",
+  });
+  const unsafeSecret = normalizePromptCacheKey({
+    value: "token=secret-value",
+    prefix: "req",
+  });
+  const unsafeBearer = normalizePromptCacheKey({
+    value: "Bearer abcdefghijklmnopqrstuvwxyz",
+    prefix: "req",
+  });
+  const unsafeOpenAiKey = normalizePromptCacheKey({
+    value: "sk-proj-abcdefghijklmnop",
+    prefix: "req",
+  });
+
+  assert.match(unsafeUrl, /^req-[0-9a-f]{16}$/);
+  assert.match(unsafeSecret, /^req-[0-9a-f]{16}$/);
+  assert.match(unsafeBearer, /^req-[0-9a-f]{16}$/);
+  assert.match(unsafeOpenAiKey, /^req-[0-9a-f]{16}$/);
+  assert.doesNotMatch(unsafeUrl, /example/);
+  assert.doesNotMatch(unsafeSecret, /secret-value/);
+  assert.doesNotMatch(unsafeBearer, /Bearer/);
+  assert.doesNotMatch(unsafeOpenAiKey, /sk-proj/);
+});
+
+test("request audit records exclude raw Discord body, full URLs, and secret-like values", async () => {
+  const auditDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-audit-"));
+  const auditPath = path.join(auditDir, "request-audit.jsonl");
+  const record = buildRequestAuditRecord({
+    payload: {
+      request_id: "req_audit",
+      channel: {
+        id: "1094907178671939654",
+        type: "chat",
+      },
+      content: "raw Discord body https://example.com/path?token=secret-value",
+      context: {
+        conversation: {
+          scope: "thread",
+          used_messages: 3,
+          truncated: false,
+        },
+      },
+    },
+    requestId: "req_audit",
+    directAgent: false,
+    response: buildObserveResponse("raw Discord body fragment"),
+    initialResponse: { notion_requests: [{ id: "read_1" }] },
+    status: "completed",
+  });
+
+  await writeRequestAudit({
+    config: { requestAuditPath: auditPath },
+    logger: { warn: () => {} },
+    record,
+  });
+  const line = (await fs.readFile(auditPath, "utf8")).trim();
+  const persisted = JSON.parse(line);
+
+  assert.equal(persisted.request_id, "req_audit");
+  assert.equal(persisted.channel_id, "1094907178671939654");
+  assert.equal(persisted.reason, "");
+  assert.equal(persisted.notion_reads, 1);
+  assert.doesNotMatch(line, /raw Discord body/);
+  assert.doesNotMatch(line, /https?:\/\//);
+  assert.doesNotMatch(line, /secret-value/);
+  assert.doesNotMatch(line, /raw Discord body fragment/);
+});
+
 test("OpenClaw child env keeps runtime secrets out of the agent process", () => {
   const childEnv = buildOpenClawChildEnv({
     HOME: "/root",
@@ -1060,7 +1271,8 @@ test("discord respond direct mode returns safe diagnostics on OpenClaw failure",
     assert.equal(response.status, 200);
     assert.equal(body.action, "reply");
     assert.equal(body.reason, "OPENCLAW_TIMEOUT");
-    assert.match(body.body, /direct mode/);
+    assert.match(body.body, /うまく返せませんでした/);
+    assert.doesNotMatch(body.body, /OpenClaw|direct mode/);
     assert.doesNotMatch(body.body, /token=secret/);
   });
 });
