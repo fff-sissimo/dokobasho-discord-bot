@@ -293,6 +293,15 @@ const buildPayloadContractFailure = (error) => {
   return `slow-path payload contract failed: ${detail || "unknown validation error"}`;
 };
 
+const resolveContextEntries = async (source, options) => {
+  const raw = typeof options.contextEntriesSource === "function" ? await options.contextEntriesSource(source) : [];
+  if (Array.isArray(raw)) return normalizeContextEntries(raw);
+  if (raw && typeof raw === "object" && Array.isArray(raw.entries)) {
+    return normalizeContextEntries(raw.entries);
+  }
+  return [];
+};
+
 const handleFairyInteraction = async (interaction, options) => {
   if (interaction.commandName !== FAIRY_COMMAND_NAME) {
     return { handled: false };
@@ -307,13 +316,13 @@ const handleFairyInteraction = async (interaction, options) => {
   const deferLatencyMs = now() - startedAtMs;
 
   const invocationMessage = readInvocationMessage(interaction);
-  const contextEntries = normalizeContextEntries(
-    typeof options.contextEntriesSource === "function" ? await options.contextEntriesSource(interaction) : []
-  );
+  const contextEntries = await resolveContextEntries(interaction, options);
   const contextMessagesFromEntries = contextEntries.map((entry) => entry.content);
-  const recentMessages = options.contextSource
-    ? await options.contextSource(interaction)
-    : (contextMessagesFromEntries.length > 0 ? contextMessagesFromEntries : [invocationMessage]);
+  const recentMessages = contextMessagesFromEntries.length > 0
+    ? contextMessagesFromEntries
+    : options.contextSource
+      ? await options.contextSource(interaction)
+      : [invocationMessage];
   const caps = options.caps || DEFAULT_FAST_PATH_CAPS;
   const context = collectFastPathContext({
     recentMessages,
@@ -409,13 +418,13 @@ const handleFairyMessage = async (message, options) => {
   const sourceMessageId = options.sourceMessageId === undefined ? message.id : options.sourceMessageId;
   validateTriggerSourcePair(triggerSource, sourceMessageId);
   const invocationMessage = readInvocationMessageFromMessage(message);
-  const contextEntries = normalizeContextEntries(
-    typeof options.contextEntriesSource === "function" ? await options.contextEntriesSource(message) : []
-  );
+  const contextEntries = await resolveContextEntries(message, options);
   const contextMessagesFromEntries = contextEntries.map((entry) => entry.content);
-  const recentMessages = options.contextSource
-    ? await options.contextSource(message)
-    : (contextMessagesFromEntries.length > 0 ? contextMessagesFromEntries : [invocationMessage]);
+  const recentMessages = contextMessagesFromEntries.length > 0
+    ? contextMessagesFromEntries
+    : options.contextSource
+      ? await options.contextSource(message)
+      : [invocationMessage];
   const caps = options.caps || DEFAULT_FAST_PATH_CAPS;
   const context = collectFastPathContext({
     recentMessages,

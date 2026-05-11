@@ -192,10 +192,34 @@ describe("fairy OpenClaw runtime", () => {
       {
         message_id: "ctx_1",
         author_id: "user_1",
+        author_display_name: "",
+        author_is_bot: false,
+        channel_id: "",
+        thread_id: "",
+        reply_to_message_id: "",
+        context_source: "recent",
         content: "前の文脈",
         created_at: "2026-05-03T09:45:00.000Z",
       },
+      {
+        message_id: "ctx_2",
+        author_id: "bot_1",
+        author_display_name: "",
+        author_is_bot: true,
+        channel_id: "",
+        thread_id: "",
+        reply_to_message_id: "",
+        context_source: "recent",
+        content: "bot文脈",
+        created_at: "2026-05-03T09:50:00.000Z",
+      },
     ]);
+    expect(payload.context.conversation).toMatchObject({
+      source: "discord_history",
+      used_messages: 2,
+      included_bot_messages: 1,
+      truncated: false,
+    });
     expect(payload.context.active_thread_age_minutes).toBe(15);
     expect(payload.context.has_promised_followup).toBe(false);
     expect(payload.context.matched_followup_ids).toEqual([]);
@@ -1503,6 +1527,88 @@ describe("fairy OpenClaw runtime", () => {
     await expect(fs.access(path.join(__dirname, "..", "memory", "followups.json"))).rejects.toMatchObject({
       code: "ENOENT",
     });
+  });
+
+  it("passes stripped slash command content and allowed channel ids to context source", async () => {
+    const openClawClient = {
+      execute: jest.fn().mockResolvedValue({
+        schema_version: 1,
+        action: "reply",
+        body: "確認しました",
+        requires_approval: false,
+      }),
+    };
+    const contextEntriesSource = jest.fn().mockResolvedValue([]);
+    const handler = createOpenClawInteractionHandler({
+      openClawClient,
+      allowedChannelIds: ["1094907178671939654"],
+      guildId: "840827137451229205",
+      contextEntriesSource,
+      requestIdFactory: () => "req_interaction_context",
+    });
+    const interaction = {
+      id: "interaction_1",
+      commandName: "fairy",
+      channelId: "1094907178671939654",
+      guildId: "840827137451229205",
+      user: { id: "user_1", bot: false, username: "user" },
+      member: { displayName: "user" },
+      channel: { id: "1094907178671939654", name: "妖精さんより" },
+      options: { getString: jest.fn(() => "Discord URL を見て") },
+      isChatInputCommand: () => true,
+      deferReply: jest.fn().mockResolvedValue(undefined),
+      editReply: jest.fn().mockResolvedValue({ id: "reply_interaction_context" }),
+    };
+
+    await handler(interaction);
+
+    expect(contextEntriesSource).toHaveBeenCalledWith(expect.objectContaining({
+      interaction,
+      content: "Discord URL を見て",
+      operationChannelId: "1094907178671939654",
+      allowedChannelIds: expect.any(Set),
+    }));
+  });
+
+  it("passes stripped message content and allowed channel ids to context source", async () => {
+    const openClawClient = {
+      execute: jest.fn().mockResolvedValue({
+        schema_version: 1,
+        action: "reply",
+        body: "確認しました",
+        requires_approval: false,
+      }),
+    };
+    const contextEntriesSource = jest.fn().mockResolvedValue([]);
+    const handler = createOpenClawMessageHandler({
+      openClawClient,
+      allowedChannelIds: ["1094907178671939654"],
+      guildId: "840827137451229205",
+      contextEntriesSource,
+      requestIdFactory: () => "req_message_context",
+    });
+    const message = {
+      id: "msg_context_source",
+      content: "<@bot_1> Discord URL を見て",
+      channelId: "1094907178671939654",
+      guildId: "840827137451229205",
+      createdAt: new Date("2026-05-03T10:00:00.000Z"),
+      author: { id: "user_1", bot: false, username: "user" },
+      client: { user: { id: "bot_1" } },
+      channel: { id: "1094907178671939654", name: "妖精さんより", sendTyping: jest.fn().mockResolvedValue(undefined) },
+      mentions: { everyone: false, roles: { map: () => [] } },
+      attachments: [],
+      reply: jest.fn().mockResolvedValue({ id: "reply_message_context" }),
+    };
+
+    await handler(message, { messageTriggerSource: "mention" });
+
+    expect(contextEntriesSource).toHaveBeenCalledWith(expect.objectContaining({
+      message,
+      content: "Discord URL を見て",
+      operationChannelId: "1094907178671939654",
+      allowedChannelIds: expect.any(Set),
+    }));
   });
 
   it("does not save followup candidates for casual tomorrow talk", async () => {

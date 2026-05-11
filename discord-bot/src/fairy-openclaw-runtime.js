@@ -936,6 +936,19 @@ const normalizeAttachments = (attachments) => {
     .filter((attachment) => attachment.id || attachment.name);
 };
 
+const normalizeContextInput = (contextInput) => {
+  if (Array.isArray(contextInput)) return { entries: contextInput, meta: {} };
+  if (contextInput && typeof contextInput === "object" && Array.isArray(contextInput.entries)) {
+    return {
+      entries: contextInput.entries,
+      meta: contextInput.meta && typeof contextInput.meta === "object" && !Array.isArray(contextInput.meta)
+        ? contextInput.meta
+        : {},
+    };
+  }
+  return { entries: [], meta: {} };
+};
+
 const normalizeContextEntries = (entries) => {
   if (!Array.isArray(entries)) return [];
   return entries
@@ -943,19 +956,25 @@ const normalizeContextEntries = (entries) => {
     .map((entry) => ({
       message_id: String(entry.message_id || "").trim(),
       author_id: String(entry.author_user_id || entry.author_id || "").trim(),
+      author_display_name: String(entry.author_display_name || entry.author_name || "").trim().slice(0, 80),
       author_is_bot: Boolean(entry.author_is_bot),
+      channel_id: String(entry.channel_id || "").trim(),
+      thread_id: String(entry.thread_id || "").trim(),
+      reply_to_message_id: String(entry.reply_to_message_id || entry.reference_message_id || "").trim(),
+      context_source: String(entry.context_source || "recent").trim().slice(0, 80),
       content: normalizeMessageContent(entry.content),
       created_at: normalizeIsoTimestamp(entry.created_at || entry.createdAt || entry.createdTimestamp),
     }))
-    .filter((entry) => (
-      entry.message_id &&
-      entry.author_id &&
-      entry.content &&
-      entry.author_is_bot === false
-    ))
+    .filter((entry) => entry.message_id && entry.author_id && entry.content)
     .map((entry) => ({
       message_id: entry.message_id,
       author_id: entry.author_id,
+      author_display_name: entry.author_display_name,
+      author_is_bot: entry.author_is_bot,
+      channel_id: entry.channel_id,
+      thread_id: entry.thread_id,
+      reply_to_message_id: entry.reply_to_message_id,
+      context_source: entry.context_source,
       content: entry.content,
       created_at: entry.created_at,
     }));
@@ -981,12 +1000,19 @@ const capContextEntriesForPrompt = (entries, { currentMessageId = "" } = {}) => 
     if (remainingChars <= 0) break;
     const content = String(entry.content || "").slice(0, Math.min(OPENCLAW_CONTEXT_ENTRY_MAX_CHARS, remainingChars));
     totalChars += content.length;
-    cappedEntries.push({
+    const cappedEntry = {
       message_id: entry.message_id,
       author_id: entry.author_id,
       content,
       created_at: entry.created_at,
-    });
+    };
+    if (entry.author_display_name) cappedEntry.author_display_name = entry.author_display_name;
+    if (entry.author_is_bot === true) cappedEntry.author_is_bot = true;
+    if (entry.channel_id) cappedEntry.channel_id = entry.channel_id;
+    if (entry.thread_id) cappedEntry.thread_id = entry.thread_id;
+    if (entry.reply_to_message_id) cappedEntry.reply_to_message_id = entry.reply_to_message_id;
+    if (entry.context_source && entry.context_source !== "recent") cappedEntry.context_source = entry.context_source;
+    cappedEntries.push(cappedEntry);
   }
   return cappedEntries.filter((entry) => entry.content).reverse();
 };
@@ -1021,12 +1047,36 @@ const collectContextLinkCandidates = ({ content, contextEntries, channel, curren
   return candidates.reverse();
 };
 
+const normalizeConversationMeta = ({ meta, recentMessages, now }) => {
+  const safeMeta = meta && typeof meta === "object" && !Array.isArray(meta) ? meta : {};
+  return {
+    scope: String(safeMeta.scope || "channel").slice(0, 40),
+    source: "discord_history",
+    generated_at: now,
+    requested_messages: Number.isFinite(safeMeta.requested_messages) ? safeMeta.requested_messages : recentMessages.length,
+    fetched_messages: Number.isFinite(safeMeta.fetched_messages) ? safeMeta.fetched_messages : recentMessages.length,
+    used_messages: recentMessages.length,
+    max_chars: Number.isFinite(safeMeta.max_chars) ? safeMeta.max_chars : null,
+    total_chars: Number.isFinite(safeMeta.total_chars)
+      ? safeMeta.total_chars
+      : recentMessages.reduce((sum, entry) => sum + String(entry.content || "").length, 0),
+    truncated: safeMeta.truncated === true,
+    fetch_batches: Number.isFinite(safeMeta.fetch_batches) ? safeMeta.fetch_batches : 0,
+    target_fetches: Number.isFinite(safeMeta.target_fetches) ? safeMeta.target_fetches : 0,
+    target_fetch_failures: Number.isFinite(safeMeta.target_fetch_failures) ? safeMeta.target_fetch_failures : 0,
+    included_bot_messages: recentMessages.filter((entry) => entry.author_is_bot === true).length,
+    oldest_message_id: String(safeMeta.oldest_message_id || (recentMessages[0] && recentMessages[0].message_id) || ""),
+    newest_message_id: String(safeMeta.newest_message_id || (recentMessages[recentMessages.length - 1] && recentMessages[recentMessages.length - 1].message_id) || ""),
+  };
+};
+
 const calculateActiveThreadAgeMinutes = ({ recentMessages, currentMessageId, currentCreatedAt }) => {
   const currentMs = Date.parse(currentCreatedAt);
   if (!Number.isFinite(currentMs)) return null;
 
   const previousMs = recentMessages.reduce((latestMs, entry) => {
     if (!entry || entry.message_id === currentMessageId || !entry.created_at) return latestMs;
+    if (entry.author_is_bot === true) return latestMs;
     const candidateMs = Date.parse(entry.created_at);
     if (!Number.isFinite(candidateMs) || candidateMs > currentMs) return latestMs;
     return latestMs === null || candidateMs > latestMs ? candidateMs : latestMs;
@@ -1145,8 +1195,10 @@ const buildOpenClawPayload = ({
     normalizeIsoTimestamp(message && message.createdAt) ||
     normalizeIsoTimestamp(message && message.createdTimestamp) ||
     now;
-  const normalizedContextEntries = normalizeContextEntries(contextEntries);
+  const contextInput = normalizeContextInput(contextEntries);
+  const normalizedContextEntries = normalizeContextEntries(contextInput.entries);
   const recentMessages = capContextEntriesForPrompt(normalizedContextEntries, { currentMessageId: messageId });
+  const conversationMeta = normalizeConversationMeta({ meta: contextInput.meta, recentMessages, now });
   const resolvedChannel = resolveChannel({
     channel: message && message.channel,
     channelId: channel && channel.id,
@@ -1204,6 +1256,7 @@ const buildOpenClawPayload = ({
     context: {
       recent_messages: recentMessages,
       link_candidates: linkCandidates,
+      conversation: conversationMeta,
       active_thread_age_minutes: calculateActiveThreadAgeMinutes({
         recentMessages: normalizedContextEntries,
         currentMessageId: messageId,
@@ -1609,7 +1662,14 @@ const createOpenClawInteractionHandler = ({
       mentionsBot: true,
       allowedChannelIds: allowed,
       channelRegistry,
-      contextEntries: typeof contextEntriesSource === "function" ? await contextEntriesSource(interaction) : [],
+      contextEntries: typeof contextEntriesSource === "function"
+        ? await contextEntriesSource({
+            interaction,
+            content,
+            operationChannelId,
+            allowedChannelIds: allowed,
+          })
+        : [],
     });
     payload.request_id = requestIdFactory();
     const inputGate = runInputRiskGate(payload);
@@ -1687,7 +1747,14 @@ const createOpenClawMessageHandler = ({
       mentionsBot: runtimeOptions.messageTriggerSource !== "reply",
       allowedChannelIds: allowed,
       channelRegistry,
-      contextEntries: typeof contextEntriesSource === "function" ? await contextEntriesSource(message) : [],
+      contextEntries: typeof contextEntriesSource === "function"
+        ? await contextEntriesSource({
+            message,
+            content,
+            operationChannelId,
+            allowedChannelIds: allowed,
+          })
+        : [],
     });
     payload.request_id = requestIdFactory();
     const inputGate = runInputRiskGate(payload);

@@ -7,12 +7,17 @@ const { getSheetsClient } = require('./src/google-sheets');
 const { handleCommand, handleButton } = require('./src/command-handler');
 const {
   FAIRY_COMMAND_NAME,
-  DEFAULT_FAST_PATH_CAPS,
   createSlowPathWebhookClient,
   createFairyInteractionHandler,
   createFairyMessageHandler,
 } = require("./src/fairy-fast-path");
 const { resolveReplyAntecedentEntry } = require("./src/reply-antecedent");
+const {
+  collectRecentChannelContextEntries: collectDiscordContextEntries,
+  resolveDiscordContextLimits,
+} = require("./src/discord-context");
+const { fairyCoreAdapter } = require("./src/fairy-core-adapter");
+const { createOpenAiFirstReplyComposer } = fairyCoreAdapter;
 const {
   createOpenClawClient,
   createOpenClawInteractionHandler,
@@ -57,54 +62,65 @@ const contentMentionsBot = (content, botUserId) => {
   return mentionPattern.test(String(content || ""));
 };
 
-const collectRecentChannelContext = async (
-  interaction,
-  limit = DEFAULT_FAST_PATH_CAPS.maxMessages
-) => {
-  const entries = await collectRecentChannelContextEntries(interaction, limit);
+const discordContextLimits = resolveDiscordContextLimits(process.env);
+
+const collectRecentChannelContextResult = async (source) =>
+  collectDiscordContextEntries(source, { limits: discordContextLimits });
+
+const readInteractionContextContent = (interaction) =>
+  String(
+    interaction &&
+      interaction.options &&
+      typeof interaction.options.getString === "function"
+      ? interaction.options.getString("request", false) || ""
+      : ""
+  ).trim();
+
+const readMessageContextContent = (message) => {
+  const botId = message && message.client && message.client.user ? String(message.client.user.id || "") : "";
+  const raw = String((message && message.content) || "");
+  if (!botId) return raw.trim();
+  return raw.replace(new RegExp(`<@!?${botId}>`, "g"), " ").replace(/\s+/g, " ").trim();
+};
+
+const collectInteractionContextResult = (source) => {
+  const interaction = source && source.interaction ? source.interaction : source;
+  return collectRecentChannelContextResult({
+    ...interaction,
+    channel: interaction && interaction.channel,
+    channelId: interaction && interaction.channelId,
+    guildId: interaction && interaction.guildId,
+    client,
+    content: (source && source.content) || readInteractionContextContent(interaction),
+    operationChannelId: (source && source.operationChannelId) || (interaction && interaction.channelId),
+    allowedChannelIds: source && source.allowedChannelIds,
+  });
+};
+
+const collectMessageContextResult = (source) => {
+  const message = source && source.message ? source.message : source;
+  return collectRecentChannelContextResult({
+    ...message,
+    channel: message && message.channel,
+    channelId: message && message.channelId,
+    guildId: message && message.guildId,
+    client: (message && message.client) || client,
+    content: (source && source.content) || readMessageContextContent(message),
+    operationChannelId:
+      (source && source.operationChannelId) ||
+      (message && (message.channelId || (message.channel && message.channel.id))),
+    allowedChannelIds: source && source.allowedChannelIds,
+  });
+};
+
+const collectRecentChannelContext = async (interaction) => {
+  const entries = await collectRecentChannelContextEntries(interaction);
   return entries.map((entry) => entry.content);
 };
 
-const collectRecentChannelContextEntries = async (
-  interaction,
-  limit = DEFAULT_FAST_PATH_CAPS.maxMessages
-) => {
-  const channel = interaction.channel;
-  if (!channel || !channel.messages || typeof channel.messages.fetch !== "function") {
-    return [];
-  }
-
-  try {
-    const fetched = await channel.messages.fetch({ limit });
-    const ordered = Array.from(fetched.values()).sort(
-      (a, b) => (a.createdTimestamp || 0) - (b.createdTimestamp || 0)
-    );
-    return ordered
-      .map((message) => ({
-        message_id: typeof message.id === "string" ? message.id.trim() : "",
-        author_user_id:
-          message && message.author && typeof message.author.id === "string"
-            ? message.author.id.trim()
-            : "",
-        author_is_bot: Boolean(message && message.author && message.author.bot),
-        content: typeof message.content === "string" ? message.content.trim() : "",
-        created_at:
-          message && message.createdAt && typeof message.createdAt.toISOString === "function"
-            ? message.createdAt.toISOString()
-            : Number.isFinite(message && message.createdTimestamp)
-              ? new Date(message.createdTimestamp).toISOString()
-              : "",
-      }))
-      .filter(
-        (entry) =>
-          entry.message_id.length > 0 &&
-          entry.author_user_id.length > 0 &&
-          entry.author_is_bot === false &&
-          entry.content.length > 0
-      );
-  } catch (_error) {
-    return [];
-  }
+const collectRecentChannelContextEntries = async (interaction) => {
+  const result = await collectRecentChannelContextResult(interaction);
+  return result.entries;
 };
 
 let fairyInteractionHandler = null;
@@ -129,7 +145,7 @@ try {
       guildId: fairyRuntimeConfig.guildId,
       channelRegistry: fairyRuntimeConfig.channelRegistry,
       stateStore: openClawStateStore,
-      contextEntriesSource: (interaction) => collectRecentChannelContextEntries(interaction),
+      contextEntriesSource: collectInteractionContextResult,
       logger,
     });
     fairyMessageHandler = createOpenClawMessageHandler({
@@ -138,15 +154,13 @@ try {
       guildId: fairyRuntimeConfig.guildId,
       channelRegistry: fairyRuntimeConfig.channelRegistry,
       stateStore: openClawStateStore,
-      contextEntriesSource: (message) => collectRecentChannelContextEntries(message),
+      contextEntriesSource: collectMessageContextResult,
       logger,
     });
     logger.info(
       `[fairy] OpenClaw runtime enabled for ${fairyRuntimeConfig.allowedChannelIds.length} verified channel(s)`
     );
   } else {
-    const { fairyCoreAdapter } = require("./src/fairy-core-adapter");
-    const { createOpenAiFirstReplyComposer } = fairyCoreAdapter;
     const slowPathClient = createSlowPathWebhookClient({
       n8nBase: process.env.N8N_BASE,
       webhookPath: process.env.N8N_SLOW_PATH_WEBHOOK_PATH,
@@ -163,13 +177,13 @@ try {
     fairyInteractionHandler = createFairyInteractionHandler({
       slowPathClient,
       contextSource: (interaction) => collectRecentChannelContext(interaction),
-      contextEntriesSource: (interaction) => collectRecentChannelContextEntries(interaction),
+      contextEntriesSource: collectInteractionContextResult,
       firstReplyComposer,
     });
     fairyMessageHandler = createFairyMessageHandler({
       slowPathClient,
       contextSource: (message) => collectRecentChannelContext(message),
-      contextEntriesSource: (message) => collectRecentChannelContextEntries(message),
+      contextEntriesSource: collectMessageContextResult,
       firstReplyComposer,
     });
   }
@@ -299,8 +313,19 @@ client.on("messageCreate", async (message) => {
       });
       if (result.handled) {
         if (result.replyMessageId) rememberBotMessage(result.replyMessageId);
+        const conversation = result.payload && result.payload.context && result.payload.context.conversation;
         logger.info(
-          `[fairy] message-trigger request_id=${result.requestId} firstReply=${result.firstReplyLatencyMs}ms source=${result.firstReplySource || "fallback"}`
+          {
+            request_id: result.requestId,
+            trigger_message_id: message.id,
+            reply_message_id: result.replyMessageId || "",
+            operation_channel_id: result.payload && result.payload.channel && result.payload.channel.id,
+            thread_id: result.payload && result.payload.channel && result.payload.channel.thread_id,
+            conversation_used_messages: conversation && conversation.used_messages,
+            conversation_truncated: conversation && conversation.truncated,
+            conversation_target_fetches: conversation && conversation.target_fetches,
+          },
+          `[fairy] message-trigger handled`
         );
         if (result.firstReplySource === "fallback" && result.firstReplyError) {
           logger.warn(
