@@ -131,6 +131,77 @@ describe("discord context collector", () => {
     expect(result.meta.target_fetch_failures).toBe(1);
   });
 
+  it("fetches Discord URL context for verified registry targets under allowed categories", async () => {
+    const currentChannel = makeChannel({ id: "847493249517879316", batches: { recent: [[]] } });
+    const linkedChannel = makeChannel({ id: "1474758825193242836" });
+    linkedChannel.parentId = "1474758754007253062";
+    const targetMessage = makeMessage({ id: "1503204921187635221", channel: linkedChannel, content: "meeting context", timestamp: 5000 });
+    linkedChannel.messages.fetch.mockResolvedValue(makeCollection([targetMessage]));
+    const client = { channels: { fetch: jest.fn(async () => linkedChannel) } };
+
+    const result = await collectRecentChannelContextEntries(
+      {
+        channel: currentChannel,
+        channelId: "847493249517879316",
+        guildId: "840827137451229205",
+        client,
+        allowedChannelIds: new Set(),
+        allowedCategoryIds: new Set(["1474758754007253062"]),
+        channelRegistry: {
+          "1474758825193242836": {
+            name: "mtg部屋",
+            type: "project",
+            status: "verified",
+            category_id: "1474758754007253062",
+          },
+        },
+        content: "これ見て https://discord.com/channels/840827137451229205/1474758825193242836/1503204921187635221",
+      },
+      { limits: { maxMessages: 10, maxChars: 1000, maxCharsPerMessage: 200, fetchBatchSize: 10, maxBatches: 1, aroundLimit: 7, maxTargetMessages: 3 } }
+    );
+
+    expect(client.channels.fetch).toHaveBeenCalledWith("1474758825193242836");
+    expect(result.entries).toHaveLength(1);
+    expect(result.entries[0]).toMatchObject({
+      channel_id: "1474758825193242836",
+      content: "meeting context",
+    });
+  });
+
+  it("does not read category-allowed Discord URL context when fetched channel parent does not match registry", async () => {
+    const currentChannel = makeChannel({ id: "847493249517879316", batches: { recent: [[]] } });
+    const linkedChannel = makeChannel({ id: "1474758825193242836" });
+    linkedChannel.parentId = "other_category";
+    const client = { channels: { fetch: jest.fn(async () => linkedChannel) } };
+
+    const result = await collectRecentChannelContextEntries(
+      {
+        channel: currentChannel,
+        channelId: "847493249517879316",
+        guildId: "840827137451229205",
+        client,
+        allowedChannelIds: new Set(),
+        allowedCategoryIds: new Set(["1474758754007253062"]),
+        channelRegistry: {
+          "1474758825193242836": {
+            name: "mtg部屋",
+            type: "project",
+            status: "verified",
+            category_id: "1474758754007253062",
+          },
+        },
+        content: "これは読まない https://discord.com/channels/840827137451229205/1474758825193242836/1503204921187635221",
+      },
+      { limits: { maxMessages: 10, maxChars: 1000, maxCharsPerMessage: 200, fetchBatchSize: 10, maxBatches: 1, aroundLimit: 7, maxTargetMessages: 3 } }
+    );
+
+    expect(client.channels.fetch).toHaveBeenCalledWith("1474758825193242836");
+    expect(linkedChannel.messages.fetch).not.toHaveBeenCalled();
+    expect(result.entries).toEqual([]);
+    expect(result.meta.target_fetches).toBe(0);
+    expect(result.meta.target_fetch_failures).toBe(1);
+  });
+
   it("keeps explicit target context when recent fetch fails", async () => {
     const currentChannel = makeChannel({ id: "1501907581835153510", thread: true });
     currentChannel.messages.fetch.mockRejectedValue(new Error("recent failed"));

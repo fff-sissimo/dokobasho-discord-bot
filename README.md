@@ -65,7 +65,8 @@ Discord上で動作する多機能ボット。リマインダー機能と `/fair
     - `OPENCLAW_NOTION_VERSION`: (任意) Notion-Version ヘッダ。Notion data source API を使うため未指定時 `2025-09-03`。
     - `OPENCLAW_NOTION_MAX_RESULTS`: (任意) Notion data source query / block children の最大件数。未指定時 `5`。
     - `OPENCLAW_NOTION_MAX_RESULT_CHARS`: (任意) OpenClaw へ戻す Notion 結果の文字数上限。未指定時 `4000`。
-    - `FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS`: (`FAIRY_RUNTIME_MODE=openclaw` で必須) OpenClaw 直接実行を許可する channel ID の comma-separated list。Phase1 sandbox は `1094907178671939654`、Phase2 chat は権限確認後に `840827137451229210` を追加。
+    - `FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS`: (`FAIRY_RUNTIME_MODE=openclaw` で必須) OpenClaw 直接実行を許可する channel ID の comma-separated list。カテゴリ単位 rollout では空でも可。
+    - `FAIRY_OPENCLAW_ALLOWED_CATEGORY_IDS`: (任意) OpenClaw 直接実行を許可する category ID の comma-separated list。対象カテゴリ配下でも、registry で `verified` かつ `category_id` が一致する child channel/thread だけを通します。
     - `FAIRY_OPENCLAW_STATE_DIR`: (任意) OpenClaw runtime の followup / heartbeat state 保存先。未指定時 `/var/lib/dokobasho/fairy-openclaw-state`。指定する場合は repo 外の絶対パスにしてください。
     - `OPENCLAW_AUTONOMY_HEARTBEAT_ENABLED`: (任意) scheduler から `/internal/autonomy/heartbeat` を呼ぶかどうか。未指定時 `true`。`FAIRY_RUNTIME_MODE=openclaw` かつ `OPENCLAW_API_BASE_URL` / `OPENCLAW_API_KEY` がある場合だけ有効です。
     - `OPENCLAW_AUTONOMY_HEARTBEAT_CRON`: (任意) scheduler heartbeat runner の cron。未指定時 `*/15 * * * *`。
@@ -189,7 +190,7 @@ message trigger は mention / Bot への reply に限定され、通常会話の
 - `GUILD_ID`
 - `OPENCLAW_API_BASE_URL`
 - `OPENCLAW_API_KEY`
-- `FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS`
+- `FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS` または `FAIRY_OPENCLAW_ALLOWED_CATEGORY_IDS`
 - channel registry 正本は `../dokobasho-fairy-openclaw/runtime/discord-channel-registry.json` です。`FAIRY_OPENCLAW_CHANNEL_REGISTRY_JSON` は Hostinger などの runtime override が必要な場合だけ使います。
 
 Hostinger では `openclaw-api` service を Docker 内部だけで起動します。Traefik label と host port は付けません。
@@ -212,6 +213,7 @@ OPENCLAW_API_KEY=<openssl rand -base64 32 で生成した共有シークレッ�
 OPENCLAW_API_TIMEOUT_MS=180000
 OPENCLAW_REQUEST_AUDIT_PATH=/var/lib/dokobasho/fairy-openclaw-state/request-audit.jsonl
 FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS=1094907178671939654
+FAIRY_OPENCLAW_ALLOWED_CATEGORY_IDS=
 FAIRY_OPENCLAW_STATE_DIR=/var/lib/dokobasho/fairy-openclaw-state
 OPENCLAW_AUTONOMY_HEARTBEAT_ENABLED=true
 OPENCLAW_AUTONOMY_HEARTBEAT_CRON=*/15 * * * *
@@ -234,15 +236,21 @@ Phase2 有効化時の allowlist 例:
 FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS=1094907178671939654,840827137451229210
 ```
 
-Phase3 project rollout では、`vostok-vol02-general` (`1465296404455882860`) は deployed / smoke verified 済みです。次の追加対象は `vostok-vol02-qa` (`1466404431217164288`) で、制限付きにし、未回答らしきものの提示だけを扱います。`pd` / `music` / `artwork` は `pending` のままです。現 deployed 状態の `アイデアボード` を落とさないよう、board も allowlist に含めます。env override だけではなく、bot 側 canonical default registry と runtime registry / permission worksheet も対象 channel だけ `verified` に更新してから deploy します。
+Phase3 project rollout では、`vostok-vol02-general` (`1465296404455882860`) と `vostok-vol02-qa` (`1466404431217164288`) を channel allowlist で段階投入しました。この状態は Phase4 category rollout に supersede されています。Phase4 以降は `pd` / `music` / `artwork` も連絡ボードカテゴリ配下の verified child として扱います。現 deployed 状態の `アイデアボード` を落とさないよう、board も allowlist に含めます。env override だけではなく、bot 側 canonical default registry と runtime registry / permission worksheet も対象 channel だけ `verified` に更新してから deploy します。
 
 ```env
 FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS=1094907178671939654,840827137451229210,985145703774978059,1311647968113332275,1465296404455882860,1466404431217164288
 ```
 
+Phase4 category rollout では、始まりの酒場、配信部屋、作業部屋、MTG部屋、連絡ボードの 5 カテゴリを `FAIRY_OPENCLAW_ALLOWED_CATEGORY_IDS` で許可します。カテゴリ ID 自体を許可しても、実際に OpenClaw に渡るのは registry で `verified` かつ `category_id` が実際の親カテゴリと一致する child channel / thread だけです。未登録チャンネルや移動されたチャンネルは `channel_not_verified` で止まります。
+
+```env
+FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS=
+FAIRY_OPENCLAW_ALLOWED_CATEGORY_IDS=1201092282254893066,1098535279549235280,847492905618505748,1474758754007253062,843363361121894400
+```
+
 channel registry は `verified` のみ送信対象です。`pending` / `known` / `not-connected` は名前と type を保持しますが、allowlist に入れると起動時に停止します。
-`配信部屋` voice channel chat (`985145703774978059`)、`アイデアボード` (`1311647968113332275`)、`vostok-vol02-general` (`1465296404455882860`)、`vostok-vol02-qa` (`1466404431217164288`) は repo 正本 registry では `verified` です。
-残りの Vostok project channels は repo 正本 registry では `registry_status=pending`、ops channels は `registry_status=known` です。project / ops を送信対象にする場合も、permission worksheet を確認し、repo 正本 registry と bot 側 canonical default registry の両方で対象 channel だけを明示的に `verified` へ昇格してください。起動時 gate は、canonical default registry が `pending` / `known` / 未登録の channel を env override だけで `verified` にする運用を拒否します。
+カテゴリ rollout 対象の child channel は repo 正本 registry で `verified` です。ops channels は `registry_status=known` のまま direct handoff 対象外です。project / ops を送信対象にする場合も、permission worksheet を確認し、repo 正本 registry と bot 側 canonical default registry の両方で対象 channel だけを明示的に `verified` へ昇格してください。起動時 gate は、canonical default registry が `pending` / `known` / 未登録の channel を env override だけで `verified` にする運用を拒否します。
 外部設定で検証済みにする場合は、Discord snowflake を文字列 key にした JSON を指定します。
 
 ```env
@@ -256,7 +264,7 @@ FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS=1094907178671939654,840827137451229210,985145
 送信直前 gate は、allowlist 外チャンネル、承認必須応答、everyone/here、role mention、添付、外部 URL を自動送信しません。
 payload の `channel.type` は registry から解決し、thread 投稿では `thread_id`、`parent_channel_id`、`category_id` を文字列で渡します。
 OpenClaw response の `followup_candidates` は、入力側 context が明示 followup 依頼と判定された場合だけ `followups.json` に保存します。保存対象は channel ID、channel type、source message ID、member ID、summary、due_at、status、checked/closed timestamp、notes に限定し、Discord の raw 本文は保存しません。due を過ぎた open followup の ID は次回 payload の `context.matched_followup_ids` に反映されます。
-通常 rollback は `FAIRY_RUNTIME_MODE=openclaw` のまま `FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS` と runtime registry override を直前の verified baseline に戻し、`discord-bot` service を再作成します。`FAIRY_RUNTIME_MODE=n8n` へ戻す対応は emergency fallback として通常 rollback とは分けて扱います。
+通常 rollback は `FAIRY_RUNTIME_MODE=openclaw` のまま `FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS` / `FAIRY_OPENCLAW_ALLOWED_CATEGORY_IDS` と runtime registry override を直前の verified baseline に戻し、`discord-bot` service を再作成します。`FAIRY_RUNTIME_MODE=n8n` へ戻す対応は emergency fallback として通常 rollback とは分けて扱います。
 
 #### fairy-core v1.1.0 の追加確認項目（speaker-aware context）
 

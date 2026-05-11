@@ -52,6 +52,29 @@ describe("fairy OpenClaw runtime", () => {
     ).toThrow("FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS");
   });
 
+  it("allows OpenClaw config with verified category ids only", () => {
+    const config = createOpenClawRuntimeConfig({
+      FAIRY_RUNTIME_MODE: "openclaw",
+      OPENCLAW_API_BASE_URL: "https://openclaw.example/discord/respond",
+      OPENCLAW_API_KEY: "key",
+      GUILD_ID: "guild_1",
+      FAIRY_OPENCLAW_ALLOWED_CATEGORY_IDS: "1201092282254893066,1098535279549235280",
+    });
+
+    expect(config.allowedChannelIds).toEqual([]);
+    expect(config.allowedCategoryIds).toEqual(["1201092282254893066", "1098535279549235280"]);
+
+    expect(() =>
+      createOpenClawRuntimeConfig({
+        FAIRY_RUNTIME_MODE: "openclaw",
+        OPENCLAW_API_BASE_URL: "https://openclaw.example/discord/respond",
+        OPENCLAW_API_KEY: "key",
+        GUILD_ID: "guild_1",
+        FAIRY_OPENCLAW_ALLOWED_CATEGORY_IDS: "865619584282918982",
+      })
+    ).toThrow("865619584282918982");
+  });
+
   it("uses OPENCLAW_API_BASE_URL with OPENCLAW_API_URL as a legacy alias", () => {
     expect(resolveOpenClawApiUrl({ OPENCLAW_API_BASE_URL: "https://openclaw.example/discord/respond" }))
       .toBe("https://openclaw.example/discord/respond");
@@ -403,15 +426,15 @@ describe("fairy OpenClaw runtime", () => {
       }).channelRegistry["1311647968113332275"].status
     ).toBe("verified");
 
-    expect(() =>
+    expect(
       createOpenClawRuntimeConfig({
         ...baseEnv,
         FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS: "841686630271418429",
-      })
-    ).toThrow("841686630271418429");
+      }).channelRegistry["841686630271418429"].status
+    ).toBe("verified");
   });
 
-  it("allows the verified Vostok general and QA projects and rejects remaining pending project or ops entries", () => {
+  it("allows verified Vostok projects and rejects ops entries", () => {
     const baseEnv = {
       FAIRY_RUNTIME_MODE: "openclaw",
       OPENCLAW_API_BASE_URL: "https://openclaw.example/discord/respond",
@@ -421,7 +444,7 @@ describe("fairy OpenClaw runtime", () => {
 
     expect(DEFAULT_CHANNEL_REGISTRY["1465296404455882860"].status).toBe("verified");
     expect(DEFAULT_CHANNEL_REGISTRY["1466404431217164288"].status).toBe("verified");
-    expect(DEFAULT_CHANNEL_REGISTRY["1465295987236143319"].status).toBe("pending");
+    expect(DEFAULT_CHANNEL_REGISTRY["1465295987236143319"].status).toBe("verified");
     expect(DEFAULT_CHANNEL_REGISTRY["840827137451229208"].status).toBe("known");
 
     expect(
@@ -431,12 +454,12 @@ describe("fairy OpenClaw runtime", () => {
       }).channelRegistry["1466404431217164288"].status
     ).toBe("verified");
 
-    expect(() =>
+    expect(
       createOpenClawRuntimeConfig({
         ...baseEnv,
         FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS: "1094907178671939654,1465295987236143319",
-      })
-    ).toThrow("1465295987236143319");
+      }).channelRegistry["1465295987236143319"].status
+    ).toBe("verified");
 
     expect(() =>
       createOpenClawRuntimeConfig({
@@ -995,7 +1018,7 @@ describe("fairy OpenClaw runtime", () => {
       channelRegistry,
     });
 
-    expect(DEFAULT_CHANNEL_REGISTRY["841686630271418429"].status).toBe("known");
+    expect(DEFAULT_CHANNEL_REGISTRY["841686630271418429"].status).toBe("verified");
     expect(payload.channel.type).toBe("creation");
     expect(payload.channel.registered).toBe(true);
   });
@@ -1070,6 +1093,189 @@ describe("fairy OpenClaw runtime", () => {
         }).reason
       ).toBe("channel_not_verified");
     }
+  });
+
+  it("allows verified child channels by category allowlist without direct channel allowlist", () => {
+    const allowedChannelIds = new Set();
+    const allowedCategoryIds = new Set(["1098535279549235280"]);
+    const channel = {
+      id: "865619584282918982",
+      name: "配信部屋",
+      parentId: "1098535279549235280",
+      isThread: () => false,
+    };
+    const payload = buildOpenClawPayload({
+      eventType: "message_create",
+      guildId: "840827137451229205",
+      channel,
+      message: {
+        id: "msg_category_child",
+        author: { id: "user_1", username: "user" },
+        channel,
+        createdAt: new Date("2026-05-08T10:00:00.000Z"),
+        mentions: { everyone: false, roles: { map: () => [] } },
+        attachments: [],
+      },
+      content: "<@bot_1> 配信内容を整理して",
+      mentionsBot: true,
+      allowedChannelIds,
+      allowedCategoryIds,
+    });
+
+    expect(payload.channel).toEqual(expect.objectContaining({
+      id: "865619584282918982",
+      type: "chat",
+      registered: true,
+      category_id: "1098535279549235280",
+      gate_source: "category",
+    }));
+    expect(
+      runOutboundGate({
+        response: validateOpenClawResponse({ action: "reply", body: "整理するね" }),
+        channelId: payload.channel.id,
+        allowedChannelIds,
+        allowedCategoryIds,
+        payload,
+      })
+    ).toEqual({ ok: true, reason: "ok" });
+  });
+
+  it("does not allow category children when the actual parent category mismatches the registry", () => {
+    const allowedChannelIds = new Set();
+    const allowedCategoryIds = new Set(["1098535279549235280"]);
+    const channel = {
+      id: "865619584282918982",
+      name: "配信部屋",
+      parentId: "1201092282254893066",
+      isThread: () => false,
+    };
+    const payload = buildOpenClawPayload({
+      eventType: "message_create",
+      guildId: "840827137451229205",
+      channel,
+      message: {
+        id: "msg_category_mismatch",
+        author: { id: "user_1", username: "user" },
+        channel,
+        createdAt: new Date("2026-05-08T10:00:00.000Z"),
+        mentions: { everyone: false, roles: { map: () => [] } },
+        attachments: [],
+      },
+      content: "<@bot_1> 配信内容を整理して",
+      mentionsBot: true,
+      allowedChannelIds,
+      allowedCategoryIds,
+    });
+
+    expect(payload.channel.registered).toBe(false);
+    expect(
+      runOutboundGate({
+        response: validateOpenClawResponse({ action: "reply", body: "整理するね" }),
+        channelId: payload.channel.id,
+        allowedChannelIds,
+        allowedCategoryIds,
+        payload,
+      }).reason
+    ).toBe("channel_not_verified");
+  });
+
+  it("denies category gates when uncached thread parent category cannot be verified", () => {
+    const allowedChannelIds = new Set();
+    const allowedCategoryIds = new Set(["843363361121894400"]);
+    const threadChannel = {
+      id: "1501907581835153510",
+      name: "制作相談",
+      isThread: () => true,
+      parentId: "1465296404455882860",
+    };
+    const payload = buildOpenClawPayload({
+      eventType: "message_create",
+      guildId: "840827137451229205",
+      channel: { id: "1465296404455882860", name: "vostok-vol02-general" },
+      message: {
+        id: "msg_uncached_thread_category",
+        author: { id: "user_1", username: "user" },
+        channel: threadChannel,
+        createdAt: new Date("2026-05-08T10:00:00.000Z"),
+        mentions: { everyone: false, roles: { map: () => [] } },
+        attachments: [],
+      },
+      content: "<@bot_1> このスレッドの話を整理して",
+      mentionsBot: true,
+      allowedChannelIds,
+      allowedCategoryIds,
+    });
+
+    expect(payload.channel).toEqual(expect.objectContaining({
+      id: "1465296404455882860",
+      thread_id: "1501907581835153510",
+      parent_channel_id: "1465296404455882860",
+      category_id: "",
+      registered: false,
+    }));
+  });
+
+  it("allows category gates for threads after fetching the parent category", async () => {
+    const allowedCategoryIds = ["843363361121894400"];
+    const openClawClient = {
+      execute: jest.fn().mockResolvedValue({ action: "reply", body: "整理するね" }),
+    };
+    const replies = [];
+    const handler = createOpenClawMessageHandler({
+      openClawClient,
+      allowedChannelIds: [],
+      allowedCategoryIds,
+      guildId: "840827137451229205",
+      requestIdFactory: () => "req_thread_parent_fetch",
+    });
+    const threadChannel = {
+      id: "1501907581835153510",
+      name: "制作相談",
+      isThread: () => true,
+      parentId: "1465296404455882860",
+    };
+    const message = {
+      id: "msg_thread_parent_fetch",
+      content: "<@bot_1> このスレッドの話を整理して",
+      author: { id: "user_1", username: "user", bot: false },
+      channelId: "1501907581835153510",
+      guildId: "840827137451229205",
+      channel: {
+        ...threadChannel,
+        sendTyping: jest.fn().mockResolvedValue(undefined),
+      },
+      client: {
+        user: { id: "bot_1" },
+        channels: {
+          fetch: jest.fn().mockResolvedValue({
+            id: "1465296404455882860",
+            name: "vostok-vol02-general",
+            parentId: "843363361121894400",
+          }),
+        },
+      },
+      mentions: { everyone: false, roles: { map: () => [] } },
+      attachments: [],
+      createdAt: new Date("2026-05-08T10:00:00.000Z"),
+      reply: jest.fn(async (payload) => {
+        replies.push(payload);
+        return { id: "reply_1" };
+      }),
+    };
+
+    const result = await handler(message, { messageTriggerSource: "mention" });
+
+    expect(result.handled).toBe(true);
+    expect(result.gate).toEqual({ ok: true, reason: "ok" });
+    expect(openClawClient.execute).toHaveBeenCalledTimes(1);
+    expect(openClawClient.execute.mock.calls[0][0].channel).toEqual(expect.objectContaining({
+      id: "1465296404455882860",
+      thread_id: "1501907581835153510",
+      category_id: "843363361121894400",
+      registered: true,
+      gate_source: "category",
+    }));
+    expect(replies[0].content).toBe("整理するね");
   });
 
   it("excludes the current message itself from active thread age calculation", () => {
