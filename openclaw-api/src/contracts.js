@@ -31,6 +31,15 @@ const VALID_N8N_WORKFLOW_OPERATIONS = new Set([
   "notion.create_page",
   "notion.append_blocks",
 ]);
+const VALID_AUTONOMY_EVENT_TYPES = new Set(["heartbeat", "dreaming"]);
+const VALID_AUTONOMY_ACTIONS = new Set([
+  "no_op",
+  "mark_checked",
+  "mark_closed",
+  "draft_followup_message",
+  "needs_human_confirmation",
+  "record_dream",
+]);
 const BLOCKED_NOTION_OPERATION_PATTERN = /delete|archive|trash|move|duplicate|erase|remove/i;
 const DIRECT_REPLY_MAX_LENGTH = 1600;
 
@@ -38,6 +47,7 @@ const normalizeString = (value) => String(value || "").replace(/\s+/g, " ").trim
 const normalizeLongString = (value) => String(value || "").replace(/\r\n/g, "\n").trim().slice(0, 8000);
 const hasOwn = (source, key) => Boolean(source && Object.prototype.hasOwnProperty.call(source, key));
 const pickOwn = (primary, key, fallback) => (hasOwn(primary, key) ? primary[key] : fallback && fallback[key]);
+const DENIED_AUTONOMY_PROMPT_KEYS = /(?:^|_)(?:raw|contents?|bod(?:y|ies)|messages?|texts?|urls?|links?|tokens?|secrets?|authorization|api[_-]?keys?|passwords?)(?:_|$)/i;
 const normalizeSafeIdentifier = (value) => {
   const text = String(value || "").trim();
   if (!text || text.length > 80) return "";
@@ -72,6 +82,93 @@ const buildObserveResponse = (reason) => ({
 });
 
 const normalizeArray = (value) => (Array.isArray(value) ? value : []);
+
+const normalizeAutonomyText = (value, maxLength = 1000) => {
+  const withoutUnsafe = String(value || "")
+    .replace(/\r\n/g, "\n")
+    .replace(/@everyone|@here/gi, "")
+    .replace(/<@!?\d+>|<@&\d+>|<#\d+>/g, "")
+    .replace(/@[^\s]+/g, "")
+    .replace(/https?:\/\/\S+/gi, "")
+    .replace(/(?:api[_-]?key|token|secret|password|passwd|authorization)\s*[:=]\s*[^\s]+/gi, "")
+    .replace(/(?:bearer|basic)\s+[a-z0-9._~+/=-]{8,}/gi, "")
+    .replace(/(?:sk-proj-[a-z0-9_-]{12,}|sk-[a-z0-9_-]{12,}|ghp_[a-z0-9_]{12,}|github_pat_[a-z0-9_]{12,})/gi, "")
+    .split("\n")
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+  return withoutUnsafe.slice(0, maxLength).trim();
+};
+
+const sanitizeAutonomyPayloadForPrompt = (value, depth = 0) => {
+  if (depth > 4) return "[truncated]";
+  if (value === null || value === undefined) return value;
+  if (typeof value === "string") return normalizeAutonomyText(value, 1000);
+  if (typeof value === "number" || typeof value === "boolean") return value;
+  if (Array.isArray(value)) return value.slice(0, 25).map((item) => sanitizeAutonomyPayloadForPrompt(item, depth + 1));
+  if (typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([key]) => !DENIED_AUTONOMY_PROMPT_KEYS.test(key))
+        .slice(0, 60)
+        .map(([key, item]) => [normalizeSafeIdentifier(key) || "field", sanitizeAutonomyPayloadForPrompt(item, depth + 1)])
+    );
+  }
+  return "";
+};
+
+const normalizeAutonomyEventType = (value) => {
+  const eventType = normalizeString(value);
+  return VALID_AUTONOMY_EVENT_TYPES.has(eventType) ? eventType : "";
+};
+
+const normalizeAutonomyAction = (value) => {
+  const action = normalizeString(value);
+  return VALID_AUTONOMY_ACTIONS.has(action) ? action : "no_op";
+};
+
+const normalizeAutonomyIds = (value) =>
+  normalizeArray(value).map((item) => normalizeSafeIdentifier(item)).filter(Boolean).slice(0, 50);
+
+const normalizeAutonomyDreamRecord = (record) => {
+  const source = record && typeof record === "object" && !Array.isArray(record) ? record : {};
+  return {
+    summary: normalizeAutonomyText(source.summary || source.body || source.text, 400),
+    reason: normalizeAutonomyText(source.reason, 240),
+    kind: normalizeSafeIdentifier(source.kind),
+  };
+};
+
+const normalizeAutonomyDreamRecords = (value) =>
+  normalizeArray(value)
+    .map(normalizeAutonomyDreamRecord)
+    .filter((record) => record.summary)
+    .slice(0, 10);
+
+const buildAutonomyCounts = (response) => ({
+  checked_followups: Array.isArray(response && response.checked_followup_ids) ? response.checked_followup_ids.length : 0,
+  closed_followups: Array.isArray(response && response.closed_followup_ids) ? response.closed_followup_ids.length : 0,
+  dream_records: Array.isArray(response && response.dream_records) ? response.dream_records.length : 0,
+  has_draft_followup_message: Boolean(response && response.draft_followup_message),
+});
+
+const buildNoOpAutonomyResponse = (eventType, reason) => {
+  const response = {
+    schema_version: 1,
+    event_type: normalizeAutonomyEventType(eventType) || "heartbeat",
+    action: "no_op",
+    reason: normalizeAutonomyText(reason, 120) || "no_op",
+    checked_followup_ids: [],
+    closed_followup_ids: [],
+    draft_followup_message: "",
+    dream_records: [],
+  };
+  return {
+    ...response,
+    counts: buildAutonomyCounts(response),
+  };
+};
 
 const normalizeNotionTarget = (target) => {
   const source = target && typeof target === "object" && !Array.isArray(target) ? target : {};
@@ -342,6 +439,71 @@ const buildDirectAgentPrompt = ({ payload, workspaceContext }) => [
   "```",
 ].join("\n");
 
+const buildAutonomyPrompt = ({ eventType, payload, workspaceContext }) => {
+  const normalizedEventType = normalizeAutonomyEventType(eventType) || normalizeAutonomyEventType(payload && payload.event_type);
+  const safeEventType = normalizedEventType || "heartbeat";
+  const safePayload = sanitizeAutonomyPayloadForPrompt({
+    ...(payload && typeof payload === "object" && !Array.isArray(payload) ? payload : {}),
+    event_type: safeEventType,
+  });
+  return [
+    "あなたは Discord 上の `どこばしょのようせい` の OpenClaw 自律判断 API です。",
+    "この endpoint は HEARTBEAT / DREAMING の内部点検専用です。Discord に直接投稿せず、Notion や n8n workflow を dispatch せず、外部 side effect を起こさないでください。",
+    "返却は JSON だけにしてください。event_type は heartbeat または dreaming だけです。",
+    "action は no_op, mark_checked, mark_closed, draft_followup_message, needs_human_confirmation, record_dream のどれかだけです。",
+    "Discord 投稿、reaction、外部 URL 取得、Notion 読取/書込、n8n 実行、公開投稿、通知、予約投稿はすべて禁止です。",
+    "mention、URL、token、secret、password、authorization、Bearer、API key らしき値、raw payload、未加工本文を返却 JSON に含めないでください。",
+    "heartbeat は状態確認だけを行い、必要なら checked_followup_ids または closed_followup_ids に安全な ID だけを入れてください。本文や URL は入れないでください。",
+    "draft_followup_message は保存候補の文案だけです。送信指示ではありません。文案にも mention、URL、秘密値を含めないでください。",
+    "dreaming は夢見の保存候補だけを dream_records に入れてください。外部保存はしません。record_dream は保存候補を返すだけの action です。",
+    "人間の確認が必要なら needs_human_confirmation にし、reason には短い安全な code か要約だけを入れてください。",
+    "counts は省略しても構いません。API 側で安全な件数に再計算します。",
+    "",
+    "# Runtime files",
+    workspaceContext || "(no workspace context loaded)",
+    "",
+    "# Safe autonomy payload",
+    "```json",
+    JSON.stringify(safePayload, null, 2),
+    "```",
+  ].join("\n");
+};
+
+const normalizeAutonomyResponse = ({ eventType, value }) => {
+  const normalizedEventType = normalizeAutonomyEventType(eventType);
+  if (!normalizedEventType) return buildNoOpAutonomyResponse("heartbeat", "invalid_autonomy_event_type");
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return buildNoOpAutonomyResponse(normalizedEventType, "invalid_autonomy_response");
+  }
+
+  const action = normalizeAutonomyAction(value.action);
+  const response = {
+    schema_version: 1,
+    event_type: normalizedEventType,
+    action,
+    reason: normalizeAutonomyText(value.reason, 120),
+    checked_followup_ids: normalizeAutonomyIds(value.checked_followup_ids || value.mark_checked_ids),
+    closed_followup_ids: normalizeAutonomyIds(value.closed_followup_ids || value.mark_closed_ids),
+    draft_followup_message: normalizeAutonomyText(
+      value.draft_followup_message || value.draft_message || value.body,
+      1000
+    ),
+    dream_records: normalizeAutonomyDreamRecords(value.dream_records || value.dream_candidates || value.records),
+  };
+
+  if (response.action !== "mark_checked") response.checked_followup_ids = [];
+  if (response.action !== "mark_closed") response.closed_followup_ids = [];
+  if (response.action !== "draft_followup_message" && response.action !== "needs_human_confirmation") {
+    response.draft_followup_message = "";
+  }
+  if (response.action !== "record_dream") response.dream_records = [];
+
+  return {
+    ...response,
+    counts: buildAutonomyCounts(response),
+  };
+};
+
 const collectJsonObjectTexts = (text) => {
   const source = String(text || "").trim();
   const candidates = [];
@@ -446,6 +608,16 @@ const parseDirectAgentResponse = (stdout) => {
   };
 };
 
+const parseAutonomyResponse = ({ eventType, stdout }) => {
+  const parsedStdout = parseJsonObject(stdout);
+  if (!parsedStdout) return buildNoOpAutonomyResponse(eventType, "unparseable_autonomy_output");
+  const agentText = extractAgentText(parsedStdout);
+  if (!agentText) return normalizeAutonomyResponse({ eventType, value: parsedStdout });
+  const parsedAgentText = parseJsonObject(agentText, { preferLast: true });
+  if (parsedAgentText) return normalizeAutonomyResponse({ eventType, value: parsedAgentText });
+  return normalizeAutonomyResponse({ eventType, value: parsedStdout });
+};
+
 const buildDirectFailureResponse = (error) => {
   const raw = String(error && (error.code || error.name) || "OPENCLAW_DIRECT_FAILED").trim().toUpperCase();
   const reason = raw.replace(/[^A-Z0-9_:-]+/g, "_").slice(0, 64) || "OPENCLAW_DIRECT_FAILED";
@@ -459,13 +631,16 @@ const buildDirectFailureResponse = (error) => {
 
 module.exports = {
   buildAgentPrompt,
+  buildAutonomyPrompt,
   buildDirectAgentPrompt,
   buildDirectFailureResponse,
   buildObserveResponse,
   loadWorkspaceContext,
   normalizeDirectReplyText,
+  normalizeAutonomyResponse,
   normalizeN8nWorkflowRequests,
   normalizeOpenClawResponse,
   parseAgentResponse,
+  parseAutonomyResponse,
   parseDirectAgentResponse,
 };

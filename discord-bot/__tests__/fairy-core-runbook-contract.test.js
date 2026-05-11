@@ -47,4 +47,21 @@ describe("fairy-core rollout runbook contract", () => {
     expect(envExample).toContain("# OPENCLAW_API_URL=");
     expect(envExample).not.toMatch(/^OPENCLAW_API_URL=/m);
   });
+
+  it("README と Hostinger compose に scheduler autonomy env と state volume を持つ", () => {
+    const readme = fs.readFileSync(readmePath, "utf8");
+    const compose = fs.readFileSync(hostingerComposeExamplePath, "utf8");
+
+    expect(readme).toContain("OPENCLAW_AUTONOMY_HEARTBEAT_CRON");
+    expect(readme).toContain("OPENCLAW_AUTONOMY_DREAMING_CRON");
+    expect(readme).toContain("autonomy-audit.jsonl");
+    expect(readme).toContain("dreams/YYYY-MM-DD.json");
+
+    expect(compose).toContain("FAIRY_RUNTIME_MODE=${FAIRY_RUNTIME_MODE:-n8n}");
+    expect(compose).toContain("OPENCLAW_REQUEST_AUDIT_PATH=${OPENCLAW_REQUEST_AUDIT_PATH:-/var/lib/dokobasho/fairy-openclaw-state/request-audit.jsonl}");
+    expect(compose).toContain("OPENCLAW_API_BASE_URL=${OPENCLAW_API_BASE_URL:-http://openclaw-api:8788/discord/respond}");
+    expect(compose).toContain("OPENCLAW_AUTONOMY_HEARTBEAT_CRON=${OPENCLAW_AUTONOMY_HEARTBEAT_CRON:-*/15 * * * *}");
+    expect(compose).toContain("OPENCLAW_AUTONOMY_DREAMING_CRON=${OPENCLAW_AUTONOMY_DREAMING_CRON:-17 3 * * *}");
+    expect(compose).toContain("/docker/n8n/fairy-openclaw-state:/var/lib/dokobasho/fairy-openclaw-state");
+  });
 });

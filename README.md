@@ -61,6 +61,7 @@ Discord上で動作する多機能ボット。リマインダー機能と `/fair
     - `OPENCLAW_N8N_DISPATCH_URL`: (任意) n8n dispatcher webhook。Docker 内部では `http://n8n:5678/webhook/openclaw/workflow-dispatch`。
     - `OPENCLAW_N8N_DISPATCH_SECRET`: (推奨) OpenClaw API から n8n dispatcher へ送る共有シークレット。OpenClaw 子プロセスには渡しません。
     - `OPENCLAW_N8N_ALLOWED_WORKFLOWS`: (任意) direct mode から許可する workflow key。初期値は `notion.safe_ops`。
+    - `OPENCLAW_REQUEST_AUDIT_PATH`: (任意) OpenClaw API の body-free request audit 保存先。Hostinger では scheduler DREAMING 集計のため `/var/lib/dokobasho/fairy-openclaw-state/request-audit.jsonl` を推奨します。
     - `OPENCLAW_NOTION_ENABLED`: (任意) `true/1` で OpenClaw API 側 Notion bridge を有効化。本番 direct mode では `false` を正本にし、後方互換 fallback / unit test 用として残します。
     - `OPENCLAW_NOTION_TOKEN`: (任意) OpenClaw API 側 Notion bridge 用 token。本番 direct mode では n8n 側の `NOTION_TOKEN` を使います。
     - `OPENCLAW_NOTION_VERSION`: (任意) Notion-Version ヘッダ。Notion data source API を使うため未指定時 `2025-09-03`。
@@ -69,6 +70,10 @@ Discord上で動作する多機能ボット。リマインダー機能と `/fair
     - `FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS`: (`FAIRY_RUNTIME_MODE=openclaw` で必須) OpenClaw 直接実行を許可する channel ID の comma-separated list。Phase1 sandbox は `1094907178671939654`、Phase2 chat は権限確認後に `840827137451229210` を追加。
     - `FAIRY_OPENCLAW_CHANNEL_REGISTRY_JSON`: (任意) runtime registry override。正本は `dokobasho-fairy-openclaw/runtime/discord-channel-registry.json` です。Hostinger で一時昇格が必要な場合だけ JSON override を使います。
     - `FAIRY_OPENCLAW_STATE_DIR`: (任意) OpenClaw runtime の followup / heartbeat state 保存先。未指定時 `/var/lib/dokobasho/fairy-openclaw-state`。指定する場合は repo 外の絶対パスにしてください。
+    - `OPENCLAW_AUTONOMY_HEARTBEAT_ENABLED`: (任意) scheduler から `/internal/autonomy/heartbeat` を呼ぶかどうか。未指定時 `true`。`FAIRY_RUNTIME_MODE=openclaw` かつ `OPENCLAW_API_BASE_URL` / `OPENCLAW_API_KEY` がある場合だけ有効です。
+    - `OPENCLAW_AUTONOMY_HEARTBEAT_CRON`: (任意) scheduler heartbeat runner の cron。未指定時 `*/15 * * * *`。
+    - `OPENCLAW_AUTONOMY_DREAMING_ENABLED`: (任意) scheduler から `/internal/autonomy/dreaming` を呼ぶかどうか。未指定時 `true`。Discord 投稿、Notion、n8n 実行は行いません。
+    - `OPENCLAW_AUTONOMY_DREAMING_CRON`: (任意) scheduler dreaming runner の cron。未指定時 `17 3 * * *`。
     - `NOTION_TOKEN`: (推奨) Notion連携トークン。`n8n` と `n8n-runners` の両方に渡します。
     - `NOTION_API_KEY`: (任意) 互換用の別名トークン。`NOTION_TOKEN` を優先します。
     - `NOTION_VERSION`: (任意) n8n / n8n-runners 向け Notion-Version ヘッダ。未指定時 `2022-06-28`。OpenClaw Notion bridge は `OPENCLAW_NOTION_VERSION` を正本にし、未指定時 `2025-09-03` を使います。
@@ -195,6 +200,8 @@ Hostinger では `openclaw-api` service を Docker 内部だけで起動しま�
 Hostinger の現行構成では `/docker/n8n/discord-bot-runtime` をコンテナ内 `/opt/dokobasho` へマウントし、runtime repo は `/opt/dokobasho/app` へ git sync します。OpenClaw workspace は `/docker/n8n/dokobasho-fairy-openclaw` から `/opt/dokobasho-openclaw` へ read-only mount します。`/docker/n8n/fairy-openclaw-state` はコンテナ内 `/var/lib/dokobasho/fairy-openclaw-state` へマウントしているため、既定の `FAIRY_OPENCLAW_STATE_DIR=/var/lib/dokobasho/fairy-openclaw-state` は VPS 側に永続化されます。live state はこの配下の `followups.json` と `heartbeat-state.json` に保存し、git-tracked な runtime root や `memory/followups.json` へは保存しません。
 Hostinger example compose の `discord-bot` / `discord-scheduler` は git sync 後に `discord-bot/scripts/runtime-bootstrap.sh` を実行します。この script は production dependency が無い、または `package-lock.json` が更新されている場合だけ `npm ci --omit=dev` を実行してから Node entrypoint を起動します。
 
+`discord-scheduler` は OpenClaw direct runtime が有効な場合だけ autonomy runner を登録します。`OPENCLAW_API_BASE_URL=http://openclaw-api:8788/discord/respond` から内部 URL `/internal/autonomy/heartbeat` と `/internal/autonomy/dreaming` を導出します。heartbeat は due followup が無い場合 OpenClaw API を呼ばず、`heartbeat-state.json` を更新して `autonomy-audit.jsonl` に `no_op` を記録します。due followup がある場合も API へ渡すのは安全化済みの followup id / summary / channel / type だけで、Discord の raw 本文は渡しません。dreaming は request audit の安全化済み集計と followup 件数だけを渡し、応答を `dreams/YYYY-MM-DD.json` に保存します。初期 rollout では scheduler から Discord 自動投稿は行いません。
+
 ```bash
 docker compose --profile openclaw up -d --build openclaw-api
 docker compose --profile openclaw up -d --no-deps --force-recreate discord-bot
@@ -208,8 +215,13 @@ OPENCLAW_API_BASE_URL=http://openclaw-api:8788/discord/respond
 # OPENCLAW_API_URL is a legacy alias. Keep unset unless older runtime compatibility is required.
 OPENCLAW_API_KEY=<openssl rand -base64 32 で生成した共有シークレット>
 OPENCLAW_API_TIMEOUT_MS=85000
+OPENCLAW_REQUEST_AUDIT_PATH=/var/lib/dokobasho/fairy-openclaw-state/request-audit.jsonl
 FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS=1094907178671939654
 FAIRY_OPENCLAW_STATE_DIR=/var/lib/dokobasho/fairy-openclaw-state
+OPENCLAW_AUTONOMY_HEARTBEAT_ENABLED=true
+OPENCLAW_AUTONOMY_HEARTBEAT_CRON=*/15 * * * *
+OPENCLAW_AUTONOMY_DREAMING_ENABLED=true
+OPENCLAW_AUTONOMY_DREAMING_CRON=17 3 * * *
 ```
 
 Phase2 有効化時の allowlist 例:

@@ -44,6 +44,8 @@ const FOLLOWUP_KINDS = new Set([
   "test_only",
 ]);
 const FOLLOWUP_BASES = new Set(["explicit_user_request", "agreed_in_thread", "due_followup", "unknown"]);
+const STATE_LOCK_TIMEOUT_MS = 10000;
+const STATE_LOCK_STALE_MS = 120000;
 
 const normalizeRuntimeMode = (raw) => {
   const value = String(raw || "n8n").trim().toLowerCase();
@@ -253,7 +255,14 @@ const readJsonFile = async (filePath, fallbackFactory) => {
 
 const writeJsonFile = async (filePath, value) => {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  const tempPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
+  try {
+    await fs.writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+    await fs.rename(tempPath, filePath);
+  } catch (error) {
+    await fs.rm(tempPath, { force: true }).catch(() => {});
+    throw error;
+  }
 };
 
 const isUnsafeFollowupText = (value) => {
@@ -406,6 +415,8 @@ const normalizeHeartbeatState = (patch = {}) => {
   };
 };
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 const createOpenClawStateStore = ({
   stateDir = DEFAULT_OPENCLAW_STATE_DIR,
   idFactory = randomUUID,
@@ -414,6 +425,93 @@ const createOpenClawStateStore = ({
   const rootDir = String(stateDir || DEFAULT_OPENCLAW_STATE_DIR).trim() || DEFAULT_OPENCLAW_STATE_DIR;
   const followupsPath = path.join(rootDir, "followups.json");
   const heartbeatPath = path.join(rootDir, "heartbeat-state.json");
+  const lockPath = path.join(rootDir, ".state.lock");
+  const lockOwnerPath = path.join(lockPath, "owner.json");
+  const reclaimLockPath = path.join(rootDir, ".state.lock.reclaim");
+
+  const withStateLock = async (operation) => {
+    const startedAt = Date.now();
+    const ownerToken = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    await fs.mkdir(rootDir, { recursive: true });
+
+    const readLockCreatedAtMs = async () => {
+      try {
+        const owner = JSON.parse(await fs.readFile(lockOwnerPath, "utf8"));
+        const createdMs = Date.parse(owner && owner.created_at);
+        if (Number.isFinite(createdMs)) return createdMs;
+      } catch {
+        // Fall back to the lock directory timestamp when owner metadata is missing or corrupt.
+      }
+      try {
+        return (await fs.stat(lockPath)).mtimeMs;
+      } catch {
+        return Date.now();
+      }
+    };
+
+    const reclaimStaleLock = async () => {
+      try {
+        await fs.mkdir(reclaimLockPath, { recursive: false });
+      } catch (error) {
+        if (error && error.code === "EEXIST") return false;
+        throw error;
+      }
+      try {
+        const lockAgeMs = Date.now() - (await readLockCreatedAtMs());
+        if (lockAgeMs <= STATE_LOCK_STALE_MS) return false;
+        await fs.rm(lockPath, { recursive: true, force: true });
+        return true;
+      } finally {
+        await fs.rm(reclaimLockPath, { recursive: true, force: true }).catch(() => {});
+      }
+    };
+
+    while (true) {
+      try {
+        await fs.mkdir(lockPath, { recursive: false });
+        try {
+          await fs.writeFile(lockOwnerPath, JSON.stringify({ owner: ownerToken, created_at: now() }), "utf8");
+        } catch (ownerError) {
+          await fs.rm(lockPath, { recursive: true, force: true });
+          throw ownerError;
+        }
+        break;
+      } catch (error) {
+        if (!error || error.code !== "EEXIST") throw error;
+        if (await reclaimStaleLock()) {
+          continue;
+        }
+        if (Date.now() - startedAt > STATE_LOCK_TIMEOUT_MS) {
+          const timeoutError = new Error("OpenClaw state lock timed out");
+          timeoutError.code = "OPENCLAW_STATE_LOCK_TIMEOUT";
+          throw timeoutError;
+        }
+        await sleep(50);
+      }
+    }
+    try {
+      return await operation();
+    } finally {
+      try {
+        let owner = null;
+        try {
+          const ownerText = await fs.readFile(lockOwnerPath, "utf8");
+          try {
+            owner = JSON.parse(ownerText);
+          } catch {
+            owner = null;
+          }
+        } catch (readError) {
+          if (!readError || readError.code !== "ENOENT") throw readError;
+        }
+        if (owner && owner.owner === ownerToken) {
+          await fs.rm(lockPath, { recursive: true, force: true });
+        }
+      } catch (error) {
+        if (!error || error.code !== "ENOENT") throw error;
+      }
+    }
+  };
 
   const readFollowupState = async () => {
     const state = await readJsonFile(followupsPath, createEmptyFollowupState);
@@ -423,16 +521,20 @@ const createOpenClawStateStore = ({
     };
   };
 
-  const writeFollowupState = async (state) => {
-    const nextState = {
-      schema_version: 1,
-      followups: (Array.isArray(state && state.followups) ? state.followups : [])
-        .map(normalizePersistedFollowup)
-        .filter(Boolean),
-    };
+  const normalizeFollowupState = (state) => ({
+    schema_version: 1,
+    followups: (Array.isArray(state && state.followups) ? state.followups : [])
+      .map(normalizePersistedFollowup)
+      .filter(Boolean),
+  });
+
+  const writeFollowupStateUnlocked = async (state) => {
+    const nextState = normalizeFollowupState(state);
     await writeJsonFile(followupsPath, nextState);
     return nextState;
   };
+
+  const writeFollowupState = async (state) => withStateLock(() => writeFollowupStateUnlocked(state));
 
   const addFollowupCandidates = async ({ metadata, candidates }) => {
     const normalizedCandidates = normalizeFollowupCandidates(candidates);
@@ -446,28 +548,30 @@ const createOpenClawStateStore = ({
     if (allowedCandidates.length === 0) {
       return [];
     }
-    const createdAt = now();
-    const state = await readFollowupState();
-    const additions = allowedCandidates.map((candidate) => ({
-      id: idFactory(),
-      channel_id: normalizedMetadata.channel_id,
-      channel_type: normalizedMetadata.channel_type,
-      source_message_id: normalizedMetadata.source_message_id,
-      requested_by_member_id: normalizedMetadata.requested_by_member_id,
-      summary: candidate.summary,
-      due_at: candidate.due_at,
-      kind: candidate.kind,
-      basis: candidate.basis,
-      assignee_member_id: candidate.assignee_member_id,
-      source_followup_id: candidate.source_followup_id,
-      created_at: createdAt,
-      status: "open",
-      last_checked_at: null,
-      closed_at: null,
-      notes: candidate.notes,
-    }));
-    const nextState = await writeFollowupState({ ...state, followups: [...state.followups, ...additions] });
-    return nextState.followups.slice(-additions.length);
+    return withStateLock(async () => {
+      const createdAt = now();
+      const state = await readFollowupState();
+      const additions = allowedCandidates.map((candidate) => ({
+        id: idFactory(),
+        channel_id: normalizedMetadata.channel_id,
+        channel_type: normalizedMetadata.channel_type,
+        source_message_id: normalizedMetadata.source_message_id,
+        requested_by_member_id: normalizedMetadata.requested_by_member_id,
+        summary: candidate.summary,
+        due_at: candidate.due_at,
+        kind: candidate.kind,
+        basis: candidate.basis,
+        assignee_member_id: candidate.assignee_member_id,
+        source_followup_id: candidate.source_followup_id,
+        created_at: createdAt,
+        status: "open",
+        last_checked_at: null,
+        closed_at: null,
+        notes: candidate.notes,
+      }));
+      const nextState = await writeFollowupStateUnlocked({ ...state, followups: [...state.followups, ...additions] });
+      return nextState.followups.slice(-additions.length);
+    });
   };
 
   const listDueOpenFollowups = async ({ channelId, now: nowValue = now() } = {}) => {
@@ -486,48 +590,52 @@ const createOpenClawStateStore = ({
   const markFollowupsChecked = async (ids, { checkedAt = now(), notes = "" } = {}) => {
     const targetIds = new Set(normalizeFollowupIdList(ids));
     if (targetIds.size === 0) return [];
-    const state = await readFollowupState();
-    const updated = [];
-    const followups = state.followups.map((followup) => {
-      if (!followup || !targetIds.has(String(followup.id || "")) || followup.status !== "open") return followup;
-      const next = {
-        ...followup,
-        status: "checked",
-        last_checked_at: normalizeIsoTimestamp(checkedAt) || now(),
-        notes: normalizeSafeFollowupText(notes) || followup.notes || "",
-      };
-      updated.push(next);
-      return next;
+    return withStateLock(async () => {
+      const state = await readFollowupState();
+      const updated = [];
+      const followups = state.followups.map((followup) => {
+        if (!followup || !targetIds.has(String(followup.id || "")) || followup.status !== "open") return followup;
+        const next = {
+          ...followup,
+          status: "checked",
+          last_checked_at: normalizeIsoTimestamp(checkedAt) || now(),
+          notes: normalizeSafeFollowupText(notes) || followup.notes || "",
+        };
+        updated.push(next);
+        return next;
+      });
+      await writeFollowupStateUnlocked({ ...state, followups });
+      return updated;
     });
-    await writeFollowupState({ ...state, followups });
-    return updated;
   };
 
   const closeFollowups = async (ids, { closedAt = now(), notes = "" } = {}) => {
     const targetIds = new Set(normalizeFollowupIdList(ids));
     if (targetIds.size === 0) return [];
-    const state = await readFollowupState();
-    const updated = [];
-    const followups = state.followups.map((followup) => {
-      if (!followup || !targetIds.has(String(followup.id || "")) || followup.status === "closed") return followup;
-      const next = {
-        ...followup,
-        status: "closed",
-        closed_at: normalizeIsoTimestamp(closedAt) || now(),
-        notes: normalizeSafeFollowupText(notes) || followup.notes || "",
-      };
-      updated.push(next);
-      return next;
+    return withStateLock(async () => {
+      const state = await readFollowupState();
+      const updated = [];
+      const followups = state.followups.map((followup) => {
+        if (!followup || !targetIds.has(String(followup.id || "")) || followup.status === "closed") return followup;
+        const next = {
+          ...followup,
+          status: "closed",
+          closed_at: normalizeIsoTimestamp(closedAt) || now(),
+          notes: normalizeSafeFollowupText(notes) || followup.notes || "",
+        };
+        updated.push(next);
+        return next;
+      });
+      await writeFollowupStateUnlocked({ ...state, followups });
+      return updated;
     });
-    await writeFollowupState({ ...state, followups });
-    return updated;
   };
 
-  const writeHeartbeatState = async (patch = {}) => {
+  const writeHeartbeatState = async (patch = {}) => withStateLock(async () => {
     const state = normalizeHeartbeatState(patch);
     await writeJsonFile(heartbeatPath, state);
     return state;
-  };
+  });
 
   return {
     stateDir: rootDir,
@@ -1163,12 +1271,15 @@ const saveResponseFollowupCandidates = async ({ payload, response, stateStore, l
 const applyResponseFollowupTransitions = async ({ payload, response, stateStore, logger }) => {
   if (!payload || !response || !stateStore) return { checked: [], closed: [] };
   try {
+    const matchedIds = new Set(normalizeFollowupIdList(payload.context && payload.context.matched_followup_ids));
+    const checkedIds = normalizeFollowupIdList(response.checked_followup_ids).filter((id) => matchedIds.has(id));
+    const closedIds = normalizeFollowupIdList(response.closed_followup_ids).filter((id) => matchedIds.has(id));
     const checked =
       typeof stateStore.markFollowupsChecked === "function"
-        ? await stateStore.markFollowupsChecked(response.checked_followup_ids)
+        ? await stateStore.markFollowupsChecked(checkedIds)
         : [];
     const closed =
-      typeof stateStore.closeFollowups === "function" ? await stateStore.closeFollowups(response.closed_followup_ids) : [];
+      typeof stateStore.closeFollowups === "function" ? await stateStore.closeFollowups(closedIds) : [];
     if ((checked.length > 0 || closed.length > 0) && logger && typeof logger.info === "function") {
       logger.info({
         requestId: payload.request_id,
