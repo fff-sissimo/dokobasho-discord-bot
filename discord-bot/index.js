@@ -87,6 +87,8 @@ const collectInteractionContextResult = (source) => {
     content: (source && source.content) || readInteractionContextContent(interaction),
     operationChannelId: (source && source.operationChannelId) || (interaction && interaction.channelId),
     allowedChannelIds: source && source.allowedChannelIds,
+    allowedCategoryIds: source && source.allowedCategoryIds,
+    channelRegistry: source && source.channelRegistry,
   });
 };
 
@@ -103,6 +105,8 @@ const collectMessageContextResult = (source) => {
       (source && source.operationChannelId) ||
       (message && (message.channelId || (message.channel && message.channel.id))),
     allowedChannelIds: source && source.allowedChannelIds,
+    allowedCategoryIds: source && source.allowedCategoryIds,
+    channelRegistry: source && source.channelRegistry,
   });
 };
 
@@ -135,6 +139,7 @@ try {
     fairyInteractionHandler = createOpenClawInteractionHandler({
       openClawClient,
       allowedChannelIds: fairyRuntimeConfig.allowedChannelIds,
+      allowedCategoryIds: fairyRuntimeConfig.allowedCategoryIds,
       guildId: fairyRuntimeConfig.guildId,
       channelRegistry: fairyRuntimeConfig.channelRegistry,
       stateStore: openClawStateStore,
@@ -144,14 +149,21 @@ try {
     fairyMessageHandler = createOpenClawMessageHandler({
       openClawClient,
       allowedChannelIds: fairyRuntimeConfig.allowedChannelIds,
+      allowedCategoryIds: fairyRuntimeConfig.allowedCategoryIds,
       guildId: fairyRuntimeConfig.guildId,
       channelRegistry: fairyRuntimeConfig.channelRegistry,
       stateStore: openClawStateStore,
       contextEntriesSource: collectMessageContextResult,
       logger,
     });
+    const allowedChannelCount = Array.isArray(fairyRuntimeConfig.allowedChannelIds)
+      ? fairyRuntimeConfig.allowedChannelIds.length
+      : 0;
+    const allowedCategoryCount = Array.isArray(fairyRuntimeConfig.allowedCategoryIds)
+      ? fairyRuntimeConfig.allowedCategoryIds.length
+      : 0;
     logger.info(
-      `[fairy] OpenClaw runtime enabled for ${fairyRuntimeConfig.allowedChannelIds.length} verified channel(s)`
+      `[fairy] OpenClaw runtime enabled for ${allowedChannelCount} verified channel(s) and ${allowedCategoryCount} verified category(s)`
     );
   } else {
     const slowPathClient = createSlowPathWebhookClient({

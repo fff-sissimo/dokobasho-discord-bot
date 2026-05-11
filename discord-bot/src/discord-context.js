@@ -150,8 +150,51 @@ const isAllowedTargetChannel = (source, target) => {
   const sourceChannelId = String((source && (source.channelId || (source.channel && source.channel.id))) || "");
   const operationChannelId = String((source && source.operationChannelId) || "").trim();
   const allowedChannelIds = source && source.allowedChannelIds instanceof Set ? source.allowedChannelIds : null;
+  const allowedCategoryIds = source && source.allowedCategoryIds instanceof Set ? source.allowedCategoryIds : null;
+  const channelRegistry = source && source.channelRegistry && typeof source.channelRegistry === "object"
+    ? source.channelRegistry
+    : null;
   if (target.channel_id === sourceChannelId || target.channel_id === operationChannelId) return true;
-  return Boolean(allowedChannelIds && allowedChannelIds.has(target.channel_id));
+  if (allowedChannelIds && allowedChannelIds.has(target.channel_id)) return true;
+  const entry = channelRegistry && channelRegistry[target.channel_id];
+  return Boolean(
+    allowedCategoryIds &&
+      entry &&
+      entry.status === "verified" &&
+      entry.category_id &&
+      allowedCategoryIds.has(String(entry.category_id))
+  );
+};
+
+const resolveChannelCategoryId = (channel) => {
+  if (!channel || typeof channel !== "object") return "";
+  const isThread = Boolean(
+    channel.isThread === true ||
+      channel.isThread === "true" ||
+      (typeof channel.isThread === "function" && channel.isThread())
+  );
+  if (!isThread && channel.parentId) return String(channel.parentId).trim();
+  if (isThread && channel.parent && channel.parent.parentId) return String(channel.parent.parentId).trim();
+  if (channel.parent && channel.parent.id && !isThread) return String(channel.parent.id).trim();
+  return "";
+};
+
+const isResolvedTargetChannelAllowed = (source, targetChannel, target) => {
+  const targetChannelId = String((targetChannel && targetChannel.id) || "").trim();
+  const sourceChannelId = String((source && (source.channelId || (source.channel && source.channel.id))) || "");
+  const operationChannelId = String((source && source.operationChannelId) || "").trim();
+  const allowedChannelIds = source && source.allowedChannelIds instanceof Set ? source.allowedChannelIds : null;
+  const allowedCategoryIds = source && source.allowedCategoryIds instanceof Set ? source.allowedCategoryIds : null;
+  const channelRegistry = source && source.channelRegistry && typeof source.channelRegistry === "object"
+    ? source.channelRegistry
+    : null;
+  const targetId = targetChannelId || String(target && target.channel_id || "");
+  if (targetId === sourceChannelId || targetId === operationChannelId) return true;
+  if (allowedChannelIds && allowedChannelIds.has(targetId)) return true;
+  const entry = channelRegistry && channelRegistry[targetId];
+  if (!allowedCategoryIds || !entry || entry.status !== "verified" || !entry.category_id) return false;
+  const actualCategoryId = resolveChannelCategoryId(targetChannel);
+  return actualCategoryId === String(entry.category_id) && allowedCategoryIds.has(actualCategoryId);
 };
 
 const resolveTargetChannel = async (source, target) => {
@@ -161,7 +204,8 @@ const resolveTargetChannel = async (source, target) => {
   const client = source && source.client;
   if (!client || !client.channels || typeof client.channels.fetch !== "function") return null;
   try {
-    return await client.channels.fetch(target.channel_id);
+    const channel = await client.channels.fetch(target.channel_id);
+    return isResolvedTargetChannelAllowed(source, channel, target) ? channel : null;
   } catch (_error) {
     return null;
   }

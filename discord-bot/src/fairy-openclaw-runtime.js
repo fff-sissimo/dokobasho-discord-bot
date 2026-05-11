@@ -20,16 +20,35 @@ const SAFE_ALLOWED_MENTIONS = Object.freeze({
 });
 const TYPING_KEEPALIVE_INTERVAL_MS = 7500;
 const DEFAULT_CHANNEL_REGISTRY = Object.freeze({
-  "1094907178671939654": Object.freeze({ name: "妖精さんより", type: "sandbox", status: "verified" }),
-  "840827137451229210": Object.freeze({ name: "はじまりの酒場", type: "chat", status: "verified" }),
-  "985145703774978059": Object.freeze({ name: "配信部屋", type: "chat", status: "verified" }),
-  "841686630271418429": Object.freeze({ name: "らくがきちょう", type: "creation", status: "known" }),
-  "1311647968113332275": Object.freeze({ name: "アイデアボード", type: "board", status: "verified" }),
-  "1465296404455882860": Object.freeze({ name: "vostok-vol02-general", type: "project", status: "verified" }),
-  "1465295987236143319": Object.freeze({ name: "vostok-vol02-pd", type: "project", status: "pending" }),
-  "1465296093427531960": Object.freeze({ name: "vostok-vol02-music", type: "project", status: "pending" }),
-  "1465296285341847765": Object.freeze({ name: "vostok-vol02-artwork", type: "project", status: "pending" }),
-  "1466404431217164288": Object.freeze({ name: "vostok-vol02-qa", type: "project", status: "verified" }),
+  "1201092282254893066": Object.freeze({ name: "はじまりの酒場カテゴリ", type: "chat", status: "verified" }),
+  "1098535279549235280": Object.freeze({ name: "配信部屋カテゴリ", type: "chat", status: "verified" }),
+  "847492905618505748": Object.freeze({ name: "作業部屋カテゴリ", type: "project", status: "verified" }),
+  "1474758754007253062": Object.freeze({ name: "MTG部屋カテゴリ", type: "project", status: "verified" }),
+  "843363361121894400": Object.freeze({ name: "連絡ボードカテゴリ", type: "board", status: "verified" }),
+  "1094907178671939654": Object.freeze({ name: "妖精さんより", type: "sandbox", status: "verified", category_id: "1201092282254893066" }),
+  "840827137916665890": Object.freeze({ name: "はじまりの酒場", type: "chat", status: "verified", category_id: "1201092282254893066" }),
+  "849691123920273458": Object.freeze({ name: "おやすみのへや", type: "chat", status: "verified", category_id: "1201092282254893066" }),
+  "842361651592560660": Object.freeze({ name: "飯テロ爆撃地", type: "chat", status: "verified", category_id: "1201092282254893066" }),
+  "840827137451229210": Object.freeze({ name: "はじまりの酒場", type: "chat", status: "verified", category_id: "1201092282254893066" }),
+  "985145703774978059": Object.freeze({ name: "配信部屋", type: "chat", status: "verified", category_id: "1098535279549235280" }),
+  "865619584282918982": Object.freeze({ name: "配信部屋", type: "chat", status: "verified", category_id: "1098535279549235280" }),
+  "841686630271418429": Object.freeze({ name: "らくがきちょう", type: "creation", status: "verified", category_id: "1201092282254893066" }),
+  "847493473350189167": Object.freeze({ name: "作業部屋α", type: "project", status: "verified", category_id: "847492905618505748" }),
+  "1484514251811852358": Object.freeze({ name: "作業部屋β", type: "project", status: "verified", category_id: "847492905618505748" }),
+  "1484514353360273460": Object.freeze({ name: "作業部屋γ", type: "project", status: "verified", category_id: "847492905618505748" }),
+  "847493249517879316": Object.freeze({ name: "作業部屋", type: "project", status: "verified", category_id: "847492905618505748" }),
+  "1474758884991172771": Object.freeze({ name: "MTG部屋", type: "project", status: "verified", category_id: "1474758754007253062" }),
+  "1474758825193242836": Object.freeze({ name: "mtg部屋", type: "project", status: "verified", category_id: "1474758754007253062" }),
+  "1502895720011665439": Object.freeze({ name: "どこ場所に妖精が現れる！", type: "project", status: "verified", category_id: "843363361121894400" }),
+  "1501240582687817739": Object.freeze({ name: "404-締切を恨む制作", type: "project", status: "verified", category_id: "843363361121894400" }),
+  "1311647968113332275": Object.freeze({ name: "アイデアボード", type: "board", status: "verified", category_id: "843363361121894400" }),
+  "1090831888941318236": Object.freeze({ name: "アイデアボード（全体）", type: "board", status: "verified", category_id: "843363361121894400" }),
+  "1155374586951634964": Object.freeze({ name: "クエストボード", type: "board", status: "verified", category_id: "843363361121894400" }),
+  "1465296404455882860": Object.freeze({ name: "vostok-vol02-general", type: "project", status: "verified", category_id: "843363361121894400" }),
+  "1465295987236143319": Object.freeze({ name: "vostok-vol02-pd", type: "project", status: "verified", category_id: "843363361121894400" }),
+  "1465296093427531960": Object.freeze({ name: "vostok-vol02-music", type: "project", status: "verified", category_id: "843363361121894400" }),
+  "1465296285341847765": Object.freeze({ name: "vostok-vol02-artwork", type: "project", status: "verified", category_id: "843363361121894400" }),
+  "1466404431217164288": Object.freeze({ name: "vostok-vol02-qa", type: "project", status: "verified", category_id: "843363361121894400" }),
   "840827137451229208": Object.freeze({ name: "更新・進行状況", type: "ops", status: "known" }),
   "852073750294822922": Object.freeze({ name: "管理用", type: "ops", status: "known" }),
 });
@@ -63,6 +82,9 @@ const parseAllowedChannelIds = (raw) =>
     .split(",")
     .map((value) => value.trim())
     .filter(Boolean);
+const parseAllowedCategoryIds = parseAllowedChannelIds;
+
+const toIdSet = (ids) => ids instanceof Set ? ids : new Set(Array.isArray(ids) ? ids : parseAllowedChannelIds(ids));
 
 const isPathInsideOrSame = (basePath, targetPath) => {
   const relativePath = path.relative(path.resolve(basePath), path.resolve(targetPath));
@@ -115,7 +137,13 @@ const normalizeChannelRegistryEntry = (id, entry) => {
   if (!CHANNEL_REGISTRY_STATUSES.has(status)) {
     throw new Error(`invalid OpenClaw channel registry status: ${id}`);
   }
-  return Object.freeze({ name, type, status });
+  const categoryId = String(entry.category_id || entry.parent_category_id || "").trim();
+  return Object.freeze({
+    name,
+    type,
+    status,
+    ...(categoryId ? { category_id: categoryId } : {}),
+  });
 };
 
 const validateOpenClawChannelRegistry = (registry) => {
@@ -144,7 +172,9 @@ const parseChannelRegistrySource = (raw) => {
     return Object.fromEntries(
       parsed.channels
         .map((entry) => {
-          const id = String(entry && (entry.id || entry.channel_id) ? entry.id || entry.channel_id : "").trim();
+          const id = String(entry && (entry.id || entry.channel_id || entry.category_id)
+            ? entry.id || entry.channel_id || entry.category_id
+            : "").trim();
           return [id, entry];
         })
         .filter(([id]) => /^\d+$/.test(id))
@@ -154,7 +184,9 @@ const parseChannelRegistrySource = (raw) => {
     return Object.fromEntries(
       parsed
         .map((entry) => {
-          const id = String(entry && (entry.id || entry.channel_id) ? entry.id || entry.channel_id : "").trim();
+          const id = String(entry && (entry.id || entry.channel_id || entry.category_id)
+            ? entry.id || entry.channel_id || entry.category_id
+            : "").trim();
           return [id, entry];
         })
         .filter(([id]) => /^\d+$/.test(id))
@@ -172,19 +204,36 @@ const loadOpenClawChannelRegistry = (source = {}) => {
         : source && source.channelRegistry
           ? source.channelRegistry
           : {};
-  return validateOpenClawChannelRegistry({
-    ...DEFAULT_CHANNEL_REGISTRY,
-    ...registrySource,
-  });
+  return validateOpenClawChannelRegistry(
+    Object.fromEntries(
+      Object.entries({
+        ...DEFAULT_CHANNEL_REGISTRY,
+        ...registrySource,
+      }).map(([id, entry]) => [
+        id,
+        {
+          ...(DEFAULT_CHANNEL_REGISTRY[id] || {}),
+          ...(entry || {}),
+        },
+      ])
+    )
+  );
 };
 
-const assertAllowlistIsVerified = ({ allowedChannelIds, channelRegistry }) => {
+const assertAllowlistIsVerified = ({ allowedChannelIds = [], allowedCategoryIds = [], channelRegistry }) => {
   const unknownOrUnverified = allowedChannelIds.filter((id) => {
     const entry = channelRegistry[id];
     return !entry || entry.status !== "verified";
   });
   if (unknownOrUnverified.length > 0) {
     throw new Error(`invalid OpenClaw channel allowlist: unverified channel ids: ${unknownOrUnverified.join(", ")}`);
+  }
+  const unknownOrUnverifiedCategories = allowedCategoryIds.filter((id) => {
+    const entry = channelRegistry[id];
+    return !entry || entry.status !== "verified";
+  });
+  if (unknownOrUnverifiedCategories.length > 0) {
+    throw new Error(`invalid OpenClaw category allowlist: unverified category ids: ${unknownOrUnverifiedCategories.join(", ")}`);
   }
 };
 
@@ -219,16 +268,19 @@ const createOpenClawRuntimeConfig = (env = process.env) => {
   const apiKey = String(env.OPENCLAW_API_KEY || "").trim();
   const guildId = String(env.GUILD_ID || env.DISCORD_GUILD_ID || "").trim();
   const allowedChannelIds = parseAllowedChannelIds(env.FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS);
+  const allowedCategoryIds = parseAllowedCategoryIds(env.FAIRY_OPENCLAW_ALLOWED_CATEGORY_IDS);
   const missing = [];
   if (!apiUrl) missing.push("OPENCLAW_API_BASE_URL");
   if (!apiKey) missing.push("OPENCLAW_API_KEY");
   if (!guildId) missing.push("GUILD_ID");
-  if (allowedChannelIds.length === 0) missing.push("FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS");
+  if (allowedChannelIds.length === 0 && allowedCategoryIds.length === 0) {
+    missing.push("FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS or FAIRY_OPENCLAW_ALLOWED_CATEGORY_IDS");
+  }
   if (missing.length > 0) {
     throw new Error(`missing OpenClaw runtime config: ${missing.join(", ")}`);
   }
   const channelRegistry = loadOpenClawChannelRegistry(env);
-  assertAllowlistIsVerified({ allowedChannelIds, channelRegistry });
+  assertAllowlistIsVerified({ allowedChannelIds, allowedCategoryIds, channelRegistry });
 
   return {
     mode,
@@ -236,6 +288,7 @@ const createOpenClawRuntimeConfig = (env = process.env) => {
     apiKey,
     guildId,
     allowedChannelIds,
+    allowedCategoryIds,
     channelRegistry,
     stateDir: resolveOpenClawStateDir(env),
     timeoutMs: parsePositiveInt(env.OPENCLAW_API_TIMEOUT_MS, DEFAULT_OPENCLAW_TIMEOUT_MS),
@@ -1081,18 +1134,67 @@ const resolveOperationChannelId = (channel, fallbackChannelId) => {
   return readSnowflake(fallbackChannelId, channel && channel.id);
 };
 
-const resolveChannel = ({ channel, channelId, allowedChannelIds, channelRegistry = DEFAULT_CHANNEL_REGISTRY }) => {
+const resolveChannel = ({
+  channel,
+  channelId,
+  allowedChannelIds,
+  allowedCategoryIds = new Set(),
+  channelRegistry = DEFAULT_CHANNEL_REGISTRY,
+}) => {
   const id = String(channelId || (channel && channel.id) || "").trim();
+  const metadata = resolveChannelMetadata(channel);
+  const allowedChannels = toIdSet(allowedChannelIds);
+  const allowedCategories = toIdSet(allowedCategoryIds);
   const registeredChannel = channelRegistry[id] || null;
-  const registered = Boolean(registeredChannel);
-  const verified = registered && registeredChannel.status === "verified" && allowedChannelIds.has(id);
-  return {
+  const resolvedCategoryId = metadata.category_id || (registeredChannel && registeredChannel.category_id) || "";
+  const registeredCategory = resolvedCategoryId ? channelRegistry[resolvedCategoryId] || null : null;
+  const verifiedByChannel = Boolean(
+    registeredChannel && registeredChannel.status === "verified" && allowedChannels.has(id)
+  );
+  const verifiedByCategory = Boolean(
+    !verifiedByChannel &&
+      registeredChannel &&
+      registeredChannel.status === "verified" &&
+      String(registeredChannel.category_id || "") === String(resolvedCategoryId || "") &&
+      registeredCategory &&
+      registeredCategory.status === "verified" &&
+      allowedCategories.has(resolvedCategoryId)
+  );
+  const effectiveRegistry = verifiedByChannel
+    ? registeredChannel
+    : verifiedByCategory
+      ? registeredChannel
+      : registeredChannel;
+  const resolved = {
     id,
-    name: String((channel && channel.name) || (registeredChannel && registeredChannel.name) || "").trim(),
-    type: verified ? registeredChannel.type : "unknown",
-    registered: verified,
-    ...resolveChannelMetadata(channel),
+    name: String((channel && channel.name) || (effectiveRegistry && effectiveRegistry.name) || "").trim(),
+    type: verifiedByChannel || verifiedByCategory ? effectiveRegistry.type : "unknown",
+    registered: verifiedByChannel || verifiedByCategory,
+    ...metadata,
+    category_id: resolvedCategoryId,
   };
+  if (verifiedByCategory) {
+    resolved.gate_source = "category";
+  }
+  return resolved;
+};
+
+const resolveChannelGate = ({
+  channel,
+  channelId,
+  allowedChannelIds,
+  allowedCategoryIds = new Set(),
+  channelRegistry = DEFAULT_CHANNEL_REGISTRY,
+}) => {
+  const resolvedChannel = resolveChannel({
+    channel,
+    channelId,
+    allowedChannelIds,
+    allowedCategoryIds,
+    channelRegistry,
+  });
+  if (resolvedChannel.registered) return { ok: true, reason: "ok", channel: resolvedChannel };
+  return { ok: false, reason: "channel_not_verified", channel: resolvedChannel };
 };
 
 const isoNow = () => new Date().toISOString();
@@ -1106,6 +1208,7 @@ const buildOpenClawPayload = ({
   isReplyToBot = false,
   mentionsBot = false,
   allowedChannelIds,
+  allowedCategoryIds = new Set(),
   channelRegistry = DEFAULT_CHANNEL_REGISTRY,
   contextEntries = [],
 }) => {
@@ -1134,6 +1237,7 @@ const buildOpenClawPayload = ({
       channel: message && message.channel,
       channelId: channel && channel.id,
       allowedChannelIds,
+      allowedCategoryIds,
       channelRegistry,
     }),
     message: {
@@ -1361,8 +1465,28 @@ const runInputRiskGate = (payload) => {
   return reason ? { ok: false, reason } : { ok: true, reason: "ok" };
 };
 
-const runOutboundGate = ({ response, channelId, allowedChannelIds, payload, channelMetadata }) => {
-  if (!allowedChannelIds.has(String(channelId || ""))) {
+const isPayloadChannelAllowed = ({ channelId, allowedChannelIds, allowedCategoryIds = new Set(), payload, channelMetadata }) => {
+  const allowedChannels = toIdSet(allowedChannelIds);
+  const allowedCategories = toIdSet(allowedCategoryIds);
+  if (allowedChannels.has(String(channelId || ""))) return true;
+  const metadata = channelMetadata || (payload && payload.channel) || {};
+  return Boolean(
+    metadata &&
+      metadata.registered === true &&
+      metadata.gate_source === "category" &&
+      allowedCategories.has(String(metadata.category_id || ""))
+  );
+};
+
+const runOutboundGate = ({
+  response,
+  channelId,
+  allowedChannelIds,
+  allowedCategoryIds = new Set(),
+  payload,
+  channelMetadata,
+}) => {
+  if (!isPayloadChannelAllowed({ channelId, allowedChannelIds, allowedCategoryIds, payload, channelMetadata })) {
     return { ok: false, reason: "channel_not_verified" };
   }
   const channelType = String(
@@ -1494,6 +1618,7 @@ const logOutboundGate = ({ logger, payload, response, gate, channelId }) => {
 const createOpenClawInteractionHandler = ({
   openClawClient,
   allowedChannelIds,
+  allowedCategoryIds = [],
   guildId,
   channelRegistry = DEFAULT_CHANNEL_REGISTRY,
   stateStore,
@@ -1502,6 +1627,7 @@ const createOpenClawInteractionHandler = ({
   logger,
 }) => {
   const allowed = new Set(allowedChannelIds);
+  const allowedCategories = new Set(allowedCategoryIds);
   return async (interaction) => {
     if (!interaction.isChatInputCommand || !interaction.isChatInputCommand() || interaction.commandName !== "fairy") {
       return { handled: false };
@@ -1512,8 +1638,15 @@ const createOpenClawInteractionHandler = ({
       return { handled: true, gate };
     }
     const operationChannelId = resolveOperationChannelId(interaction.channel, interaction.channelId);
-    if (!allowed.has(operationChannelId)) {
-      const gate = { ok: false, reason: "channel_not_verified" };
+    const channelGate = resolveChannelGate({
+      channel: interaction.channel,
+      channelId: operationChannelId,
+      allowedChannelIds: allowed,
+      allowedCategoryIds: allowedCategories,
+      channelRegistry,
+    });
+    if (!channelGate.ok) {
+      const gate = { ok: false, reason: channelGate.reason };
       await interaction.reply({ content: buildGateBlockedMessage(gate.reason), ephemeral: true, allowedMentions: SAFE_ALLOWED_MENTIONS });
       return { handled: true, gate };
     }
@@ -1536,6 +1669,7 @@ const createOpenClawInteractionHandler = ({
       content,
       mentionsBot: true,
       allowedChannelIds: allowed,
+      allowedCategoryIds: allowedCategories,
       channelRegistry,
       contextEntries: typeof contextEntriesSource === "function"
         ? await contextEntriesSource({
@@ -1543,6 +1677,8 @@ const createOpenClawInteractionHandler = ({
             content,
             operationChannelId,
             allowedChannelIds: allowed,
+            allowedCategoryIds: allowedCategories,
+            channelRegistry,
           })
         : [],
     });
@@ -1561,6 +1697,7 @@ const createOpenClawInteractionHandler = ({
         response,
         channelId: operationChannelId,
         allowedChannelIds: allowed,
+        allowedCategoryIds: allowedCategories,
         payload,
         channelMetadata: payload.channel,
       });
@@ -1593,6 +1730,7 @@ const createOpenClawInteractionHandler = ({
 const createOpenClawMessageHandler = ({
   openClawClient,
   allowedChannelIds,
+  allowedCategoryIds = [],
   guildId,
   channelRegistry = DEFAULT_CHANNEL_REGISTRY,
   stateStore,
@@ -1601,6 +1739,7 @@ const createOpenClawMessageHandler = ({
   logger,
 }) => {
   const allowed = new Set(allowedChannelIds);
+  const allowedCategories = new Set(allowedCategoryIds);
   return async (message, runtimeOptions = {}) => {
     if (!message || !message.content || !message.author || message.author.bot) {
       return { handled: false };
@@ -1610,8 +1749,15 @@ const createOpenClawMessageHandler = ({
     if (String(message.guildId || "") !== String(guildId)) {
       return { handled: false, gate: { ok: false, reason: "guild_mismatch" } };
     }
-    if (!allowed.has(operationChannelId)) {
-      return { handled: false, gate: { ok: false, reason: "channel_not_verified" } };
+    const channelGate = resolveChannelGate({
+      channel: message.channel,
+      channelId: operationChannelId,
+      allowedChannelIds: allowed,
+      allowedCategoryIds: allowedCategories,
+      channelRegistry,
+    });
+    if (!channelGate.ok) {
+      return { handled: false, gate: { ok: false, reason: channelGate.reason } };
     }
     const content = stripBotMention(message.content, message.client && message.client.user && message.client.user.id);
     const payload = buildOpenClawPayload({
@@ -1623,6 +1769,7 @@ const createOpenClawMessageHandler = ({
       isReplyToBot: runtimeOptions.messageTriggerSource === "reply",
       mentionsBot: runtimeOptions.messageTriggerSource !== "reply",
       allowedChannelIds: allowed,
+      allowedCategoryIds: allowedCategories,
       channelRegistry,
       contextEntries: typeof contextEntriesSource === "function"
         ? await contextEntriesSource({
@@ -1630,6 +1777,8 @@ const createOpenClawMessageHandler = ({
             content,
             operationChannelId,
             allowedChannelIds: allowed,
+            allowedCategoryIds: allowedCategories,
+            channelRegistry,
           })
         : [],
     });
@@ -1661,6 +1810,7 @@ const createOpenClawMessageHandler = ({
         response,
         channelId: operationChannelId,
         allowedChannelIds: allowed,
+        allowedCategoryIds: allowedCategories,
         payload,
         channelMetadata: payload.channel,
       });

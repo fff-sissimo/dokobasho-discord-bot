@@ -49,7 +49,16 @@ describe("fairy OpenClaw runtime", () => {
         OPENCLAW_API_KEY: "key",
         GUILD_ID: "guild_1",
       })
-    ).toThrow("FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS");
+    ).toThrow("FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS or FAIRY_OPENCLAW_ALLOWED_CATEGORY_IDS");
+    expect(
+      createOpenClawRuntimeConfig({
+        FAIRY_RUNTIME_MODE: "openclaw",
+        OPENCLAW_API_BASE_URL: "https://openclaw.example/discord/respond",
+        OPENCLAW_API_KEY: "key",
+        GUILD_ID: "guild_1",
+        FAIRY_OPENCLAW_ALLOWED_CATEGORY_IDS: "1201092282254893066",
+      }).allowedCategoryIds
+    ).toEqual(["1201092282254893066"]);
   });
 
   it("uses OPENCLAW_API_BASE_URL with OPENCLAW_API_URL as a legacy alias", () => {
@@ -337,12 +346,12 @@ describe("fairy OpenClaw runtime", () => {
     expect(() =>
       createOpenClawRuntimeConfig({
         ...baseEnv,
-        FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS: "841686630271418429",
+        FAIRY_OPENCLAW_ALLOWED_CATEGORY_IDS: "999999999999999999",
       })
-    ).toThrow("841686630271418429");
+    ).toThrow("999999999999999999");
   });
 
-  it("keeps canonical verified project/chat entries and rejects pending project or ops entries", () => {
+  it("keeps canonical verified project/chat/category entries and rejects ops entries", () => {
     const baseEnv = {
       FAIRY_RUNTIME_MODE: "openclaw",
       OPENCLAW_API_BASE_URL: "https://openclaw.example/discord/respond",
@@ -350,14 +359,16 @@ describe("fairy OpenClaw runtime", () => {
       GUILD_ID: "guild_1",
     };
 
-    expect(DEFAULT_CHANNEL_REGISTRY["985145703774978059"]).toEqual({
+    expect(DEFAULT_CHANNEL_REGISTRY["985145703774978059"]).toEqual(expect.objectContaining({
       name: "配信部屋",
       type: "chat",
       status: "verified",
-    });
+      category_id: "1098535279549235280",
+    }));
     expect(DEFAULT_CHANNEL_REGISTRY["1465296404455882860"].status).toBe("verified");
     expect(DEFAULT_CHANNEL_REGISTRY["1466404431217164288"].status).toBe("verified");
-    expect(DEFAULT_CHANNEL_REGISTRY["1465295987236143319"].status).toBe("pending");
+    expect(DEFAULT_CHANNEL_REGISTRY["1465295987236143319"].status).toBe("verified");
+    expect(DEFAULT_CHANNEL_REGISTRY["847492905618505748"].type).toBe("project");
     expect(DEFAULT_CHANNEL_REGISTRY["840827137451229208"].status).toBe("known");
 
     expect(
@@ -374,12 +385,12 @@ describe("fairy OpenClaw runtime", () => {
       }).allowedChannelIds
     ).toEqual(["985145703774978059", "1466404431217164288"]);
 
-    expect(() =>
+    expect(
       createOpenClawRuntimeConfig({
         ...baseEnv,
         FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS: "1094907178671939654,1465295987236143319",
-      })
-    ).toThrow("1465295987236143319");
+      }).channelRegistry["1465295987236143319"].status
+    ).toBe("verified");
 
     expect(
       createOpenClawRuntimeConfig({
@@ -416,11 +427,12 @@ describe("fairy OpenClaw runtime", () => {
       allowedChannelIds,
     });
 
-    expect(DEFAULT_CHANNEL_REGISTRY["1311647968113332275"]).toEqual({
+    expect(DEFAULT_CHANNEL_REGISTRY["1311647968113332275"]).toEqual(expect.objectContaining({
       name: "アイデアボード",
       type: "board",
       status: "verified",
-    });
+      category_id: "843363361121894400",
+    }));
     expect(payload.channel).toEqual({
       id: "1311647968113332275",
       name: "アイデアボード",
@@ -504,7 +516,7 @@ describe("fairy OpenClaw runtime", () => {
     });
   });
 
-  it("keeps creation type resolvable only through custom verified registry", () => {
+  it("keeps creation type resolvable for verified creation channels", () => {
     const channelRegistry = loadOpenClawChannelRegistry({
       channelRegistry: {
         "841686630271418429": { name: "らくがきちょう", type: "creation", status: "verified" },
@@ -528,7 +540,7 @@ describe("fairy OpenClaw runtime", () => {
       channelRegistry,
     });
 
-    expect(DEFAULT_CHANNEL_REGISTRY["841686630271418429"].status).toBe("known");
+    expect(DEFAULT_CHANNEL_REGISTRY["841686630271418429"].status).toBe("verified");
     expect(payload.channel.type).toBe("creation");
     expect(payload.channel.registered).toBe(true);
   });
@@ -1244,6 +1256,193 @@ describe("fairy OpenClaw runtime", () => {
       category_id: "category_1",
     });
     expect(result.payload.execution.mode).toBe("direct_agent");
+  });
+
+  it("uses verified category allowlist for child channels without allowing unknown children", async () => {
+    const openClawClient = {
+      execute: jest.fn().mockResolvedValue({
+        schema_version: 1,
+        action: "reply",
+        body: "確認しました",
+        requires_approval: false,
+      }),
+    };
+    const contextEntriesSource = jest.fn().mockResolvedValue([]);
+    const handler = createOpenClawMessageHandler({
+      openClawClient,
+      allowedChannelIds: [],
+      allowedCategoryIds: ["847492905618505748"],
+      guildId: "840827137451229205",
+      contextEntriesSource,
+      requestIdFactory: () => "req_category_child",
+    });
+    const message = {
+      id: "msg_category_child",
+      content: "<@bot_1> Notionに追記して",
+      channelId: "847493249517879316",
+      guildId: "840827137451229205",
+      createdAt: new Date("2026-05-08T09:00:00.000Z"),
+      author: { id: "user_1", bot: false, username: "user" },
+      client: { user: { id: "bot_1" } },
+      channel: {
+        id: "847493249517879316",
+        name: "作業部屋",
+        parentId: "847492905618505748",
+        sendTyping: jest.fn().mockResolvedValue(undefined),
+      },
+      mentions: { everyone: false, roles: { map: () => [] } },
+      attachments: [],
+      reply: jest.fn().mockResolvedValue({ id: "reply_category_child" }),
+    };
+
+    const result = await handler(message, { messageTriggerSource: "mention" });
+
+    expect(result.handled).toBe(true);
+    expect(result.gate).toEqual({ ok: true, reason: "ok" });
+    expect(result.payload.channel).toEqual({
+      id: "847493249517879316",
+      name: "作業部屋",
+      type: "project",
+      registered: true,
+      thread_id: "",
+      parent_channel_id: "",
+      category_id: "847492905618505748",
+      gate_source: "category",
+    });
+    expect(result.payload.execution).toEqual({ mode: "direct_agent", reason: "notion_write_intent" });
+    expect(contextEntriesSource).toHaveBeenCalledWith(expect.objectContaining({
+      allowedChannelIds: expect.any(Set),
+      allowedCategoryIds: expect.any(Set),
+      channelRegistry: expect.any(Object),
+    }));
+    expect(message.reply).toHaveBeenCalledWith({
+      content: "確認しました",
+      allowedMentions: SAFE_ALLOWED_MENTIONS,
+    });
+
+    const denied = await handler({
+      ...message,
+      id: "msg_unknown_category_child",
+      channelId: "999999999999999999",
+      channel: {
+        id: "999999999999999999",
+        name: "未登録作業部屋",
+        parentId: "847492905618505748",
+        sendTyping: jest.fn(),
+      },
+      reply: jest.fn(),
+    }, { messageTriggerSource: "mention" });
+    expect(denied.handled).toBe(false);
+    expect(denied.gate).toEqual({ ok: false, reason: "channel_not_verified" });
+  });
+
+  it("uses category allowlist for threads while preserving parent and thread metadata", async () => {
+    const openClawClient = {
+      execute: jest.fn().mockResolvedValue({
+        schema_version: 1,
+        action: "observe",
+        body: "",
+        requires_approval: false,
+      }),
+    };
+    const handler = createOpenClawMessageHandler({
+      openClawClient,
+      allowedChannelIds: [],
+      allowedCategoryIds: ["1474758754007253062"],
+      guildId: "840827137451229205",
+      contextEntriesSource: async () => [],
+      requestIdFactory: () => "req_category_thread",
+    });
+    const parentChannel = { id: "1474758825193242836", name: "mtg部屋", parentId: "1474758754007253062" };
+    const threadChannel = {
+      id: "147999999999999999",
+      name: "議事録スレッド",
+      isThread: () => true,
+      parentId: "1474758825193242836",
+      parent: parentChannel,
+      sendTyping: jest.fn().mockResolvedValue(undefined),
+    };
+    const message = {
+      id: "msg_category_thread",
+      content: "<@bot_1> 議事録を整理して",
+      channelId: "147999999999999999",
+      guildId: "840827137451229205",
+      createdAt: new Date("2026-05-08T09:00:00.000Z"),
+      author: { id: "user_1", bot: false, username: "user" },
+      client: { user: { id: "bot_1" } },
+      channel: threadChannel,
+      mentions: { everyone: false, roles: { map: () => [] } },
+      attachments: [],
+      reply: jest.fn(),
+    };
+
+    const result = await handler(message, { messageTriggerSource: "mention" });
+
+    expect(openClawClient.execute).toHaveBeenCalledTimes(1);
+    expect(result.payload.channel).toEqual({
+      id: "1474758825193242836",
+      name: "議事録スレッド",
+      type: "project",
+      registered: true,
+      thread_id: "147999999999999999",
+      parent_channel_id: "1474758825193242836",
+      category_id: "1474758754007253062",
+      gate_source: "category",
+    });
+    expect(result.payload.execution).toEqual({ mode: "direct_agent", reason: "project_work" });
+  });
+
+  it("uses parent registry category fallback when a thread parent channel is not cached", async () => {
+    const openClawClient = {
+      execute: jest.fn().mockResolvedValue({
+        schema_version: 1,
+        action: "observe",
+        body: "",
+        requires_approval: false,
+      }),
+    };
+    const handler = createOpenClawMessageHandler({
+      openClawClient,
+      allowedChannelIds: [],
+      allowedCategoryIds: ["1474758754007253062"],
+      guildId: "840827137451229205",
+      contextEntriesSource: async () => [],
+      requestIdFactory: () => "req_category_thread_uncached_parent",
+    });
+    const threadChannel = {
+      id: "147999999999999998",
+      name: "議事録スレッド",
+      isThread: () => true,
+      parentId: "1474758825193242836",
+      sendTyping: jest.fn().mockResolvedValue(undefined),
+    };
+    const message = {
+      id: "msg_category_thread_uncached_parent",
+      content: "<@bot_1> 議事録を整理して",
+      channelId: "147999999999999998",
+      guildId: "840827137451229205",
+      createdAt: new Date("2026-05-08T09:00:00.000Z"),
+      author: { id: "user_1", bot: false, username: "user" },
+      client: { user: { id: "bot_1" } },
+      channel: threadChannel,
+      mentions: { everyone: false, roles: { map: () => [] } },
+      attachments: [],
+      reply: jest.fn(),
+    };
+
+    const result = await handler(message, { messageTriggerSource: "mention" });
+
+    expect(openClawClient.execute).toHaveBeenCalledTimes(1);
+    expect(result.payload.channel).toEqual({
+      id: "1474758825193242836",
+      name: "議事録スレッド",
+      type: "project",
+      registered: true,
+      thread_id: "147999999999999998",
+      parent_channel_id: "1474758825193242836",
+      category_id: "1474758754007253062",
+      gate_source: "category",
+    });
   });
 
   it("blocks unsafe external URLs before direct handoff", async () => {

@@ -108,7 +108,7 @@ const normalizeCanonicalRegistry = (source) => {
     channels
       .filter((entry) => entry && typeof entry === "object" && !Array.isArray(entry))
       .map((entry) => {
-        const id = String(entry.channel_id || entry.id || "").trim();
+        const id = String(entry.channel_id || entry.category_id || entry.id || "").trim();
         return [
           id,
           {
@@ -119,6 +119,7 @@ const normalizeCanonicalRegistry = (source) => {
               entry.permission_worksheet_status || entry.permission_status || entry.permissionStatus
             ),
             allowlist_eligibility: String(entry.allowlist_eligibility || "").trim(),
+            category_id: String(entry.parent_category_id || "").trim(),
           },
         ];
       })

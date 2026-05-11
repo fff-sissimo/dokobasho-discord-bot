@@ -67,7 +67,8 @@ Discord上で動作する多機能ボット。リマインダー機能と `/fair
     - `OPENCLAW_NOTION_VERSION`: (任意) Notion-Version ヘッダ。Notion data source API を使うため未指定時 `2025-09-03`。
     - `OPENCLAW_NOTION_MAX_RESULTS`: (任意) Notion search / query の最大件数。未指定時 `5`。
     - `OPENCLAW_NOTION_MAX_RESULT_CHARS`: (任意) OpenClaw へ戻す Notion 結果の文字数上限。未指定時 `4000`。
-    - `FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS`: (`FAIRY_RUNTIME_MODE=openclaw` で必須) OpenClaw 直接実行を許可する channel ID の comma-separated list。Phase1 sandbox は `1094907178671939654`、Phase2 chat は権限確認後に `840827137451229210` を追加。
+    - `FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS`: (`FAIRY_RUNTIME_MODE=openclaw` で `FAIRY_OPENCLAW_ALLOWED_CATEGORY_IDS` とどちらか必須) OpenClaw 直接実行を許可する channel ID の comma-separated list。Phase1 sandbox は `1094907178671939654`、Phase2 chat は権限確認後に `840827137451229210` を追加。
+    - `FAIRY_OPENCLAW_ALLOWED_CATEGORY_IDS`: (`FAIRY_RUNTIME_MODE=openclaw` で `FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS` とどちらか必須) OpenClaw 直接実行を許可する category ID の comma-separated list。カテゴリ許可は registry で `verified` の child channel / thread parent にだけ適用され、未登録 channel は自動許可しません。
     - `FAIRY_OPENCLAW_CHANNEL_REGISTRY_JSON`: (任意) runtime registry override。正本は `dokobasho-fairy-openclaw/runtime/discord-channel-registry.json` です。Hostinger で一時昇格が必要な場合だけ JSON override を使います。
     - `FAIRY_OPENCLAW_STATE_DIR`: (任意) OpenClaw runtime の followup / heartbeat state 保存先。未指定時 `/var/lib/dokobasho/fairy-openclaw-state`。指定する場合は repo 外の絶対パスにしてください。
     - `OPENCLAW_AUTONOMY_HEARTBEAT_ENABLED`: (任意) scheduler から `/internal/autonomy/heartbeat` を呼ぶかどうか。未指定時 `true`。`FAIRY_RUNTIME_MODE=openclaw` かつ `OPENCLAW_API_BASE_URL` / `OPENCLAW_API_KEY` がある場合だけ有効です。
@@ -193,7 +194,7 @@ message trigger は mention / Bot への reply に限定され、通常会話の
 - `GUILD_ID`
 - `OPENCLAW_API_BASE_URL`
 - `OPENCLAW_API_KEY`
-- `FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS`
+- `FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS` または `FAIRY_OPENCLAW_ALLOWED_CATEGORY_IDS`
 - channel registry 正本は `../dokobasho-fairy-openclaw/runtime/discord-channel-registry.json` です。`FAIRY_OPENCLAW_CHANNEL_REGISTRY_JSON` は Hostinger などの runtime override が必要な場合だけ使います。
 
 Hostinger では `openclaw-api` service を Docker 内部だけで起動します。Traefik label と host port は付けません。
@@ -217,6 +218,7 @@ OPENCLAW_API_KEY=<openssl rand -base64 32 で生成した共有シークレッ�
 OPENCLAW_API_TIMEOUT_MS=85000
 OPENCLAW_REQUEST_AUDIT_PATH=/var/lib/dokobasho/fairy-openclaw-state/request-audit.jsonl
 FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS=1094907178671939654
+FAIRY_OPENCLAW_ALLOWED_CATEGORY_IDS=
 FAIRY_OPENCLAW_STATE_DIR=/var/lib/dokobasho/fairy-openclaw-state
 OPENCLAW_AUTONOMY_HEARTBEAT_ENABLED=true
 OPENCLAW_AUTONOMY_HEARTBEAT_CRON=*/15 * * * *
@@ -230,9 +232,15 @@ Phase2 有効化時の allowlist 例:
 FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS=1094907178671939654,840827137451229210
 ```
 
+カテゴリ rollout 有効化時の allowlist 例:
+
+```env
+FAIRY_OPENCLAW_ALLOWED_CATEGORY_IDS=1201092282254893066,1098535279549235280,847492905618505748,1474758754007253062,843363361121894400
+```
+
 channel registry の正本は `dokobasho-fairy-openclaw/runtime/discord-channel-registry.json` です。`verified` のみ送信対象です。`pending` / `known` / `not-connected` は名前と type を保持しますが、allowlist に入れると起動時に停止します。
-`アイデアボード` (`1311647968113332275`) は repo 正本 registry では `type=board,registry_status=verified` です。`アイデアボード（全体）` と `クエストボード` は `not-connected` のままです。
-Vostok project channels は repo 正本 registry では `registry_status=pending`、ops channels は `registry_status=known` です。project / ops を送信対象にする場合も、permission worksheet を確認し、registry 正本または deploy env override で対象 channel だけを明示的に `verified` へ昇格してください。
+カテゴリ allowlist は、親カテゴリ ID が verified で、かつ対象 child channel / thread parent も registry で verified の場合だけ通します。カテゴリ配下に新規 channel が追加されても、registry へ verified 追加されるまでは自動で読み書きしません。
+ops channels は `registry_status=known` のままです。送信対象にする場合も `ops_draft_only` gate により自動投稿は拒否されます。
 外部設定で検証済みにする場合は、Discord snowflake を文字列 key にした JSON を指定します。
 
 ```env
@@ -260,7 +268,7 @@ web / project workspace 文脈を使う実作業は、`execution.mode=direct_age
 送信直前 gate は、allowlist 外チャンネル、承認必須応答、everyone/here、role mention、添付、外部 URL を自動送信しません。
 payload の `channel.type` は registry から解決し、thread 投稿では `thread_id`、`parent_channel_id`、`category_id` を文字列で渡します。
 OpenClaw response の `followup_candidates` は、adapter 側の channel-type gate を通った場合だけ `followups.json` に保存します。`chat` は明示依頼、`board` は正式クエストまたは明示継続案件、`project` は `kind=agreed_todo` + `basis=agreed_in_thread` + `due_at` が揃う候補だけを許可し、`ops` / `unknown` は保存しません。保存対象は channel ID、channel type、source message ID、member ID、summary、due_at、kind、basis、assignee/source followup ID、status、checked/closed timestamp、notes に限定し、Discord の raw 本文は保存しません。due を過ぎた open followup の ID は次回 payload の `context.matched_followup_ids` に反映されます。
-通常 rollback は `FAIRY_RUNTIME_MODE=openclaw` のまま `FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS` と runtime registry override を直前の verified baseline に戻し、`discord-bot` service を再作成します。`FAIRY_RUNTIME_MODE=n8n` へ戻す対応は emergency fallback として通常 rollback とは分けて扱います。
+通常 rollback は `FAIRY_RUNTIME_MODE=openclaw` のまま `FAIRY_OPENCLAW_ALLOWED_CATEGORY_IDS` を空にし、`FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS` と runtime registry override を直前の verified baseline に戻して `discord-bot` service を再作成します。OpenClaw workspace prompt / registry を戻す場合は `openclaw-api` も再作成します。`FAIRY_RUNTIME_MODE=n8n` へ戻す対応は emergency fallback として通常 rollback とは分けて扱います。
 
 #### fairy-core v1.1.0 の追加確認項目（speaker-aware context）
 

@@ -20,8 +20,9 @@ Checks:
   - canonical runtime/discord-channel-registry.json
   - FAIRY_OPENCLAW_CHANNEL_REGISTRY_JSON deploy override
   - FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS
+  - FAIRY_OPENCLAW_ALLOWED_CATEGORY_IDS
   - permission worksheet status
-  - allowlisted channel gate result
+  - allowlisted channel/category gate result
 
 Output columns are limited to channel id, type, status, allowlist membership, and gate result.`;
 
@@ -31,8 +32,19 @@ const statusText = ({ registryStatus, worksheetStatus }) =>
 const normalizeOverrideRegistry = (source) => {
   if (!source || typeof source !== "object") return {};
   const sourceEntries = source && !Array.isArray(source) && Array.isArray(source.channels) ? source.channels : source;
+  const normalizeEntryId = (entry) => {
+    const id = String(entry && entry.id || "").trim();
+    const channelId = String(entry && entry.channel_id || "").trim();
+    const categoryId = String(entry && entry.category_id || "").trim();
+    if (id && channelId) {
+      throw new Error("invalid OpenClaw channel registry override: id and channel_id both set on one entry");
+    }
+    if (id) return id;
+    if (channelId) return channelId;
+    return categoryId;
+  };
   const entries = Array.isArray(sourceEntries)
-    ? sourceEntries.map((entry) => [String(entry && (entry.id || entry.channel_id) || "").trim(), entry])
+    ? sourceEntries.map((entry) => [normalizeEntryId(entry), entry])
     : Object.entries(sourceEntries).map(([id, entry]) => [String(id || "").trim(), entry]);
   return Object.fromEntries(
     entries
@@ -45,6 +57,7 @@ const normalizeOverrideRegistry = (source) => {
           status: String(
             entry.status || entry.registry_status || (entry.verified === true ? "verified" : "")
           ).trim() || "unknown",
+          category_id: String(entry.category_id || entry.parent_category_id || "").trim(),
         },
       ])
   );
@@ -106,25 +119,28 @@ const main = () => {
   }
 
   const allowedIds = parseCsv(env.FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS);
+  const allowedCategoryIds = parseCsv(env.FAIRY_OPENCLAW_ALLOWED_CATEGORY_IDS);
   const allowedSet = new Set(allowedIds);
+  const allowedCategorySet = new Set(allowedCategoryIds);
   const worksheet = loadPermissionWorksheet({ registry, env, args });
-  const channelIds = [...new Set([...Object.keys(registry), ...allowedIds])].sort();
+  const channelIds = [...new Set([...Object.keys(registry), ...allowedIds, ...allowedCategoryIds])].sort();
 
   const rows = channelIds.map((channelId) => {
     const entry = registry[channelId];
     const registryStatus = entry ? entry.status : "unknown";
     const worksheetStatus = worksheet[channelId] || "unknown";
-    const allowlisted = allowedSet.has(channelId);
+    const categoryChild = Boolean(entry && entry.category_id && allowedCategorySet.has(String(entry.category_id)));
+    const allowlisted = allowedSet.has(channelId) || allowedCategorySet.has(channelId) || categoryChild;
     return {
       channel_id: channelId,
       type: entry ? entry.type : "unknown",
       status: statusText({ registryStatus, worksheetStatus }),
-      allowlist: allowlisted ? "yes" : "no",
+      allowlist: allowedCategorySet.has(channelId) ? "category" : categoryChild ? "category-child" : allowlisted ? "yes" : "no",
       gate: gateFor({ channelId, entry, allowlisted, worksheetStatus }),
     };
   });
 
-  if (allowedIds.length === 0) {
+  if (allowedIds.length === 0 && allowedCategoryIds.length === 0) {
     rows.push({
       channel_id: "allowlist",
       type: "unknown",
