@@ -98,6 +98,7 @@ services:
       - OPENCLAW_AGENT_THINKING=${OPENCLAW_AGENT_THINKING:-low}
       - OPENCLAW_AGENT_TIMEOUT_SECONDS=${OPENCLAW_AGENT_TIMEOUT_SECONDS:-120}
       - OPENCLAW_REQUEST_TIMEOUT_MS=${OPENCLAW_REQUEST_TIMEOUT_MS:-160000}
+      - OPENCLAW_REQUEST_AUDIT_PATH=${OPENCLAW_REQUEST_AUDIT_PATH:-/var/lib/dokobasho/fairy-openclaw-state/request-audit.jsonl}
       - OPENCLAW_FIRST_ATTEMPT_TIMEOUT_MS=${OPENCLAW_FIRST_ATTEMPT_TIMEOUT_MS:-75000}
       - OPENCLAW_RETRY_MIN_TIMEOUT_MS=${OPENCLAW_RETRY_MIN_TIMEOUT_MS:-60000}
       - OPENCLAW_KILL_GRACE_MS=${OPENCLAW_KILL_GRACE_MS:-10000}
@@ -159,6 +160,7 @@ services:
       - /docker/n8n/discord-bot-runtime:/opt/dokobasho
       - /docker/n8n/dokobasho-fairy-openclaw:/opt/dokobasho-openclaw:ro
       - /docker/n8n/openclaw-state:/root/.openclaw
+      - /docker/n8n/fairy-openclaw-state:/var/lib/dokobasho/fairy-openclaw-state
 
   discord-bot:
     image: node:20-alpine
@@ -258,6 +260,16 @@ services:
       - APP_BRANCH=${APP_BRANCH}
       - NODE_AUTH_TOKEN=${NODE_AUTH_TOKEN}
       - NOTION_TOKEN=${NOTION_TOKEN}
+      - FAIRY_RUNTIME_MODE=${FAIRY_RUNTIME_MODE:-n8n}
+      - OPENCLAW_API_BASE_URL=${OPENCLAW_API_BASE_URL:-http://openclaw-api:8788/discord/respond}
+      - OPENCLAW_API_KEY=${OPENCLAW_API_KEY}
+      - OPENCLAW_API_TIMEOUT_MS=${OPENCLAW_API_TIMEOUT_MS:-85000}
+      - FAIRY_OPENCLAW_STATE_DIR=${FAIRY_OPENCLAW_STATE_DIR:-/var/lib/dokobasho/fairy-openclaw-state}
+      - OPENCLAW_REQUEST_AUDIT_PATH=${OPENCLAW_REQUEST_AUDIT_PATH:-/var/lib/dokobasho/fairy-openclaw-state/request-audit.jsonl}
+      - OPENCLAW_AUTONOMY_HEARTBEAT_ENABLED=${OPENCLAW_AUTONOMY_HEARTBEAT_ENABLED:-true}
+      - OPENCLAW_AUTONOMY_HEARTBEAT_CRON=${OPENCLAW_AUTONOMY_HEARTBEAT_CRON:-*/15 * * * *}
+      - OPENCLAW_AUTONOMY_DREAMING_ENABLED=${OPENCLAW_AUTONOMY_DREAMING_ENABLED:-true}
+      - OPENCLAW_AUTONOMY_DREAMING_CRON=${OPENCLAW_AUTONOMY_DREAMING_CRON:-17 3 * * *}
     command:
       - sh
       - -lc
@@ -298,6 +310,7 @@ services:
       start_period: 60s
     volumes:
       - /docker/n8n/discord-bot-runtime:/opt/dokobasho
+      - /docker/n8n/fairy-openclaw-state:/var/lib/dokobasho/fairy-openclaw-state
       - ${GOOGLE_SA_KEY_FILE}:/app/keys/google-service-key.json:ro
 
 volumes:

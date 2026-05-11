@@ -7,6 +7,7 @@ const { calculateNextDate } = require('./src/utils');
 const { processReminders } = require('./src/reminder-processor');
 const { getBotToken } = require('./src/config');
 const { writeHeartbeat } = require('./src/scheduler-heartbeat');
+const { scheduleOpenClawAutonomyEvents } = require('./src/scheduler-openclaw-events');
 
 logger.info('Scheduler process started.');
 
@@ -28,10 +29,21 @@ client.once('ready', () => {
             await processReminders(client);
             writeHeartbeat();
         } catch (error) {
-            logger.error('[scheduler] Failed to process reminders', error);
+            const errorCode = String(error && (error.code || error.name) || 'REMINDER_PROCESS_FAILED')
+                .replace(/[^A-Za-z0-9_.:-]+/g, '_')
+                .slice(0, 80) || 'REMINDER_PROCESS_FAILED';
+            logger.error({ error_code: errorCode }, '[scheduler] Failed to process reminders');
         }
     });
     logger.info('Cron job scheduled to run every minute.');
+    try {
+        scheduleOpenClawAutonomyEvents({ cron, logger });
+    } catch (error) {
+        const errorCode = String(error && (error.code || error.name) || 'OPENCLAW_AUTONOMY_SCHEDULE_FAILED')
+            .replace(/[^A-Za-z0-9_.:-]+/g, '_')
+            .slice(0, 80) || 'OPENCLAW_AUTONOMY_SCHEDULE_FAILED';
+        logger.error({ error_code: errorCode }, '[scheduler] Failed to schedule OpenClaw autonomy events');
+    }
 });
 
 client.login(token).catch(err => {

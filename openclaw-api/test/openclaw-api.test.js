@@ -19,21 +19,27 @@ const {
   buildMinimalRetryPayload,
   buildOptionalPromptFiles,
   buildPromptPayload,
+  buildAutonomyRequestAuditRecord,
+  buildRequestAuditRecord,
   createServer,
   enrichAllowedLinkSummaries,
   fetchExternalLinkSummaries,
   isCompactFirstRequest,
   requestExternalText,
   validateExternalUrl,
+  writeRequestAudit,
 } = require("../src/server");
 const {
   buildAgentPrompt,
   buildCompactAgentPrompt,
+  buildAutonomyPrompt,
   buildDirectAgentPrompt,
   buildObserveResponse,
   buildRetryAgentPrompt,
   extractMarkdownSections,
   loadWorkspaceContext,
+  normalizeAutonomyResponse,
+  normalizeDirectReplyText,
   normalizeOpenClawResponse,
   normalizeSafeDiagnostics,
   parseAgentResponse,
@@ -118,6 +124,193 @@ test("discord respond requires bearer auth", async () => {
     });
     assert.equal(response.status, 401);
   });
+});
+
+test("autonomy endpoints require bearer auth", async () => {
+  await withServer({ runAgentCommand: async () => "{}" }, async (baseUrl) => {
+    for (const pathname of ["/internal/autonomy/heartbeat", "/internal/autonomy/dreaming"]) {
+      const response = await fetch(`${baseUrl}${pathname}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ event_type: pathname.endsWith("heartbeat") ? "heartbeat" : "dreaming" }),
+      });
+      assert.equal(response.status, 401, pathname);
+    }
+  });
+});
+
+test("heartbeat autonomy prompt keeps safety boundaries and sanitizes unsafe payload fields", () => {
+  const prompt = buildAutonomyPrompt({
+    eventType: "heartbeat",
+    workspaceContext: "runtime context",
+    payload: {
+      event_type: "heartbeat",
+      message: {
+        content: "確認 <@&123456789012345678> https://example.com/raw?token=secret-value token=secret-value",
+      },
+      recent_messages: [
+        "RAW DISCORD SENTENCE MUST NOT REACH AUTONOMY PROMPT",
+      ],
+    },
+  });
+
+  assert.match(prompt, /HEARTBEAT \/ DREAMING/);
+  assert.match(prompt, /Discord に直接投稿せず/);
+  assert.match(prompt, /Notion や n8n workflow を dispatch せず/);
+  assert.match(prompt, /event_type は heartbeat または dreaming/);
+  assert.match(prompt, /no_op, mark_checked, mark_closed, draft_followup_message, needs_human_confirmation, record_dream/);
+  assert.match(prompt, /mention、URL、token、secret/);
+  assert.doesNotMatch(prompt, /https?:\/\/example\.com/);
+  assert.doesNotMatch(prompt, /secret-value/);
+  assert.doesNotMatch(prompt, /<@&123456789012345678>/);
+  assert.doesNotMatch(prompt, /"message"/);
+  assert.doesNotMatch(prompt, /"recent_messages"/);
+  assert.doesNotMatch(prompt, /RAW DISCORD SENTENCE MUST NOT REACH AUTONOMY PROMPT/);
+  assert.doesNotMatch(prompt, /"content"/);
+});
+
+test("dreaming autonomy response returns save candidates only and does not dispatch external effects", async () => {
+  const prompts = [];
+  const n8nDispatcher = {
+    enabled: true,
+    run: async () => {
+      throw new Error("autonomy endpoint should not dispatch n8n workflows");
+    },
+  };
+  const notionBridge = {
+    enabled: true,
+    runRead: async () => {
+      throw new Error("autonomy endpoint should not run Notion reads");
+    },
+    runWrite: async () => {
+      throw new Error("autonomy endpoint should not run Notion writes");
+    },
+  };
+
+  await withServer({
+    n8nDispatcher,
+    notionBridge,
+    runAgentCommand: async ({ message }) => {
+      prompts.push(message);
+      return JSON.stringify({
+        payloads: [
+          {
+            text: JSON.stringify({
+              event_type: "dreaming",
+              action: "record_dream",
+              reason: "dream_candidate",
+              dream_records: [
+                {
+                  summary: "次の整理候補 <@123> https://example.com token=secret-value",
+                  reason: "夜間整理",
+                  kind: "reflection",
+                },
+              ],
+              n8n_workflow_requests: [{ workflow_key: "notion.safe_ops" }],
+              notion_writes: [{ operation: "append_blocks" }],
+            }),
+          },
+        ],
+      });
+    },
+  }, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/internal/autonomy/dreaming`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer secret",
+      },
+      body: JSON.stringify({
+        event_type: "dreaming",
+        raw: "do not persist raw payload",
+      }),
+    });
+    const body = await response.json();
+    const serialized = JSON.stringify(body);
+    assert.equal(response.status, 200);
+    assert.equal(body.event_type, "dreaming");
+    assert.equal(body.action, "record_dream");
+    assert.deepEqual(body.dream_records, [
+      { summary: "次の整理候補", reason: "夜間整理", kind: "reflection" },
+    ]);
+    assert.equal(body.counts.dream_records, 1);
+    assert.equal(body.notion_writes, undefined);
+    assert.equal(body.n8n_workflow_requests, undefined);
+    assert.doesNotMatch(serialized, /https?:\/\//);
+    assert.doesNotMatch(serialized, /secret-value/);
+    assert.doesNotMatch(serialized, /<@123>/);
+    assert.equal(prompts.length, 1);
+  });
+});
+
+test("autonomy audit records contain only event status action reason and safe counts", async () => {
+  const auditDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-autonomy-audit-"));
+  const auditPath = path.join(auditDir, "request-audit.jsonl");
+
+  await withServer({
+    config: { ...baseConfig, requestAuditPath: auditPath },
+    runAgentCommand: async () => JSON.stringify({
+      content: JSON.stringify({
+        event_type: "heartbeat",
+        action: "needs_human_confirmation",
+        reason: "token=secret-value",
+        body: "確認して @here https://example.com/raw?token=secret-value",
+      }),
+    }),
+  }, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/internal/autonomy/heartbeat`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer secret",
+      },
+      body: JSON.stringify({
+        event_type: "heartbeat",
+        request_id: "req_autonomy_audit",
+        message: { content: "raw body https://example.com token=secret-value" },
+      }),
+    });
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(body.action, "needs_human_confirmation");
+    assert.equal(body.reason, "");
+    assert.equal(body.draft_followup_message, "確認して");
+  });
+
+  const records = (await fs.readFile(auditPath, "utf8")).trim().split("\n").map(JSON.parse);
+  assert.equal(records.length, 1);
+  assert.deepEqual(records[0], {
+    ts: records[0].ts,
+    event_type: "heartbeat",
+    status: "completed",
+    action: "needs_human_confirmation",
+    reason: "",
+    error_code: "",
+    counts: {
+      checked_followups: 0,
+      closed_followups: 0,
+      dream_records: 0,
+      has_draft_followup_message: true,
+    },
+  });
+  const serialized = JSON.stringify(records[0]);
+  assert.doesNotMatch(serialized, /req_autonomy_audit|raw body|https?:\/\/|secret-value|@here/);
+
+  const directRecord = buildAutonomyRequestAuditRecord({
+    eventType: "dreaming",
+    status: "completed",
+    response: normalizeAutonomyResponse({
+      eventType: "dreaming",
+      value: {
+        action: "record_dream",
+        reason: "https://example.com/raw?token=secret-value",
+        dream_records: [{ summary: "候補" }],
+      },
+    }),
+  });
+  assert.equal(directRecord.event_type, "dreaming");
+  assert.equal(directRecord.reason, "");
+  assert.equal(directRecord.counts.dream_records, 1);
 });
 
 test("discord respond returns normalized OpenClaw response", async () => {

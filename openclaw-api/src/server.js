@@ -11,6 +11,7 @@ const { assertRuntimeConfig, loadConfig } = require("./config");
 const {
   buildAgentPrompt,
   buildCompactAgentPrompt,
+  buildAutonomyPrompt,
   buildDirectAgentPrompt,
   buildDirectFailureResponse,
   buildObserveResponse,
@@ -18,6 +19,7 @@ const {
   loadWorkspaceContext,
   normalizeSafeDiagnostics,
   parseAgentResponse,
+  parseAutonomyResponse,
   parseDirectAgentResponse,
 } = require("./contracts");
 const { createN8nDispatcher } = require("./n8n-dispatcher");
@@ -201,6 +203,35 @@ const safeAuditCode = (value, maxLength = 80) => {
 
 const safeAuditNumber = (value) => Number.isFinite(Number(value)) ? Number(value) : undefined;
 
+const buildSafeAutonomyCounts = (counts) => {
+  const source = counts && typeof counts === "object" && !Array.isArray(counts) ? counts : {};
+  return {
+    checked_followups: safeAuditNumber(source.checked_followups) || 0,
+    closed_followups: safeAuditNumber(source.closed_followups) || 0,
+    dream_records: safeAuditNumber(source.dream_records) || 0,
+    has_draft_followup_message: source.has_draft_followup_message === true,
+  };
+};
+
+const buildSafeAutonomyLogFields = ({ eventType, status, response, reason, errorCode }) => ({
+  event_type: safeAuditCode(eventType, 40),
+  status: safeAuditCode(status, 40),
+  action: safeAuditCode(response && response.action, 40),
+  reason: safeAuditCode(reason || response && response.reason, 80),
+  error_code: safeAuditCode(errorCode, 80),
+  counts: buildSafeAutonomyCounts(response && response.counts),
+});
+
+const buildAutonomyRequestAuditRecord = ({ eventType, response, status, reason, errorCode }) => ({
+  ts: new Date().toISOString(),
+  event_type: safeAuditCode(eventType, 40),
+  status: safeAuditCode(status, 40),
+  action: safeAuditCode(response && response.action, 40),
+  reason: safeAuditCode(reason || response && response.reason, 80),
+  error_code: safeAuditCode(errorCode, 80),
+  counts: buildSafeAutonomyCounts(response && response.counts),
+});
+
 const buildRequestAuditRecord = ({ payload, requestId, directAgent, response, initialResponse, status, reason, gateReason, errorCode }) => {
   const conversation = payload && payload.context && payload.context.conversation ? payload.context.conversation : {};
   return {
@@ -291,6 +322,18 @@ const LINK_SUMMARY_MAX_BYTES = 120000;
 const LINK_SUMMARY_MAX_CHARS = 1400;
 const LINK_SUMMARY_MAX_URLS = 3;
 const LINK_SUMMARY_MAX_REDIRECTS = 3;
+
+const runAutonomyOpenClawTurn = async ({ config, eventType, payload, workspaceContext, runAgentCommand }) => {
+  const prompt = buildAutonomyPrompt({ eventType, payload, workspaceContext });
+  const stdout = await runAgentCommand({ config, message: prompt });
+  return parseAutonomyResponse({ eventType, stdout });
+};
+
+const getAutonomyEventTypeFromPath = (requestPath) => {
+  if (requestPath === "/internal/autonomy/heartbeat") return "heartbeat";
+  if (requestPath === "/internal/autonomy/dreaming") return "dreaming";
+  return "";
+};
 
 const normalizeRetryIdentifierList = (value) =>
   (Array.isArray(value) ? value : [])
@@ -1353,7 +1396,8 @@ const createServer = ({
 } = {}) => {
   assertRuntimeConfig(config);
   return http.createServer(async (req, res) => {
-    if (req.method === "GET" && req.url === "/health") {
+    const requestPath = String(req.url || "").split("?")[0];
+    if (req.method === "GET" && requestPath === "/health") {
       sendJson(res, 200, {
         ok: true,
         service: "openclaw-api",
@@ -1363,7 +1407,85 @@ const createServer = ({
       return;
     }
 
-    if (req.method !== "POST" || req.url !== "/discord/respond") {
+    const autonomyEventType = getAutonomyEventTypeFromPath(requestPath);
+    if (req.method === "POST" && autonomyEventType) {
+      if (!isAuthorized(req, config.apiKey)) {
+        sendJson(res, 401, { error: "unauthorized" });
+        return;
+      }
+
+      let payload;
+      try {
+        payload = await readJsonBody(req, config.maxBodyBytes);
+      } catch (error) {
+        sendJson(res, error.statusCode || 400, { error: error.message });
+        return;
+      }
+
+      try {
+        const workspaceContext = await loadContext({
+          workspaceDir: config.workspaceDir,
+          promptFiles: config.promptFiles,
+        });
+        const response = await runAutonomyOpenClawTurn({
+          config,
+          eventType: autonomyEventType,
+          payload,
+          workspaceContext,
+          runAgentCommand,
+        });
+        logger.info(
+          buildSafeAutonomyLogFields({
+            eventType: autonomyEventType,
+            status: "completed",
+            response,
+          }),
+          "[openclaw-api] autonomy request completed"
+        );
+        await writeRequestAudit({
+          config,
+          logger,
+          record: buildAutonomyRequestAuditRecord({
+            eventType: autonomyEventType,
+            response,
+            status: "completed",
+          }),
+        });
+        sendJson(res, 200, response);
+      } catch (error) {
+        const failureResponse = parseAutonomyResponse({
+          eventType: autonomyEventType,
+          stdout: JSON.stringify({
+            action: "no_op",
+            reason: error && error.code ? error.code : "openclaw_autonomy_failed",
+          }),
+        });
+        logger.warn(
+          buildSafeAutonomyLogFields({
+            eventType: autonomyEventType,
+            status: "failed",
+            response: failureResponse,
+            errorCode: error && (error.code || error.name),
+          }),
+          "[openclaw-api] autonomy request failed"
+        );
+        await writeRequestAudit({
+          config,
+          logger,
+          record: buildAutonomyRequestAuditRecord({
+            eventType: autonomyEventType,
+            response: failureResponse,
+            status: "failed",
+            reason: error && error.code ? error.code : "openclaw_autonomy_failed",
+            errorCode: error && (error.code || error.name),
+          }),
+        });
+        sendJson(res, 200, failureResponse);
+      }
+      return;
+    }
+
+    if (req.method !== "POST" || requestPath !== "/discord/respond") {
       sendJson(res, 404, { error: "not_found" });
       return;
     }
@@ -1912,6 +2034,7 @@ module.exports = {
   buildMinimalRetryPayload,
   buildOptionalPromptFiles,
   buildPromptPayload,
+  buildAutonomyRequestAuditRecord,
   buildRequestAuditRecord,
   createServer,
   enrichAllowedLinkSummaries,

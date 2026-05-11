@@ -1936,6 +1936,20 @@ describe("fairy OpenClaw runtime", () => {
           closed_at: null,
           notes: "",
         },
+        {
+          id: "future_1",
+          channel_id: "1094907178671939654",
+          channel_type: "sandbox",
+          source_message_id: "source_future",
+          requested_by_member_id: "user_1",
+          summary: "まだ先",
+          due_at: "2026-05-06T10:00:00.000Z",
+          created_at: "2026-05-04T10:00:00.000Z",
+          status: "open",
+          last_checked_at: null,
+          closed_at: null,
+          notes: "",
+        },
       ],
     });
     const openClawClient = {
@@ -1944,8 +1958,8 @@ describe("fairy OpenClaw runtime", () => {
         action: "observe",
         body: "",
         requires_approval: false,
-        checked_followup_ids: ["checked_1"],
-        closed_followup_ids: ["closed_1"],
+        checked_followup_ids: ["checked_1", "future_1"],
+        closed_followup_ids: ["closed_1", "future_1"],
       }),
     };
     const handler = createOpenClawMessageHandler({
@@ -1985,6 +1999,12 @@ describe("fairy OpenClaw runtime", () => {
         status: "closed",
         last_checked_at: null,
         closed_at: "2026-05-05T10:30:00.000Z",
+      }),
+      expect.objectContaining({
+        id: "future_1",
+        status: "open",
+        last_checked_at: null,
+        closed_at: null,
       }),
     ]);
     expect(message.reply).not.toHaveBeenCalled();
