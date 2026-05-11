@@ -4,6 +4,8 @@ const http = require("node:http");
 const https = require("node:https");
 const dns = require("node:dns").promises;
 const net = require("node:net");
+const fs = require("node:fs/promises");
+const path = require("node:path");
 
 const { assertRuntimeConfig, loadConfig } = require("./config");
 const {
@@ -181,6 +183,72 @@ const safeLogText = (value, { maxLength = 120 } = {}) => {
   if (/(?:api[_-]?key|token|secret|password|passwd)\s*[:=]/i.test(text)) return "[redacted]";
   if (/(?:bearer|basic)\s+[a-z0-9._~+/=-]{8,}/i.test(text)) return "[redacted]";
   return text.slice(0, maxLength);
+};
+
+const safeAuditIdentifier = (value, maxLength = 80) => {
+  const text = String(value || "").trim();
+  if (!text || text.length > maxLength) return "";
+  if (!/^[A-Za-z0-9_.:-]+$/.test(text)) return "";
+  if (safeLogIdentifier(text) === "[redacted]") return "";
+  return text;
+};
+
+const safeAuditCode = (value, maxLength = 80) => {
+  const text = String(value || "").trim();
+  if (!/^[A-Za-z][A-Za-z0-9_.:-]*$/.test(text)) return "";
+  return safeAuditIdentifier(text, maxLength);
+};
+
+const safeAuditNumber = (value) => Number.isFinite(Number(value)) ? Number(value) : undefined;
+
+const buildRequestAuditRecord = ({ payload, requestId, directAgent, response, initialResponse, status, reason, gateReason, errorCode }) => {
+  const conversation = payload && payload.context && payload.context.conversation ? payload.context.conversation : {};
+  return {
+    ts: new Date().toISOString(),
+    request_id: safeAuditIdentifier(requestId),
+    channel_id: safeAuditIdentifier(payload && payload.channel && payload.channel.id, 40),
+    channel_type: safeAuditCode(payload && payload.channel && payload.channel.type, 40),
+    execution_mode: directAgent ? "direct_agent" : "json_contract",
+    execution_reason: safeAuditCode(payload && payload.execution && payload.execution.reason, 80),
+    status: safeAuditCode(status, 40),
+    action: safeAuditCode(response && response.action, 40),
+    reason: safeAuditCode(reason || response && response.reason, 80),
+    gate_reason: safeAuditCode(gateReason, 80),
+    error_code: safeAuditCode(errorCode, 80),
+    conversation_scope: safeAuditCode(conversation.scope, 40),
+    conversation_reason: safeAuditCode(conversation.reason, 80),
+    conversation_error_code: safeAuditCode(conversation.error_code, 80),
+    conversation_used_messages: safeAuditNumber(conversation.used_messages),
+    conversation_truncated: payload && payload.context && payload.context.conversation
+      ? conversation.truncated === true
+      : undefined,
+    conversation_target_fetches: safeAuditNumber(conversation.target_fetches),
+    conversation_target_fetch_failures: safeAuditNumber(conversation.target_fetch_failures),
+    conversation_target_message_count: safeAuditNumber(conversation.target_message_count),
+    notion_reads: Array.isArray(initialResponse && initialResponse.notion_requests)
+      ? initialResponse.notion_requests.length
+      : 0,
+    notion_writes: Array.isArray(response && response.notion_writes) ? response.notion_writes.length : 0,
+    n8n_workflow_requests: Array.isArray(initialResponse && initialResponse.n8n_workflow_requests)
+      ? initialResponse.n8n_workflow_requests.length
+      : 0,
+  };
+};
+
+const writeRequestAudit = async ({ config, logger, record }) => {
+  const auditPath = String(config && config.requestAuditPath || "").trim();
+  if (!auditPath) return;
+  try {
+    await fs.mkdir(path.dirname(auditPath), { recursive: true });
+    await fs.appendFile(auditPath, `${JSON.stringify(record)}\n`, { encoding: "utf8" });
+  } catch (error) {
+    if (logger && typeof logger.warn === "function") {
+      logger.warn({
+        request_id: record && record.request_id,
+        error_code: safeAuditCode(error && (error.code || error.name), 64) || "REQUEST_AUDIT_WRITE_FAILED",
+      }, "[openclaw-api] request audit write failed");
+    }
+  }
 };
 
 const emitTraceLog = ({ config, logger, entry, message = "[openclaw-api] trace" }) => {
@@ -1156,9 +1224,9 @@ const executeNotionRound = async ({
     if (failed) {
       if (logger && typeof logger.warn === "function") {
         logger.warn({
-          request_id: payload.request_id,
-          notion_operation: failed.operation,
-          notion_reason: failed.reason,
+          request_id: safeAuditIdentifier(payload.request_id),
+          notion_operation: safeAuditCode(failed.operation, 40),
+          notion_reason: safeAuditCode(failed.reason, 80),
         }, "[openclaw-api] notion write denied or failed");
       }
       return {
@@ -1242,10 +1310,10 @@ const executeN8nWorkflowRound = async ({ payload, response, n8nDispatcher, logge
     if (!result.ok) {
       if (logger && typeof logger.warn === "function") {
         logger.warn({
-          request_id: payload.request_id,
-          workflow_key: request.workflow_key,
-          operation: request.operation,
-          reason: result.reason,
+          request_id: safeAuditIdentifier(payload.request_id),
+          workflow_key: safeAuditCode(request.workflow_key, 80),
+          operation: safeAuditCode(request.operation, 80),
+          reason: safeAuditCode(result.reason, 80),
         }, "[openclaw-api] n8n workflow dispatch failed");
       }
       return buildN8nNoticeResponse(result.reason, result.safe_reply);
@@ -1343,6 +1411,19 @@ const createServer = ({
           action: response.action,
           gate_reason: directGate.reason,
         }, "[openclaw-api] request completed");
+        await writeRequestAudit({
+          config,
+          logger,
+          record: buildRequestAuditRecord({
+            payload,
+            requestId,
+            directAgent,
+            response,
+            initialResponse: null,
+            status: "blocked",
+            gateReason: directGate.reason,
+          }),
+        });
         sendJson(res, 200, response);
         return;
       }
@@ -1357,6 +1438,19 @@ const createServer = ({
           execution_mode: "direct_agent",
           action: response.action,
         }, "[openclaw-api] request completed");
+        await writeRequestAudit({
+          config,
+          logger,
+          record: buildRequestAuditRecord({
+            payload,
+            requestId,
+            directAgent,
+            response,
+            initialResponse: null,
+            status: "blocked",
+            reason: response.reason,
+          }),
+        });
         sendJson(res, 200, response);
         return;
       }
@@ -1688,17 +1782,29 @@ const createServer = ({
         retry_last_stage: metrics.retry_last_stage,
         retry_skip_reason: metrics.retry_skip_reason,
       }, "[openclaw-api] request completed");
-      sendJson(res, 200, isFailureObserveResponse(response)
+      const responseBody = isFailureObserveResponse(response)
         ? attachFailureDiagnostics(response, metrics)
-        : response);
+        : response;
+      await writeRequestAudit({
+        config,
+        logger,
+        record: buildRequestAuditRecord({
+          payload,
+          requestId,
+          directAgent,
+          response: responseBody,
+          initialResponse: result.response,
+          status: "completed",
+        }),
+      });
+      sendJson(res, 200, responseBody);
     } catch (error) {
       logger.warn({
         request_id: requestId,
         channel_id: payload.channel && payload.channel.id,
-        err: error && error.message,
-        code: error && error.code,
+        error_code: safeAuditCode(error && (error.code || error.name), 64) || "OPENCLAW_EXECUTION_FAILED",
         elapsed_ms: Date.now() - requestStartedAt,
-        stage: error && error.stage ? error.stage : lastStage,
+        stage: safeAuditCode(error && error.stage ? error.stage : lastStage, 80) || "openclaw_execution_failed",
         stderr_bytes: error && Number.isFinite(Number(error.stderr_bytes)) ? Number(error.stderr_bytes) : 0,
         stderr_line_count: error && Number.isFinite(Number(error.stderr_line_count))
           ? Number(error.stderr_line_count)
@@ -1764,7 +1870,22 @@ const createServer = ({
       if (error && Number.isFinite(Number(error.stderr_line_count))) {
         diagnostics.stderr_line_count = Number(error.stderr_line_count);
       }
-      sendJson(res, 200, directAgent ? buildDirectFailureResponse(error) : buildObserveResponse(reason, diagnostics));
+      const failureResponse = directAgent ? buildDirectFailureResponse(error) : buildObserveResponse(reason, diagnostics);
+      await writeRequestAudit({
+        config,
+        logger,
+        record: buildRequestAuditRecord({
+          payload,
+          requestId,
+          directAgent,
+          response: failureResponse,
+          initialResponse: null,
+          status: "failed",
+          reason,
+          errorCode: error && (error.retry_error_code || error.code || error.name),
+        }),
+      });
+      sendJson(res, 200, failureResponse);
     }
   });
 };
@@ -1791,6 +1912,7 @@ module.exports = {
   buildMinimalRetryPayload,
   buildOptionalPromptFiles,
   buildPromptPayload,
+  buildRequestAuditRecord,
   createServer,
   enrichAllowedLinkSummaries,
   fetchExternalLinkSummaries,
@@ -1798,4 +1920,5 @@ module.exports = {
   validateExternalUrl,
   isCompactFirstRequest,
   readJsonBody,
+  writeRequestAudit,
 };

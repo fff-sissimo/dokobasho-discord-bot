@@ -1043,7 +1043,7 @@ const buildDirectFailureResponse = (error) => {
   return {
     ...buildObserveResponse(reason),
     action: "reply",
-    body: "-# OpenClaw direct mode が完了できませんでした。時間をおいてもう一度試してください。",
+    body: "-# うまく返せませんでした。少し時間をおいて、もう一度呼んでください。",
     confidence: "low",
   };
 };

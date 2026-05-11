@@ -29,7 +29,20 @@ const hashPrompt = (message) =>
 const hashSessionValue = (value) =>
   hashPrompt(String(value || "").trim());
 
+const hasUnsafeSessionValue = (value) => {
+  const text = String(value || "");
+  return /https?:\/\//i.test(text) ||
+    /(?:api[_-]?key|token|secret|password|passwd|authorization|bearer|basic)[=/:]/i.test(text) ||
+    /(?:^|[\s"'`({\[])(?:bearer|basic)\s+[a-z0-9._~+/=-]{8,}/i.test(text) ||
+    /(?:^|[\s"'`({\[])(?:sk-proj-[a-z0-9_-]{12,}|sk-[a-z0-9_-]{12,}|ghp_[a-z0-9_]{12,}|github_pat_[a-z0-9_]{12,})/i.test(text);
+};
+
 const shortenSessionSegment = (segment, maxLength) => {
+  if (hasUnsafeSessionValue(segment)) {
+    const hash = hashSessionValue(segment);
+    const prefix = maxLength > SESSION_HASH_CHARS + 1 ? "session-" : "";
+    return `${prefix}${hash}`.slice(0, maxLength);
+  }
   const safeSegment = normalizeSessionSegment(segment) || "session";
   if (safeSegment.length <= maxLength) return safeSegment;
   const hash = hashSessionValue(segment);

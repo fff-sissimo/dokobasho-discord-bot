@@ -65,6 +65,7 @@ const loadConfig = (env = process.env) => {
     traceLogs: parseBoolean(env.OPENCLAW_TRACE_LOGS, false),
     cleanupSessionState: parseBoolean(env.OPENCLAW_CLEANUP_SESSION_STATE, true),
     maxBodyBytes: parsePositiveInt(env.OPENCLAW_API_MAX_BODY_BYTES, 65536),
+    requestAuditPath: String(env.OPENCLAW_REQUEST_AUDIT_PATH || "data/request-audit.jsonl").trim(),
     maxWorkspaceContextChars: parsePositiveInt(
       env.OPENCLAW_WORKSPACE_CONTEXT_MAX_CHARS,
       DEFAULT_WORKSPACE_CONTEXT_MAX_CHARS
