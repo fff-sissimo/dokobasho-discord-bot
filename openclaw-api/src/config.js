@@ -10,6 +10,11 @@ const DEFAULT_PROMPT_FILES = [
   "memory/README.md",
 ];
 
+const DEFAULT_N8N_WORKFLOW_URLS = {
+  "discord.server_read": "http://n8n:5678/webhook/openclaw/discord-read",
+  "discord.safe_write": "http://n8n:5678/webhook/openclaw/discord-write",
+};
+
 const parseBoolean = (value, fallback = false) => {
   if (value === undefined || value === null || String(value).trim() === "") return fallback;
   return /^(1|true|yes|on)$/i.test(String(value).trim());
@@ -32,6 +37,22 @@ const parseList = (value) =>
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
+
+const parseJsonObject = (value) => {
+  const text = String(value || "").trim();
+  if (!text) return {};
+  try {
+    const parsed = JSON.parse(text);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return Object.fromEntries(
+      Object.entries(parsed)
+        .map(([key, item]) => [String(key || "").trim(), String(item || "").trim()])
+        .filter(([key, item]) => key && item)
+    );
+  } catch {
+    return {};
+  }
+};
 
 const loadConfig = (env = process.env) => {
   const apiKey = String(env.OPENCLAW_API_KEY || "").trim();
@@ -69,6 +90,10 @@ const loadConfig = (env = process.env) => {
     n8nDispatch: {
       enabled: parseBoolean(env.OPENCLAW_N8N_DISPATCH_ENABLED, false),
       url: String(env.OPENCLAW_N8N_DISPATCH_URL || "").trim(),
+      workflowUrls: {
+        ...DEFAULT_N8N_WORKFLOW_URLS,
+        ...parseJsonObject(env.OPENCLAW_N8N_WORKFLOW_URLS_JSON),
+      },
       secret: String(env.OPENCLAW_N8N_DISPATCH_SECRET || "").trim(),
       allowedWorkflows: parseList(env.OPENCLAW_N8N_ALLOWED_WORKFLOWS || "notion.safe_ops"),
       timeoutMs: parsePositiveInt(env.OPENCLAW_N8N_DISPATCH_TIMEOUT_MS, 20000),
@@ -83,7 +108,10 @@ const assertRuntimeConfig = (config) => {
   if (!config.command) missing.push("OPENCLAW_COMMAND");
   if (config.notion && config.notion.enabled && !config.notion.token) missing.push("OPENCLAW_NOTION_TOKEN");
   if (config.n8nDispatch && config.n8nDispatch.enabled) {
-    if (!config.n8nDispatch.url) missing.push("OPENCLAW_N8N_DISPATCH_URL");
+    const allowedWorkflows = new Set(config.n8nDispatch.allowedWorkflows || []);
+    if (!config.n8nDispatch.url && allowedWorkflows.has("notion.safe_ops")) {
+      missing.push("OPENCLAW_N8N_DISPATCH_URL");
+    }
     if (!config.n8nDispatch.secret) missing.push("OPENCLAW_N8N_DISPATCH_SECRET");
   }
   if (missing.length > 0) {
