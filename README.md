@@ -57,8 +57,9 @@ Discord上で動作する多機能ボット。リマインダー機能と `/fair
     - `OPENCLAW_API_TIMEOUT_MS`: (任意) OpenClaw 判断 API の timeout(ms)。未指定時 `180000`。
     - `OPENCLAW_N8N_DISPATCH_ENABLED`: (任意) `true/1` で OpenClaw direct mode の secret-backed workflow dispatcher を有効化。未指定時は compose 側の設定に従います。
     - `OPENCLAW_N8N_DISPATCH_URL`: (任意) n8n dispatcher webhook。Docker 内部では `http://n8n:5678/webhook/openclaw/workflow-dispatch`。
+    - `OPENCLAW_N8N_WORKFLOW_URLS_JSON`: (任意) workflow key ごとの n8n webhook URL map。未指定時も Discord 分離 workflow は `discord.server_read` を `http://n8n:5678/webhook/openclaw/discord-read`、`discord.safe_write` を `http://n8n:5678/webhook/openclaw/discord-write` へ向けます。
     - `OPENCLAW_N8N_DISPATCH_SECRET`: (推奨) OpenClaw API から n8n dispatcher へ送る共有シークレット。OpenClaw 子プロセスには渡しません。
-    - `OPENCLAW_N8N_ALLOWED_WORKFLOWS`: (任意) direct mode から許可する workflow key。初期値は `notion.safe_ops`。
+    - `OPENCLAW_N8N_ALLOWED_WORKFLOWS`: (任意) direct mode から許可する workflow key。compose 既定値は `notion.safe_ops,discord.server_read,discord.safe_write`。
     - `OPENCLAW_REQUEST_AUDIT_PATH`: (任意) OpenClaw API の body-free request audit 保存先。Hostinger では scheduler DREAMING 集計のため `/var/lib/dokobasho/fairy-openclaw-state/request-audit.jsonl` を推奨します。
     - `OPENCLAW_NOTION_ENABLED`: (任意) `true/1` で OpenClaw API 側 Notion bridge を有効化。本番 direct mode では `false` を正本にし、後方互換 fallback / unit test 用として残します。
     - `OPENCLAW_NOTION_TOKEN`: (任意) OpenClaw API 側 Notion bridge 用 token。本番 direct mode では n8n 側の `NOTION_TOKEN` を使います。
@@ -76,6 +77,7 @@ Discord上で動作する多機能ボット。リマインダー機能と `/fair
     - `NOTION_API_KEY`: (任意) 互換用の別名トークン。`NOTION_TOKEN` を優先します。
     - `NOTION_VERSION`: (任意) n8n / n8n-runners 向け Notion-Version ヘッダ。未指定時 `2022-06-28`。OpenClaw Notion bridge は `OPENCLAW_NOTION_VERSION` を正本にし、未指定時 `2025-09-03` を使います。
     - `NOTION_API_BASE_URL`: (任意) Notion API base URL。未指定時 `https://api.notion.com/v1`。
+    - `DISCORD_BOT_TOKEN` / `BOT_TOKEN`: n8n の Discord read/write workflow で使う bot token。OpenClaw API 子プロセスには渡さず、n8n / n8n-runners の環境変数としてだけ参照します。
     - `FAIRY_ENABLE_MESSAGE_TRIGGER`: (任意) `true/1` でメンション・返信を `/fairy` と同等に処理。未指定時 `true`。`false/0` の場合は従来の `N8N_WEBHOOK_URL` 経路を使います。
     - `FAIRY_CONTEXT_MAX_MESSAGES`: (任意) `/fairy` / mention / bot reply で OpenClaw へ渡す Discord 会話履歴の最大件数。未指定時 `80`、上限 `100`。
     - `FAIRY_CONTEXT_MAX_CHARS`: (任意) Discord 会話履歴本文の合計文字数上限。未指定時 `18000`、上限 `24000`。OpenClaw API の request body 上限に収まるよう大きくしすぎないでください。
@@ -193,6 +195,8 @@ message trigger は mention / Bot への reply に限定され、通常会話の
 - `FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS` または `FAIRY_OPENCLAW_ALLOWED_CATEGORY_IDS`
 - channel registry 正本は `../dokobasho-fairy-openclaw/runtime/discord-channel-registry.json` です。`FAIRY_OPENCLAW_CHANNEL_REGISTRY_JSON` は Hostinger などの runtime override が必要な場合だけ使います。
 
+root `docker-compose.yml` は Docker Compose の project `.env` / shell env から `OPENCLAW_API_KEY` などを展開します。`openclaw-api` は `discord-bot/.env` を読みません。Discord bot token や raw bot env を `openclaw-api` に渡さないため、local compose でも OpenClaw API 用 env は root `.env` または shell env に置き、bot 固有 env は `discord-bot/.env` に分けてください。
+
 Hostinger では `openclaw-api` service を Docker 内部だけで起動します。Traefik label と host port は付けません。
 Hostinger の現行構成では `/docker/n8n/fairy-openclaw-state` をコンテナ内 `/var/lib/dokobasho/fairy-openclaw-state` へマウントしているため、既定の `FAIRY_OPENCLAW_STATE_DIR=/var/lib/dokobasho/fairy-openclaw-state` は VPS 側に永続化されます。live state はこの配下の `followups.json` と `heartbeat-state.json` に保存し、git-tracked な runtime root や `memory/followups.json` へは保存しません。
 
@@ -203,15 +207,21 @@ docker compose --profile openclaw up -d --build openclaw-api
 docker compose --profile openclaw up -d --no-deps --force-recreate discord-bot
 ```
 
-`discord-bot/.env` の OpenClaw 設定例:
+Discord サーバー読取・送信・スレッド作成を使う前に、`n8n-workflows/README.md` の手順で `openclaw-discord-read.js` と `openclaw-discord-write.js` を n8n に validate / publish してください。Compose はこれらの workflow を自動 import しません。本番 workflow id は read `WA3vlk2gTUDFfrgm`、write `vjGcfoCIIfVvwfkq` です。
+
+root `.env` / shell env と `discord-bot/.env` に分ける OpenClaw 設定例:
 
 ```env
+# root .env or shell env for openclaw-api and compose interpolation
+OPENCLAW_API_KEY=<openssl rand -base64 32 で生成した共有シークレット>
+OPENCLAW_REQUEST_AUDIT_PATH=/var/lib/dokobasho/fairy-openclaw-state/request-audit.jsonl
+
+# discord-bot/.env
 FAIRY_RUNTIME_MODE=openclaw
 OPENCLAW_API_BASE_URL=http://openclaw-api:8788/discord/respond
 # OPENCLAW_API_URL is a legacy alias. Keep unset unless older runtime compatibility is required.
-OPENCLAW_API_KEY=<openssl rand -base64 32 で生成した共有シークレット>
+OPENCLAW_API_KEY=<root .env と同じ共有シークレット>
 OPENCLAW_API_TIMEOUT_MS=180000
-OPENCLAW_REQUEST_AUDIT_PATH=/var/lib/dokobasho/fairy-openclaw-state/request-audit.jsonl
 FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS=1094907178671939654
 FAIRY_OPENCLAW_ALLOWED_CATEGORY_IDS=
 FAIRY_OPENCLAW_STATE_DIR=/var/lib/dokobasho/fairy-openclaw-state
@@ -258,8 +268,22 @@ FAIRY_OPENCLAW_CHANNEL_REGISTRY_JSON={"985145703774978059":{"name":"配信部屋
 FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS=1094907178671939654,840827137451229210,985145703774978059,1311647968113332275,1465296404455882860,1466404431217164288
 ```
 
-`openclaw-api` は同じ `discord-bot/.env` から `OPENCLAW_API_KEY` を読みます。Hostinger で `dokobasho-fairy-openclaw` の配置場所が既定と違う場合は、Compose 実行環境に `OPENCLAW_WORKSPACE_HOST_DIR=/path/to/dokobasho-fairy-openclaw` を設定してください。
+`openclaw-api` は Compose 実行環境から `OPENCLAW_API_KEY` と OpenClaw 用 env だけを読みます。Discord bot token は `openclaw-api` に渡さず、n8n / n8n-runners 側だけへ渡します。Hostinger で `dokobasho-fairy-openclaw` の配置場所が既定と違う場合は、Compose 実行環境に `OPENCLAW_WORKSPACE_HOST_DIR=/path/to/dokobasho-fairy-openclaw` を設定してください。
 既定の `OPENCLAW_AGENT_MODE=local` では、`openclaw-api` container 内の OpenClaw CLI が直接 agent turn を実行します。OpenClaw の state は `OPENCLAW_STATE_HOST_DIR`（未指定時 `./openclaw-state`）から `/root/.openclaw` へマウントされます。`openclaw-api` は OpenClaw 実行後に該当 session id の `.jsonl` / `.trajectory.jsonl` だけを削除します。認証、設定、workspace cache などの非 session state は維持します。live runtime では `OPENCLAW_AGENT_SESSION_SCOPE=request` を既定とし、`fixed` は session 履歴を維持したい検証用互換設定としてのみ扱います。緊急時だけ `OPENCLAW_CLEANUP_SESSION_STATE=0` で無効化できますが、raw Discord 本文が OpenClaw state に残るため redaction audit failure として扱います。
+
+#### OpenClaw Notion bridge
+
+web / project workspace 文脈を使う実作業は、`execution.mode=direct_agent` として `openclaw-api` container 側の OpenClaw に direct handoff します。Notion など secret-backed 作業は OpenClaw に token を渡さず、OpenClaw が返す `n8n_workflow_requests` を `openclaw-api` が n8n dispatcher webhook へ送ります。Discord bot は受信、verified / allowlist 判定、安全化済みメタデータ付与、Discord 返信だけを担当します。
+
+`OPENCLAW_N8N_DISPATCH_ENABLED=true` の direct mode では、`notion.safe_ops`、`discord.server_read`、`discord.safe_write` だけを許可します。`OPENCLAW_N8N_DISPATCH_SECRET`、Notion token、Discord bot token は OpenClaw 子プロセスの env allowlist には含めません。Discord の読取・送信・スレッド作成は n8n の分離 workflow だけが担当し、reaction、delete/edit/pin、role/permission 操作、AI Agent、chat trigger、外部公開投稿ノードは入れません。
+
+`OPENCLAW_NOTION_ENABLED=true` の JSON Notion bridge は後方互換 fallback と unit test 対象として残します。本番 direct mode では `OPENCLAW_NOTION_ENABLED=false` を正本にし、Notion token は n8n / n8n-runners 側だけへ渡します。
+
+- 許可: search、page/block/data source の読取、page 作成、block 追記、page property 更新
+- 禁止: delete、archive、trash、move、duplicate、内容消去
+- direct handoff の Notion 境界: 読取、page 作成、block 追記だけを主経路にし、削除、archive、trash、move、duplicate、内容消去は拒否します
+- Notion URL は Discord input gate で Notion target として扱い、明示 URL 読取依頼の一般外部 URL は安全化済み `web_targets` として direct handoff に渡します。unsafe URL、添付、everyone/here、role mention は従来どおり gate で止めます
+- 書込は「Notionに保存/追記/更新」などの明示依頼があり、対象 URL/ID が解決できる場合だけ実行します。対象未指定時は search 候補の確認で止めます
 
 送信直前 gate は、allowlist 外チャンネル、承認必須応答、everyone/here、role mention、添付、外部 URL を自動送信しません。
 payload の `channel.type` は registry から解決し、thread 投稿では `thread_id`、`parent_channel_id`、`category_id` を文字列で渡します。

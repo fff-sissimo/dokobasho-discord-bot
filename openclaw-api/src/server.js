@@ -1300,14 +1300,149 @@ const isN8nTargetedReadOperation = (request) =>
     String(request && request.operation || "").trim()
   );
 
+const isDiscordReadOperation = (request) =>
+  [
+    "discord.fetch_recent_summary",
+    "discord.fetch_messages",
+    "discord.fetch_thread_messages",
+    "discord.list_channels",
+    "discord.list_active_threads",
+  ].includes(String(request && request.operation || "").trim());
+
+const isDiscordWriteOperation = (request) =>
+  ["discord.send_message", "discord.create_thread", "discord.send_thread_message"].includes(
+    String(request && request.operation || "").trim()
+  );
+
+const SNOWFLAKE_PATTERN = /^\d{17,20}$/;
+
+const isSnowflake = (value) => SNOWFLAKE_PATTERN.test(String(value || ""));
+
+const getPayloadDiscordContext = (payload) => {
+  const channel = payload && payload.channel ? payload.channel : {};
+  const message = payload && payload.message ? payload.message : {};
+  return {
+    guildId: String(payload && payload.guild_id || ""),
+    channelId: String(channel.id || ""),
+    threadId: String(channel.thread_id || ""),
+    parentChannelId: String(channel.parent_channel_id || ""),
+    messageId: String(message.id || ""),
+    channelType: String(channel.type || ""),
+  };
+};
+
+const discordTargetMatchesPayload = ({ payload, request, allowEmpty = true, allowParent = false }) => {
+  const target = request && request.target ? request.target : {};
+  const discord = getPayloadDiscordContext(payload);
+  if (target.guild_id && target.guild_id !== discord.guildId) return false;
+  const targetChannelId = String(target.channel_id || "");
+  const targetThreadId = String(target.thread_id || "");
+  const targetMessageId = String(target.message_id || "");
+  if (!targetChannelId && !targetThreadId && !targetMessageId) return allowEmpty;
+  const allowedChannelIds = new Set([discord.channelId, discord.threadId].filter(Boolean));
+  if (allowParent && discord.parentChannelId) allowedChannelIds.add(discord.parentChannelId);
+  if (targetChannelId && !allowedChannelIds.has(targetChannelId)) return false;
+  if (targetThreadId && targetThreadId !== discord.threadId && targetThreadId !== discord.channelId) return false;
+  if (targetMessageId && discord.messageId && targetMessageId !== discord.messageId) return false;
+  return true;
+};
+
+const hasDiscordWriteIntent = (payload) => {
+  const discord = payload && payload.context && payload.context.discord ? payload.context.discord : {};
+  if (discord.explicit_write_requested === true) return true;
+  const content = String(payload && payload.message && payload.message.content || payload && payload.content || "");
+  return /(投稿|送信|メッセージ|スレッド|thread|作成|作って|立てて|send|post|create)/i.test(content);
+};
+
+const hasDiscordWorkIntent = (payload) => {
+  const discord = payload && payload.context && payload.context.discord ? payload.context.discord : {};
+  const content = String(payload && payload.message && payload.message.content || payload && payload.content || "");
+  return Boolean(discord.explicit_read_requested || discord.explicit_write_requested) ||
+    /(discord|サーバー全体|チャンネル.*確認|投稿.*確認|履歴|要約|スレッド|thread)/i.test(content);
+};
+
+const hasExplicitServerWideDiscordReadIntent = (payload) => {
+  const discord = payload && payload.context && payload.context.discord ? payload.context.discord : {};
+  if (discord.explicit_server_read_requested === true) return true;
+  const content = String(payload && payload.message && payload.message.content || payload && payload.content || "");
+  return /(サーバー全体|全チャンネル|server[-\s]?wide|guild[-\s]?wide)/i.test(content);
+};
+
+const hasUnsafeDiscordWriteInput = (request) => {
+  const input = request && request.input ? request.input : {};
+  const text = [input.content, input.body, input.title].map((value) => String(value || "")).join("\n");
+  if (!text.trim()) return true;
+  return input.blocked_content === true ||
+    /@everyone|@here|<@&\d+>|https?:\/\//i.test(text) ||
+    Array.isArray(input.attachments) && input.attachments.length > 0 ||
+    Array.isArray(input.embeds) && input.embeds.length > 0;
+};
+
+const isDiscordWriteChannelDenied = (payload) => {
+  const discord = getPayloadDiscordContext(payload);
+  return !discord.guildId ||
+    !discord.channelId ||
+    ["dm", "ops", "unknown"].includes(discord.channelType);
+};
+
 const requestHasTarget = (request) => {
   const target = request && request.target ? request.target : {};
   return Boolean(target.id || target.page_id || target.data_source_id || target.database_id || target.url);
 };
 
+const requestHasDiscordTarget = (request) => {
+  const target = request && request.target ? request.target : {};
+  return Boolean(target.channel_id || target.thread_id || target.message_id);
+};
+
 const validateN8nWorkflowRequestForPayload = ({ payload, request }) => {
-  if (String(request && request.workflow_key || "") !== "notion.safe_ops") {
+  const workflowKey = String(request && request.workflow_key || "");
+  if (!["notion.safe_ops", "discord.server_read", "discord.safe_write"].includes(workflowKey)) {
     return { ok: false, reason: "n8n_workflow_not_allowed" };
+  }
+  if (workflowKey === "discord.server_read") {
+    const discord = getPayloadDiscordContext(payload);
+    if (!isSnowflake(discord.guildId)) return { ok: false, reason: "discord_read_guild_required" };
+    if (!isDiscordReadOperation(request)) return { ok: false, reason: "discord_read_operation_not_allowed" };
+    if (["discord.fetch_messages", "discord.fetch_thread_messages"].includes(request.operation) && !requestHasDiscordTarget(request)) {
+      return { ok: false, reason: "discord_read_target_required" };
+    }
+    if (
+      ["discord.list_channels", "discord.list_active_threads"].includes(request.operation) &&
+      !hasExplicitServerWideDiscordReadIntent(payload)
+    ) {
+      return { ok: false, reason: "discord_read_target_required" };
+    }
+    if (
+      request.operation === "discord.fetch_recent_summary" &&
+      !requestHasDiscordTarget(request) &&
+      !hasExplicitServerWideDiscordReadIntent(payload)
+    ) {
+      return { ok: false, reason: "discord_read_target_required" };
+    }
+    if (!discordTargetMatchesPayload({ payload, request, allowEmpty: true })) {
+      return { ok: false, reason: "discord_read_target_mismatch" };
+    }
+    return { ok: true, reason: "ok" };
+  }
+  if (workflowKey === "discord.safe_write") {
+    const discord = getPayloadDiscordContext(payload);
+    if (isDiscordWriteChannelDenied(payload) || !isSnowflake(discord.guildId)) {
+      return { ok: false, reason: "discord_write_channel_denied" };
+    }
+    if (!isDiscordWriteOperation(request)) return { ok: false, reason: "discord_write_operation_not_allowed" };
+    if (!hasDiscordWriteIntent(payload)) return { ok: false, reason: "discord_write_requires_explicit_request" };
+    if (!discordTargetMatchesPayload({ payload, request, allowEmpty: true, allowParent: false })) {
+      return { ok: false, reason: "discord_write_target_mismatch" };
+    }
+    if (request.operation === "discord.send_message" && discord.threadId) {
+      return { ok: false, reason: "discord_thread_send_requires_thread_operation" };
+    }
+    if (request.operation === "discord.create_thread" && discord.threadId) {
+      return { ok: false, reason: "discord_thread_create_from_thread_denied" };
+    }
+    if (hasUnsafeDiscordWriteInput(request)) return { ok: false, reason: "discord_write_content_denied" };
+    return { ok: true, reason: "ok" };
   }
   if (isN8nWriteOperation(request)) {
     if (!shouldExecuteWrites(payload)) return { ok: false, reason: "notion_write_requires_explicit_request" };
@@ -1332,6 +1467,12 @@ const executeN8nWorkflowRound = async ({ payload, response, n8nDispatcher, logge
         "Notion 作業を n8n workflow に渡す依頼を作れませんでした。対象と作業内容をもう一度短く教えてください。"
       );
     }
+    if (hasDiscordWorkIntent(payload)) {
+      return buildN8nNoticeResponse(
+        "n8n_workflow_request_missing",
+        "Discord の追加読取や投稿を n8n workflow に渡す依頼を作れませんでした。何を確認または作成するかをもう一度短く教えてください。"
+      );
+    }
     return response;
   }
   const safeReplies = [];
@@ -1339,7 +1480,10 @@ const executeN8nWorkflowRound = async ({ payload, response, n8nDispatcher, logge
   for (const request of requests.slice(0, 3)) {
     const validation = validateN8nWorkflowRequestForPayload({ payload, request });
     if (!validation.ok) {
-      return buildN8nNoticeResponse(validation.reason, "Notion の対象または実行条件を確認できなかったため、作業を止めました。");
+      const body = String(request && request.workflow_key || "").startsWith("discord.")
+        ? "Discord workflow の対象または実行条件を確認できなかったため、作業を止めました。"
+        : "Notion の対象または実行条件を確認できなかったため、作業を止めました。";
+      return buildN8nNoticeResponse(validation.reason, body);
     }
     const result = await n8nDispatcher.run({ payload, request });
     workflowResults.push({

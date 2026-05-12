@@ -10,7 +10,7 @@ const normalizeList = (value) => Array.isArray(value)
 
 const sanitizeReasonCode = (value) =>
   String(value || "n8n_dispatch_failed")
-    .replace(/(?:api[_-]?key|token|secret|password|passwd)\s*[:=]\s*[^\s]+/gi, "$1_redacted")
+    .replace(/(?:api[_-]?key|token|secret|password|passwd)\s*[:=]\s*[^\s]+/gi, "secret_redacted")
     .replace(/[^a-z0-9_:-]+/gi, "_")
     .slice(0, 80);
 
@@ -85,6 +85,10 @@ const normalizeDispatchResponse = (value, fallbackReason = "n8n_dispatch_failed"
           status: String(item.status || (item.ok === false ? "error" : "ok")).slice(0, 40),
           target_id: String(item.target_id || "").slice(0, 120),
           target_title: String(item.target_title || "").replace(/\s+/g, " ").trim().slice(0, 200),
+          channel_id: String(item.channel_id || "").slice(0, 40),
+          thread_id: String(item.thread_id || "").slice(0, 40),
+          message_id: String(item.message_id || "").slice(0, 40),
+          summary: normalizeDirectReplyText(item.summary || item.result_summary || "").slice(0, 400),
           reason: String(item.reason || "").replace(/[^a-z0-9_:-]+/gi, "_").slice(0, 80),
         };
       })
@@ -102,18 +106,22 @@ const createN8nDispatcher = ({ config, fetchImpl = fetch } = {}) => {
   const allowedWorkflows = new Set(normalizeList(settings.allowedWorkflows || "notion.safe_ops"));
   const enabled = settings.enabled === true;
   const url = String(settings.url || "").trim();
+  const workflowUrls = settings.workflowUrls && typeof settings.workflowUrls === "object" && !Array.isArray(settings.workflowUrls)
+    ? settings.workflowUrls
+    : {};
   const secret = String(settings.secret || "").trim();
   const timeoutMs = Number(settings.timeoutMs || 20000);
 
   const run = async ({ payload, request }) => {
     if (!enabled) return buildSafeFailure("n8n_dispatch_disabled");
-    if (!url || !secret) return buildSafeFailure("n8n_dispatch_not_configured");
+    const requestUrl = String(workflowUrls[request.workflow_key] || url || "").trim();
+    if (!requestUrl || !secret) return buildSafeFailure("n8n_dispatch_not_configured");
     if (!allowedWorkflows.has(request.workflow_key)) return buildSafeFailure("n8n_workflow_not_allowed");
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const response = await fetchImpl(url, {
+      const response = await fetchImpl(requestUrl, {
         method: "POST",
         headers: {
           "content-type": "application/json",
