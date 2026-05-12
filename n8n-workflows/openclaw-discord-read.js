@@ -79,6 +79,8 @@ if (operation === 'discord.list_active_threads') {
   discordPath = '/channels/' + targetId + '/messages?limit=' + messagesPerChannel;
 } else if (operation === 'discord.fetch_recent_summary' && snowflake.test(targetId)) {
   discordPath = '/channels/' + targetId + '/messages?limit=' + messagesPerChannel;
+} else if (operation === 'discord.fetch_recent_summary' && input.include_threads !== false) {
+  discordPath = '/guilds/' + guildId + '/threads/active';
 }
 
 return [{
@@ -229,8 +231,10 @@ if ((operation === 'discord.fetch_messages' || operation === 'discord.fetch_thre
   });
 }
 
-const channels = (Array.isArray(body) ? body : [])
-  .filter((channel) => [0, 5, 15, 16].includes(Number(channel.type)) && snowflake.test(String(channel.id || '')))
+const sourceChannels = Array.isArray(body && body.threads) ? body.threads : (Array.isArray(body) ? body : []);
+const readableTypes = Array.isArray(body && body.threads) ? [10, 11, 12] : [0, 5, 15, 16];
+const channels = sourceChannels
+  .filter((channel) => readableTypes.includes(Number(channel.type)) && snowflake.test(String(channel.id || '')))
   .sort((a, b) => Number(a.position || 0) - Number(b.position || 0))
   .slice(0, prepared.max_channels);
 
