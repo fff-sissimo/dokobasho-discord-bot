@@ -1014,6 +1014,42 @@ const hasExplicitNotionWriteRequest = (content) => {
   return /(?:書いて|書き込んで|保存して|残して|追加して|追記して|更新して|メモして|記録して|作って|作成して)/.test(text);
 };
 
+const isDiscordIntentEligibleChannel = (channel) => {
+  const type = String(channel && channel.type || "").trim();
+  return Boolean(channel && channel.registered === true) && !["ops", "unknown", "dm"].includes(type);
+};
+
+const hasDiscordReadVerb = (text) =>
+  /(?:読んで|読み|見て|確認して|要約して|まとめて|整理して|取得して|拾って|探して|検索して|一覧|list|fetch|read|summarize)/i.test(text);
+
+const hasCurrentDiscordReadTarget = (text) =>
+  /(?:このチャンネル|このスレッド|ここ|この場|直近|履歴|ログ|会話|スレッド|thread|channel|discord)/i.test(text);
+
+const hasExplicitDiscordServerReadRequest = ({ content, explicitTrigger, channel }) => {
+  const text = normalizeMessageContent(content);
+  if (!explicitTrigger || !isDiscordIntentEligibleChannel(channel)) return false;
+  return /(?:サーバー全体|全チャンネル|チャンネル一覧|全体のチャンネル|server[-\s]?wide|guild[-\s]?wide|list channels)/i.test(text) &&
+    hasDiscordReadVerb(text);
+};
+
+const hasExplicitDiscordReadRequest = ({ content, explicitTrigger, channel }) => {
+  const text = normalizeMessageContent(content);
+  if (!explicitTrigger || !isDiscordIntentEligibleChannel(channel)) return false;
+  if (hasExplicitDiscordServerReadRequest({ content: text, explicitTrigger, channel })) return true;
+  return hasDiscordReadVerb(text) && hasCurrentDiscordReadTarget(text);
+};
+
+const hasDiscordWriteDraftOnlyCue = (text) =>
+  /(?:投稿案|告知文案|文案|下書き|draft|自動投稿せず|投稿しない|送らない|送信しない|確認だけ|扱いだけ確認|添削|レビュー)/i.test(text);
+
+const hasExplicitDiscordWriteRequest = ({ content, explicitTrigger, channel }) => {
+  const text = normalizeMessageContent(content);
+  if (!explicitTrigger || !isDiscordIntentEligibleChannel(channel)) return false;
+  if (hasDiscordWriteDraftOnlyCue(text)) return false;
+  if (/(?:スレッド|thread).*(?:作って|作成して|立てて|開いて|create)/i.test(text)) return true;
+  return /(?:(?:ここ|このチャンネル|このスレッド|この場|current channel|current thread).*(?:投稿して|送信して|送って|返信して|post|send)|(?:投稿して|送信して|送って|返信して).*(?:ここ|このチャンネル|このスレッド|この場|current channel|current thread))/i.test(text);
+};
+
 const isDiceShortcutRequest = (content) => {
   const text = normalizeMessageContent(content).toLowerCase();
   if (!text) return false;
@@ -1028,6 +1064,8 @@ const hasWorkIntentSignal = (content) => {
   return hasExplicitWebRequest(text) ||
     hasExplicitNotionWriteRequest(text) ||
     hasDestructiveNotionRequest(text) ||
+    hasExplicitDiscordReadRequest({ content: text, explicitTrigger: true, channel: { registered: true, type: "project" } }) ||
+    hasExplicitDiscordWriteRequest({ content: text, explicitTrigger: true, channel: { registered: true, type: "project" } }) ||
     hasProjectWorkIntent(text);
 };
 
@@ -1055,6 +1093,7 @@ const chooseExecutionMode = (payload, { explicitTrigger = false } = {}) => {
   const content = String(payload && payload.message && payload.message.content || "");
   const notion = payload && payload.context && payload.context.notion ? payload.context.notion : {};
   const web = payload && payload.context && payload.context.web ? payload.context.web : {};
+  const discord = payload && payload.context && payload.context.discord ? payload.context.discord : {};
   if (!explicitTrigger) return { mode: "json_contract", reason: "not_explicit_trigger" };
   if (isDiceShortcutRequest(content)) return { mode: "json_contract", reason: "dice_shortcut" };
   if (isSimpleGreetingOrShortChat(content)) return { mode: "json_contract", reason: "short_chat" };
@@ -1068,6 +1107,9 @@ const chooseExecutionMode = (payload, { explicitTrigger = false } = {}) => {
   if (Array.isArray(web.targets) && web.targets.length > 0 && hasExplicitWebRequest(content)) {
     return { mode: "direct_agent", reason: "web_target" };
   }
+  if (discord.explicit_write_requested === true) return { mode: "direct_agent", reason: "discord_write_intent" };
+  if (discord.explicit_server_read_requested === true) return { mode: "direct_agent", reason: "discord_server_read_intent" };
+  if (discord.explicit_read_requested === true) return { mode: "direct_agent", reason: "discord_read_intent" };
   if (
     Array.isArray(payload && payload.message && payload.message.links) &&
     payload.message.links.some((link) => !isNotionUrl(link))
@@ -1486,6 +1528,22 @@ const buildOpenClawPayload = ({
   const webTargets = explicitWebRequested
     ? collectSafeWebTargets(links.length > 0 ? links : linkCandidates.map((candidate) => candidate.url))
     : [];
+  const explicitDiscordTrigger = Boolean(isReplyToBot || mentionsBot);
+  const explicitServerDiscordReadRequested = hasExplicitDiscordServerReadRequest({
+    content: normalizedContent,
+    explicitTrigger: explicitDiscordTrigger,
+    channel: resolvedChannel,
+  });
+  const explicitDiscordReadRequested = hasExplicitDiscordReadRequest({
+    content: normalizedContent,
+    explicitTrigger: explicitDiscordTrigger,
+    channel: resolvedChannel,
+  });
+  const explicitDiscordWriteRequested = hasExplicitDiscordWriteRequest({
+    content: normalizedContent,
+    explicitTrigger: explicitDiscordTrigger,
+    channel: resolvedChannel,
+  });
 
   const payload = {
     schema_version: 1,
@@ -1535,6 +1593,11 @@ const buildOpenClawPayload = ({
         explicit_requested: explicitWebRequested,
         targets: webTargets,
       },
+      discord: {
+        explicit_read_requested: explicitDiscordReadRequested,
+        explicit_write_requested: explicitDiscordWriteRequested,
+        explicit_server_read_requested: explicitServerDiscordReadRequested,
+      },
     },
     memory: {
       member_ids: [],
@@ -1543,7 +1606,7 @@ const buildOpenClawPayload = ({
     },
   };
   payload.execution = chooseExecutionMode(payload, {
-    explicitTrigger: Boolean(isReplyToBot || mentionsBot),
+    explicitTrigger: explicitDiscordTrigger,
   });
   return payload;
 };

@@ -1,11 +1,11 @@
 "use strict";
 
 const DEFAULT_PROMPT_FILES = [
+  "skills/n8n-workflow-dispatcher/SKILL.md",
   "RUNTIME_PROMPT.md",
   "IDENTITY.md",
   "SOUL.md",
   "TOOLS.md",
-  "skills/n8n-workflow-dispatcher/SKILL.md",
   "MEMORY.md",
 ];
 const DEFAULT_WORKSPACE_CONTEXT_MAX_CHARS = 4000;

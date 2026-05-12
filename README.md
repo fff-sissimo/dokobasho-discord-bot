@@ -55,6 +55,8 @@ Discord上で動作する多機能ボット。リマインダー機能と `/fair
     - `OPENCLAW_API_URL`: (任意) 旧互換 alias。新規設定では使わず、古い runtime 互換が必要な場合だけ残します。
     - `OPENCLAW_API_KEY`: (`FAIRY_RUNTIME_MODE=openclaw` で必須) OpenClaw 判断 API 用の Bearer token。
     - `OPENCLAW_API_TIMEOUT_MS`: (任意) OpenClaw 判断 API の timeout(ms)。未指定時 `180000`。
+    - `OPENCLAW_PROMPT_FILES`: (任意) OpenClaw direct prompt に読む runtime files。Discord/Notion n8n dispatch を使う runtime では `skills/n8n-workflow-dispatcher/SKILL.md` を先頭側に置きます。
+    - `OPENCLAW_WORKSPACE_CONTEXT_MAX_CHARS`: (任意) OpenClaw direct prompt に読む runtime file 合計文字数。dispatcher skill を確実に読ませるため compose 既定は `12000`。
     - `OPENCLAW_N8N_DISPATCH_ENABLED`: (任意) `true/1` で OpenClaw direct mode の secret-backed workflow dispatcher を有効化。未指定時は compose 側の設定に従います。
     - `OPENCLAW_N8N_DISPATCH_URL`: (任意) n8n dispatcher webhook。Docker 内部では `http://n8n:5678/webhook/openclaw/workflow-dispatch`。
     - `OPENCLAW_N8N_WORKFLOW_URLS_JSON`: (任意) workflow key ごとの n8n webhook URL map。未指定時も Discord 分離 workflow は `discord.server_read` を `http://n8n:5678/webhook/openclaw/discord-read`、`discord.safe_write` を `http://n8n:5678/webhook/openclaw/discord-write` へ向けます。
@@ -215,6 +217,12 @@ root `.env` / shell env と `discord-bot/.env` に分ける OpenClaw 設定例:
 # root .env or shell env for openclaw-api and compose interpolation
 OPENCLAW_API_KEY=<openssl rand -base64 32 で生成した共有シークレット>
 OPENCLAW_REQUEST_AUDIT_PATH=/var/lib/dokobasho/fairy-openclaw-state/request-audit.jsonl
+OPENCLAW_WORKSPACE_CONTEXT_MAX_CHARS=12000
+OPENCLAW_PROMPT_FILES=skills/n8n-workflow-dispatcher/SKILL.md,RUNTIME_PROMPT.md,IDENTITY.md,SOUL.md,TOOLS.md,MEMORY.md
+OPENCLAW_N8N_DISPATCH_ENABLED=true
+OPENCLAW_N8N_DISPATCH_URL=http://n8n:5678/webhook/openclaw/workflow-dispatch
+OPENCLAW_N8N_WORKFLOW_URLS_JSON={"discord.server_read":"http://n8n:5678/webhook/openclaw/discord-read","discord.safe_write":"http://n8n:5678/webhook/openclaw/discord-write"}
+OPENCLAW_N8N_ALLOWED_WORKFLOWS=notion.safe_ops,discord.server_read,discord.safe_write
 
 # discord-bot/.env
 FAIRY_RUNTIME_MODE=openclaw
@@ -275,7 +283,7 @@ FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS=1094907178671939654,840827137451229210,985145
 
 web / project workspace 文脈を使う実作業は、`execution.mode=direct_agent` として `openclaw-api` container 側の OpenClaw に direct handoff します。Notion など secret-backed 作業は OpenClaw に token を渡さず、OpenClaw が返す `n8n_workflow_requests` を `openclaw-api` が n8n dispatcher webhook へ送ります。Discord bot は受信、verified / allowlist 判定、安全化済みメタデータ付与、Discord 返信だけを担当します。
 
-`OPENCLAW_N8N_DISPATCH_ENABLED=true` の direct mode では、`notion.safe_ops`、`discord.server_read`、`discord.safe_write` だけを許可します。`OPENCLAW_N8N_DISPATCH_SECRET`、Notion token、Discord bot token は OpenClaw 子プロセスの env allowlist には含めません。Discord の読取・送信・スレッド作成は n8n の分離 workflow だけが担当し、reaction、delete/edit/pin、role/permission 操作、AI Agent、chat trigger、外部公開投稿ノードは入れません。
+`OPENCLAW_N8N_DISPATCH_ENABLED=true` の direct mode では、`notion.safe_ops`、`discord.server_read`、`discord.safe_write` だけを許可します。`OPENCLAW_PROMPT_FILES` では dispatcher skill `skills/n8n-workflow-dispatcher/SKILL.md` を先頭側に置き、`OPENCLAW_WORKSPACE_CONTEXT_MAX_CHARS=12000` 以上を推奨します。`OPENCLAW_N8N_DISPATCH_SECRET`、Notion token、Discord bot token は OpenClaw 子プロセスの env allowlist には含めません。Discord の読取・送信・スレッド作成は n8n の分離 workflow だけが担当し、reaction、delete/edit/pin、role/permission 操作、AI Agent、chat trigger、外部公開投稿ノードは入れません。
 
 `OPENCLAW_NOTION_ENABLED=true` の JSON Notion bridge は後方互換 fallback と unit test 対象として残します。本番 direct mode では `OPENCLAW_NOTION_ENABLED=false` を正本にし、Notion token は n8n / n8n-runners 側だけへ渡します。
 

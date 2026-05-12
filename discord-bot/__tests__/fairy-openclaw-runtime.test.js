@@ -248,6 +248,64 @@ describe("fairy OpenClaw runtime", () => {
     expect(payload.context.matched_followup_ids).toEqual([]);
   });
 
+  it("adds conservative Discord n8n intent flags to OpenClaw payloads", () => {
+    const allowedChannelIds = new Set(["1465296404455882860"]);
+    const build = (content, options = {}) => buildOpenClawPayload({
+      eventType: "message_create",
+      guildId: "840827137451229205",
+      channel: { id: "1465296404455882860", name: "vostok-vol02-general" },
+      message: {
+        id: options.messageId || "msg_discord_intent",
+        author: { id: "user_1", username: "user" },
+        channel: { id: "1465296404455882860", name: "vostok-vol02-general" },
+        createdAt: new Date("2026-05-08T10:00:00.000Z"),
+        mentions: { everyone: false, roles: { map: () => [] } },
+        attachments: [],
+      },
+      content,
+      mentionsBot: options.mentionsBot !== false,
+      allowedChannelIds,
+    });
+
+    const channelReadPayload = build("<@bot_1> このチャンネルの直近を要約して");
+    expect(channelReadPayload.context.discord).toEqual({
+      explicit_read_requested: true,
+      explicit_write_requested: false,
+      explicit_server_read_requested: false,
+    });
+    expect(channelReadPayload.execution).toEqual({ mode: "direct_agent", reason: "discord_read_intent" });
+
+    const serverReadPayload = build("<@bot_1> サーバー全体の直近投稿を要約して", { messageId: "msg_server_read" });
+    expect(serverReadPayload.context.discord).toMatchObject({
+      explicit_read_requested: true,
+      explicit_write_requested: false,
+      explicit_server_read_requested: true,
+    });
+    expect(serverReadPayload.execution).toEqual({ mode: "direct_agent", reason: "discord_server_read_intent" });
+
+    const writePayload = build("<@bot_1> ここに短く投稿して", { messageId: "msg_write" });
+    expect(writePayload.context.discord).toMatchObject({
+      explicit_read_requested: false,
+      explicit_write_requested: true,
+      explicit_server_read_requested: false,
+    });
+    expect(writePayload.execution).toEqual({ mode: "direct_agent", reason: "discord_write_intent" });
+
+    const draftPayload = build("<@bot_1> このチャンネルへの投稿案を作って", { messageId: "msg_draft" });
+    expect(draftPayload.context.discord.explicit_write_requested).toBe(false);
+
+    const noTriggerPayload = build("このチャンネルの直近を要約して", {
+      messageId: "msg_no_trigger",
+      mentionsBot: false,
+    });
+    expect(noTriggerPayload.context.discord).toEqual({
+      explicit_read_requested: false,
+      explicit_write_requested: false,
+      explicit_server_read_requested: false,
+    });
+    expect(noTriggerPayload.execution).toEqual({ mode: "json_contract", reason: "not_explicit_trigger" });
+  });
+
   it("caps OpenClaw recent context entries by count and total chars", () => {
     const allowedChannelIds = new Set(["1094907178671939654"]);
     const contextEntries = Array.from({ length: 12 }, (_, index) => ({

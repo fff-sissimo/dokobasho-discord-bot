@@ -1347,25 +1347,36 @@ const discordTargetMatchesPayload = ({ payload, request, allowEmpty = true, allo
   return true;
 };
 
+const hasOwn = (source, key) => Boolean(source && Object.prototype.hasOwnProperty.call(source, key));
+
+const hasDiscordIntentFlags = (discord) =>
+  hasOwn(discord, "explicit_read_requested") ||
+  hasOwn(discord, "explicit_write_requested") ||
+  hasOwn(discord, "explicit_server_read_requested");
+
 const hasDiscordWriteIntent = (payload) => {
   const discord = payload && payload.context && payload.context.discord ? payload.context.discord : {};
-  if (discord.explicit_write_requested === true) return true;
-  const content = String(payload && payload.message && payload.message.content || payload && payload.content || "");
-  return /(投稿|送信|メッセージ|スレッド|thread|作成|作って|立てて|send|post|create)/i.test(content);
+  return discord.explicit_write_requested === true;
+};
+
+const hasDiscordReadIntent = (payload) => {
+  const discord = payload && payload.context && payload.context.discord ? payload.context.discord : {};
+  return discord.explicit_read_requested === true;
 };
 
 const hasDiscordWorkIntent = (payload) => {
   const discord = payload && payload.context && payload.context.discord ? payload.context.discord : {};
   const content = String(payload && payload.message && payload.message.content || payload && payload.content || "");
+  if (hasDiscordIntentFlags(discord)) {
+    return Boolean(discord.explicit_read_requested || discord.explicit_write_requested || discord.explicit_server_read_requested);
+  }
   return Boolean(discord.explicit_read_requested || discord.explicit_write_requested) ||
     /(discord|サーバー全体|チャンネル.*確認|投稿.*確認|履歴|要約|スレッド|thread)/i.test(content);
 };
 
 const hasExplicitServerWideDiscordReadIntent = (payload) => {
   const discord = payload && payload.context && payload.context.discord ? payload.context.discord : {};
-  if (discord.explicit_server_read_requested === true) return true;
-  const content = String(payload && payload.message && payload.message.content || payload && payload.content || "");
-  return /(サーバー全体|全チャンネル|server[-\s]?wide|guild[-\s]?wide)/i.test(content);
+  return discord.explicit_server_read_requested === true;
 };
 
 const hasUnsafeDiscordWriteInput = (request) => {
@@ -1404,6 +1415,7 @@ const validateN8nWorkflowRequestForPayload = ({ payload, request }) => {
     const discord = getPayloadDiscordContext(payload);
     if (!isSnowflake(discord.guildId)) return { ok: false, reason: "discord_read_guild_required" };
     if (!isDiscordReadOperation(request)) return { ok: false, reason: "discord_read_operation_not_allowed" };
+    if (!hasDiscordReadIntent(payload)) return { ok: false, reason: "discord_read_requires_explicit_request" };
     if (["discord.fetch_messages", "discord.fetch_thread_messages"].includes(request.operation) && !requestHasDiscordTarget(request)) {
       return { ok: false, reason: "discord_read_target_required" };
     }

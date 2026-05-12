@@ -60,6 +60,7 @@ describe("fairy runtime rollout runbook contract", () => {
     expect(compose).toContain("FAIRY_RUNTIME_MODE=${FAIRY_RUNTIME_MODE:-n8n}");
     expect(compose).toContain("OPENCLAW_REQUEST_AUDIT_PATH=${OPENCLAW_REQUEST_AUDIT_PATH:-/var/lib/dokobasho/fairy-openclaw-state/request-audit.jsonl}");
     expect(compose).toContain("OPENCLAW_API_BASE_URL=${OPENCLAW_API_BASE_URL:-http://openclaw-api:8788/discord/respond}");
+    expect(compose).toContain("skills/n8n-workflow-dispatcher/SKILL.md");
     expect(compose).toContain("OPENCLAW_AUTONOMY_HEARTBEAT_CRON=${OPENCLAW_AUTONOMY_HEARTBEAT_CRON:-*/15 * * * *}");
     expect(compose).toContain("OPENCLAW_AUTONOMY_DREAMING_CRON=${OPENCLAW_AUTONOMY_DREAMING_CRON:-17 3 * * *}");
     expect(compose).toContain("/docker/n8n/fairy-openclaw-state:/var/lib/dokobasho/fairy-openclaw-state");

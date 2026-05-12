@@ -60,6 +60,7 @@ services:
       - NOTION_TOKEN=${NOTION_TOKEN}
       - NOTION_VERSION=${NOTION_VERSION}
       - NOTION_API_BASE_URL=${NOTION_API_BASE_URL}
+      - OPENCLAW_N8N_DISPATCH_SECRET=${OPENCLAW_N8N_DISPATCH_SECRET}
     volumes:
       - n8n_data:/home/node/.n8n
       - /local-files:/files
@@ -78,6 +79,7 @@ services:
       - NOTION_TOKEN=${NOTION_TOKEN}
       - NOTION_VERSION=${NOTION_VERSION}
       - NOTION_API_BASE_URL=${NOTION_API_BASE_URL}
+      - OPENCLAW_N8N_DISPATCH_SECRET=${OPENCLAW_N8N_DISPATCH_SECRET}
 
   openclaw-api:
     image: node:22-alpine
@@ -92,16 +94,24 @@ services:
       - OPENCLAW_AGENT_MODE=${OPENCLAW_AGENT_MODE:-local}
       - OPENCLAW_AGENT_ID=${OPENCLAW_AGENT_ID:-}
       - OPENCLAW_AGENT_SESSION_ID=${OPENCLAW_AGENT_SESSION_ID:-dokobasho-fairy-discord-v1}
+      - OPENCLAW_AGENT_SESSION_SCOPE=${OPENCLAW_AGENT_SESSION_SCOPE:-request}
       - OPENCLAW_AGENT_THINKING=${OPENCLAW_AGENT_THINKING:-low}
       - OPENCLAW_AGENT_TIMEOUT_SECONDS=${OPENCLAW_AGENT_TIMEOUT_SECONDS:-120}
       - OPENCLAW_REQUEST_TIMEOUT_MS=${OPENCLAW_REQUEST_TIMEOUT_MS:-160000}
+      - OPENCLAW_REQUEST_AUDIT_PATH=${OPENCLAW_REQUEST_AUDIT_PATH:-/var/lib/dokobasho/fairy-openclaw-state/request-audit.jsonl}
       - OPENCLAW_FIRST_ATTEMPT_TIMEOUT_MS=${OPENCLAW_FIRST_ATTEMPT_TIMEOUT_MS:-75000}
       - OPENCLAW_RETRY_MIN_TIMEOUT_MS=${OPENCLAW_RETRY_MIN_TIMEOUT_MS:-60000}
       - OPENCLAW_KILL_GRACE_MS=${OPENCLAW_KILL_GRACE_MS:-10000}
       # Diagnostic window: keep stage traces on Hostinger unless explicitly disabled.
       - OPENCLAW_TRACE_LOGS=${OPENCLAW_TRACE_LOGS:-true}
-      - OPENCLAW_WORKSPACE_CONTEXT_MAX_CHARS=${OPENCLAW_WORKSPACE_CONTEXT_MAX_CHARS:-4000}
-      - OPENCLAW_PROMPT_FILES=${OPENCLAW_PROMPT_FILES:-RUNTIME_PROMPT.md,IDENTITY.md,SOUL.md,MEMORY.md}
+      - OPENCLAW_WORKSPACE_CONTEXT_MAX_CHARS=${OPENCLAW_WORKSPACE_CONTEXT_MAX_CHARS:-12000}
+      - OPENCLAW_PROMPT_FILES=${OPENCLAW_PROMPT_FILES:-skills/n8n-workflow-dispatcher/SKILL.md,RUNTIME_PROMPT.md,IDENTITY.md,SOUL.md,TOOLS.md,MEMORY.md}
+      - OPENCLAW_N8N_DISPATCH_ENABLED=${OPENCLAW_N8N_DISPATCH_ENABLED:-true}
+      - OPENCLAW_N8N_DISPATCH_URL=${OPENCLAW_N8N_DISPATCH_URL:-http://n8n:5678/webhook/openclaw/workflow-dispatch}
+      - OPENCLAW_N8N_WORKFLOW_URLS_JSON=${OPENCLAW_N8N_WORKFLOW_URLS_JSON:-}
+      - OPENCLAW_N8N_DISPATCH_SECRET=${OPENCLAW_N8N_DISPATCH_SECRET}
+      - OPENCLAW_N8N_ALLOWED_WORKFLOWS=${OPENCLAW_N8N_ALLOWED_WORKFLOWS:-notion.safe_ops,discord.server_read,discord.safe_write}
+      - OPENCLAW_N8N_DISPATCH_TIMEOUT_MS=${OPENCLAW_N8N_DISPATCH_TIMEOUT_MS:-20000}
     command:
       - sh
       - -lc
@@ -145,6 +155,7 @@ services:
       - /docker/n8n/discord-bot-runtime:/opt/dokobasho
       - /docker/n8n/dokobasho-fairy-openclaw:/opt/dokobasho-openclaw:ro
       - /docker/n8n/openclaw-state:/root/.openclaw
+      - /docker/n8n/fairy-openclaw-state:/var/lib/dokobasho/fairy-openclaw-state
 
   discord-bot:
     image: node:20-alpine

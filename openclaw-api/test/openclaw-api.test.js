@@ -1460,6 +1460,11 @@ test("direct agent prompt includes direct handoff safety boundaries", () => {
   assert.match(prompt, /discord\.server_read/);
   assert.match(prompt, /discord\.safe_write/);
   assert.match(prompt, /Discord token/);
+  assert.match(prompt, /Discord secret-backed workflow.*必ず JSON/s);
+  assert.match(prompt, /body.*n8n_workflow_requests/s);
+  assert.match(prompt, /target\.channel_id=payload\.channel\.id/);
+  assert.match(prompt, /target\.thread_id=payload\.channel\.thread_id/);
+  assert.match(prompt, /target\.message_id=payload\.message\.id/);
   assert.match(prompt, /Notion は読取、ページ作成、既存ページへの追記だけ許可/);
   assert.match(prompt, /削除、archive、trash、move、duplicate、内容消去/);
   assert.match(prompt, /payload\.message\.web_targets/);
@@ -4691,7 +4696,7 @@ test("discord respond direct mode dispatches Discord read workflow with safe met
           author_id: "123456789012345678",
           content: "サーバー全体の直近投稿を要約して",
         },
-        context: { discord: { explicit_read_requested: true } },
+        context: { discord: { explicit_read_requested: true, explicit_server_read_requested: true } },
       }),
     });
     const body = await response.json();
@@ -4925,6 +4930,165 @@ test("discord respond direct mode refuses unsafe Discord write content", async (
   });
 });
 
+test("discord respond direct mode requires explicit Discord write intent flag", async () => {
+  const n8nDispatcher = {
+    enabled: true,
+    run: async () => {
+      throw new Error("Discord write should not dispatch without explicit_write_requested");
+    },
+  };
+  const runAgentCommand = async () => JSON.stringify({
+    payloads: [
+      {
+        text: JSON.stringify({
+          body: "Discord write workflow に渡します。",
+          n8n_workflow_requests: [
+            {
+              id: "post_1",
+              workflow_key: "discord.safe_write",
+              operation: "discord.send_message",
+              target: { guild_id: "840827137451229205", channel_id: "1501907581835153510" },
+              input: { content: "投稿します" },
+            },
+          ],
+        }),
+      },
+    ],
+  });
+
+  await withServer({ runAgentCommand, n8nDispatcher }, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/discord/respond`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer secret",
+      },
+      body: JSON.stringify({
+        request_id: "req_direct_discord_write_flag_missing",
+        guild_id: "840827137451229205",
+        execution: { mode: "direct_agent", reason: "discord_write" },
+        channel: { id: "1501907581835153510", type: "project" },
+        message: {
+          id: "1502609666457210960",
+          author_id: "123456789012345678",
+          content: "このチャンネルに投稿して",
+        },
+        context: { discord: {} },
+      }),
+    });
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(body.action, "reply");
+    assert.equal(body.reason, "discord_write_requires_explicit_request");
+  });
+});
+
+test("discord respond direct mode honors explicit false Discord write intent flag", async () => {
+  const n8nDispatcher = {
+    enabled: true,
+    run: async () => {
+      throw new Error("Discord write should not dispatch when explicit_write_requested is false");
+    },
+  };
+  const runAgentCommand = async () => JSON.stringify({
+    payloads: [
+      {
+        text: JSON.stringify({
+          body: "Discord write workflow に渡します。",
+          n8n_workflow_requests: [
+            {
+              id: "post_1",
+              workflow_key: "discord.safe_write",
+              operation: "discord.send_message",
+              target: { guild_id: "840827137451229205", channel_id: "1501907581835153510" },
+              input: { content: "投稿します" },
+            },
+          ],
+        }),
+      },
+    ],
+  });
+
+  await withServer({ runAgentCommand, n8nDispatcher }, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/discord/respond`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer secret",
+      },
+      body: JSON.stringify({
+        request_id: "req_direct_discord_write_flag_false",
+        guild_id: "840827137451229205",
+        execution: { mode: "direct_agent", reason: "discord_write" },
+        channel: { id: "1501907581835153510", type: "project" },
+        message: {
+          id: "1502609666457210960",
+          author_id: "123456789012345678",
+          content: "このチャンネルに投稿して",
+        },
+        context: { discord: { explicit_write_requested: false } },
+      }),
+    });
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(body.action, "reply");
+    assert.equal(body.reason, "discord_write_requires_explicit_request");
+  });
+});
+
+test("discord respond direct mode honors explicit false Discord read intent flag", async () => {
+  const n8nDispatcher = {
+    enabled: true,
+    run: async () => {
+      throw new Error("Discord read should not dispatch when explicit_read_requested is false");
+    },
+  };
+  const runAgentCommand = async () => JSON.stringify({
+    payloads: [
+      {
+        text: JSON.stringify({
+          body: "Discord read workflow に渡します。",
+          n8n_workflow_requests: [
+            {
+              id: "read_1",
+              workflow_key: "discord.server_read",
+              operation: "discord.fetch_messages",
+              target: { guild_id: "840827137451229205", channel_id: "1501907581835153510" },
+              input: { limit: 10 },
+            },
+          ],
+        }),
+      },
+    ],
+  });
+
+  await withServer({ runAgentCommand, n8nDispatcher }, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/discord/respond`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer secret",
+      },
+      body: JSON.stringify({
+        request_id: "req_direct_discord_read_flag_false",
+        guild_id: "840827137451229205",
+        execution: { mode: "direct_agent", reason: "discord_read" },
+        channel: { id: "1501907581835153510", type: "project" },
+        message: {
+          id: "1502609666457210960",
+          author_id: "123456789012345678",
+          content: "このチャンネルの投稿を確認して",
+        },
+        context: { discord: { explicit_read_requested: false } },
+      }),
+    });
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(body.action, "reply");
+    assert.equal(body.reason, "discord_read_requires_explicit_request");
+  });
+});
+
 test("discord respond direct mode refuses targeted Discord fetch without target", async () => {
   const n8nDispatcher = {
     enabled: true,
@@ -5019,7 +5183,7 @@ test("discord respond direct mode refuses untargeted summary without server-wide
         message: {
           id: "1502609666457210960",
           author_id: "123456789012345678",
-          content: "このチャンネルの直近を要約して",
+          content: "サーバー全体の直近を要約して",
         },
         context: { discord: { explicit_read_requested: true } },
       }),
@@ -5131,7 +5295,7 @@ test("discord respond direct mode refuses channel list without explicit server-w
         message: {
           id: "1502609666457210960",
           author_id: "123456789012345678",
-          content: "このチャンネルの情報を確認して",
+          content: "サーバー全体のチャンネル一覧を確認して",
         },
         context: { discord: { explicit_read_requested: true } },
       }),
@@ -5259,11 +5423,11 @@ test("loadConfig defaults to request scoped sessions with fixed compatibility op
   assert.equal(config.promptFiles.includes("OPEN_ITEMS.md"), false);
   assert.equal(config.promptFiles.includes("ROADMAP.md"), false);
   assert.deepEqual(config.promptFiles, [
+    "skills/n8n-workflow-dispatcher/SKILL.md",
     "RUNTIME_PROMPT.md",
     "IDENTITY.md",
     "SOUL.md",
     "TOOLS.md",
-    "skills/n8n-workflow-dispatcher/SKILL.md",
     "MEMORY.md",
   ]);
   const n8nConfig = loadConfig({

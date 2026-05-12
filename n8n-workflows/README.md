@@ -28,6 +28,12 @@ Use the official n8n MCP flow:
 
 The OpenClaw API has default workflow URLs for these paths, so
 `OPENCLAW_N8N_WORKFLOW_URLS_JSON` is only needed when the webhook paths differ.
+Keep `OPENCLAW_N8N_DISPATCH_ENABLED=true`,
+`OPENCLAW_N8N_ALLOWED_WORKFLOWS=notion.safe_ops,discord.server_read,discord.safe_write`,
+and put `skills/n8n-workflow-dispatcher/SKILL.md` at the front of
+`OPENCLAW_PROMPT_FILES` for direct mode. Use
+`OPENCLAW_WORKSPACE_CONTEXT_MAX_CHARS=12000` or higher so the dispatcher skill
+is not truncated out of the runtime prompt.
 
 ## Runtime boundary
 
