@@ -1,4 +1,4 @@
-import { workflow, node, trigger } from '@n8n/workflow-sdk';
+import { workflow, node, trigger, expr } from '@n8n/workflow-sdk';
 
 const webhookTrigger = trigger({
   type: 'n8n-nodes-base.webhook',
@@ -15,11 +15,11 @@ const webhookTrigger = trigger({
   output: [{ headers: {}, body: { workflow_key: 'discord.safe_write' } }],
 });
 
-const writeDiscord = node({
+const prepareWriteRequest = node({
   type: 'n8n-nodes-base.code',
   version: 2,
   config: {
-    name: 'Execute Safe Discord Write',
+    name: 'Prepare Discord Write Request',
     parameters: {
       mode: 'runOnceForAllItems',
       language: 'javaScript',
@@ -27,13 +27,13 @@ const writeDiscord = node({
 const item = $input.first().json;
 const headers = item.headers || {};
 const body = item.body || {};
-const expectedSecret = String(process.env.OPENCLAW_N8N_DISPATCH_SECRET || '');
+const env = typeof $env === 'object' && $env ? $env : {};
+const expectedSecret = String(env.OPENCLAW_N8N_DISPATCH_SECRET || '');
 const providedSecret = String(headers['x-webhook-secret'] || headers['X-Webhook-Secret'] || '');
-const token = String(process.env.DISCORD_BOT_TOKEN || process.env.BOT_TOKEN || '');
 const apiBase = 'https://discord.com/api/v10';
 const snowflake = /^\\d{17,20}$/;
-
 const allowedMentions = { parse: [], users: [], roles: [], replied_user: false };
+
 const safeText = (value, max = 1600) => String(value || '')
   .replace(/\\r\\n/g, '\\n')
   .replace(/@everyone|@here/gi, '')
@@ -50,6 +50,10 @@ const safeText = (value, max = 1600) => String(value || '')
 
 const fail = (reason, safeReply) => [{
   json: {
+    final: true,
+    skip_discord: true,
+    discord_url: apiBase + '/gateway',
+    discord_method: 'GET',
     ok: false,
     reason,
     safe_reply: safeReply || '-# Discord write workflow を実行できませんでした。',
@@ -58,7 +62,7 @@ const fail = (reason, safeReply) => [{
 }];
 
 if (!expectedSecret || providedSecret !== expectedSecret) return fail('unauthorized');
-if (!token) return fail('discord_token_not_configured');
+if (!String(env.DISCORD_BOT_TOKEN || env.BOT_TOKEN || '')) return fail('discord_token_not_configured');
 if (body.workflow_key !== 'discord.safe_write') return fail('discord_workflow_key_mismatch');
 
 const request = body.dispatch_request || {};
@@ -90,146 +94,157 @@ if (input.blocked_content === true ||
   (Array.isArray(input.embeds) && input.embeds.length > 0)) {
   return fail('discord_write_content_denied');
 }
+
 const content = safeText(input.content || input.body || input.message, 1600);
 const title = safeText(input.title || input.thread_name || input.name, 100);
 if (/^\\s*$/.test(content) && operation !== 'discord.create_thread') return fail('discord_write_content_required');
 if (operation === 'discord.create_thread' && !title) return fail('discord_thread_title_required');
 
-const discordRequest = async (path, options = {}, retry = true) => {
-  const response = await fetch(apiBase + path, {
-    ...options,
-    headers: {
-      authorization: 'Bot ' + token,
-      'content-type': 'application/json',
-      ...(options.headers || {}),
-    },
-  });
-  if (response.status === 429 && retry) {
-    const retryPayload = await response.json().catch(() => ({}));
-    const waitMs = Math.min(Number(retryPayload.retry_after || 1) * 1000, 3000);
-    await new Promise((resolve) => setTimeout(resolve, waitMs));
-    return discordRequest(path, options, false);
-  }
-  if (!response.ok) {
-    const code = response.status === 403 ? 'discord_forbidden' : 'discord_http_' + response.status;
-    const error = new Error(code);
-    error.code = code;
-    throw error;
-  }
-  return response.status === 204 ? {} : response.json();
-};
+let discordPath = '/channels/' + currentChannelId + '/messages';
+let discordBody = { content, allowed_mentions: allowedMentions };
+let resultKind = 'message_sent';
+let targetId = currentChannelId;
 
-try {
-  const channel = await discordRequest('/channels/' + currentChannelId);
-  if (String(channel.guild_id || '') !== guildId) return fail('discord_write_guild_mismatch');
-
-  if (operation === 'discord.send_message') {
-    const sent = await discordRequest('/channels/' + currentChannelId + '/messages', {
-      method: 'POST',
-      body: JSON.stringify({ content, allowed_mentions: allowedMentions }),
-    });
-    return [{
-      json: {
-        ok: true,
-        reason: 'ok',
-        safe_reply: 'Discord にメッセージを送信しました。',
-        results: [{
-          id: request.id || 'discord_write',
-          workflow_key: 'discord.safe_write',
-          operation,
-          status: 'ok',
-          channel_id: currentChannelId,
-          message_id: String(sent.id || ''),
-          summary: 'message_sent',
-        }],
-      },
-    }];
-  }
-
-  if (operation === 'discord.send_thread_message') {
-    if (!snowflake.test(targetThreadId || currentThreadId)) return fail('discord_thread_required');
-    const threadId = targetThreadId || currentThreadId;
-    const sent = await discordRequest('/channels/' + threadId + '/messages', {
-      method: 'POST',
-      body: JSON.stringify({ content, allowed_mentions: allowedMentions }),
-    });
-    return [{
-      json: {
-        ok: true,
-        reason: 'ok',
-        safe_reply: 'Discord thread にメッセージを送信しました。',
-        results: [{
-          id: request.id || 'discord_write',
-          workflow_key: 'discord.safe_write',
-          operation,
-          status: 'ok',
-          thread_id: threadId,
-          message_id: String(sent.id || ''),
-          summary: 'thread_message_sent',
-        }],
-      },
-    }];
-  }
-
-  let thread;
-  if ((channel.type === 0 || channel.type === 5) && snowflake.test(currentMessageId)) {
-    thread = await discordRequest('/channels/' + currentChannelId + '/messages/' + currentMessageId + '/threads', {
-      method: 'POST',
-      body: JSON.stringify({ name: title, auto_archive_duration: 1440 }),
-    });
-    if (content) {
-      await discordRequest('/channels/' + thread.id + '/messages', {
-        method: 'POST',
-        body: JSON.stringify({ content, allowed_mentions: allowedMentions }),
-      });
-    }
-  } else if (channel.type === 15 || channel.type === 16) {
-    thread = await discordRequest('/channels/' + currentChannelId + '/threads', {
-      method: 'POST',
-      body: JSON.stringify({
-        name: title,
-        auto_archive_duration: 1440,
-        message: { content: content || title, allowed_mentions: allowedMentions },
-      }),
-    });
+if (operation === 'discord.send_thread_message') {
+  const threadId = targetThreadId || currentThreadId;
+  if (!snowflake.test(threadId)) return fail('discord_thread_required');
+  discordPath = '/channels/' + threadId + '/messages';
+  targetId = threadId;
+  resultKind = 'thread_message_sent';
+} else if (operation === 'discord.create_thread') {
+  resultKind = 'thread_created';
+  if (snowflake.test(currentMessageId) && currentMessageId !== '0') {
+    discordPath = '/channels/' + currentChannelId + '/messages/' + currentMessageId + '/threads';
+    discordBody = { name: title, auto_archive_duration: 1440 };
   } else {
-    thread = await discordRequest('/channels/' + currentChannelId + '/threads', {
-      method: 'POST',
-      body: JSON.stringify({ name: title, auto_archive_duration: 1440, type: 11 }),
-    });
-    if (content) {
-      await discordRequest('/channels/' + thread.id + '/messages', {
-        method: 'POST',
-        body: JSON.stringify({ content, allowed_mentions: allowedMentions }),
-      });
-    }
+    discordPath = '/channels/' + currentChannelId + '/threads';
+    discordBody = { name: title, auto_archive_duration: 1440, type: 11 };
   }
-
-  return [{
-    json: {
-      ok: true,
-      reason: 'ok',
-      safe_reply: 'スレッドを作成しました。\\n対象: ' + title,
-      results: [{
-        id: request.id || 'discord_write',
-        workflow_key: 'discord.safe_write',
-        operation,
-        status: 'ok',
-        channel_id: currentChannelId,
-        thread_id: String(thread.id || ''),
-        summary: 'thread_created',
-      }],
-    },
-  }];
-} catch (error) {
-  const reason = String(error.code || 'discord_write_failed').replace(/[^a-z0-9_:-]+/gi, '_').slice(0, 80);
-  return fail(reason);
 }
+
+return [{
+  json: {
+    final: false,
+    skip_discord: false,
+    request_id: request.id || 'discord_write',
+    workflow_key: 'discord.safe_write',
+    operation,
+    result_kind: resultKind,
+    title,
+    content,
+    current_channel_id: currentChannelId,
+    target_id: targetId,
+    discord_method: 'POST',
+    discord_url: apiBase + discordPath,
+    discord_body: discordBody,
+  },
+}];
 `,
     },
-    position: [540, 300],
+    position: [500, 300],
   },
-  output: [{ ok: true, safe_reply: 'Discord にメッセージを送信しました。', results: [] }],
+  output: [{ discord_url: 'https://discord.com/api/v10/channels/1094907178671939654/threads' }],
+});
+
+const discordWriteRequest = node({
+  type: 'n8n-nodes-base.httpRequest',
+  version: 4.4,
+  config: {
+    name: 'Discord Write HTTP Request',
+    parameters: {
+      method: expr('{{ $json.discord_method }}'),
+      url: expr('{{ $json.discord_url }}'),
+      sendHeaders: true,
+      specifyHeaders: 'keypair',
+      headerParameters: {
+        parameters: [
+          {
+            name: 'Authorization',
+            value: expr('{{ $json.skip_discord ? "" : "Bot " + ($env.DISCORD_BOT_TOKEN || $env.BOT_TOKEN || "") }}'),
+          },
+          { name: 'Content-Type', value: 'application/json' },
+          { name: 'Accept', value: 'application/json' },
+        ],
+      },
+      sendBody: true,
+      contentType: 'json',
+      specifyBody: 'json',
+      jsonBody: expr('{{ $json.discord_body || {} }}'),
+      options: {
+        timeout: 20000,
+        response: {
+          response: {
+            fullResponse: true,
+            neverError: true,
+            responseFormat: 'json',
+          },
+        },
+      },
+    },
+    position: [760, 300],
+  },
+});
+
+const summarizeWrite = node({
+  type: 'n8n-nodes-base.code',
+  version: 2,
+  config: {
+    name: 'Summarize Discord Write Result',
+    parameters: {
+      mode: 'runOnceForAllItems',
+      language: 'javaScript',
+      jsCode: `
+const response = $input.first().json;
+const prepared = $('Prepare Discord Write Request').first().json;
+if (prepared.final) return [{ json: prepared }];
+
+const statusCode = Number(response.statusCode || 0);
+if (statusCode < 200 || statusCode >= 300) {
+  const reason = statusCode === 403 ? 'discord_forbidden' : 'discord_http_' + (statusCode || 'unknown');
+  return [{
+    json: {
+      ok: false,
+      reason,
+      safe_reply: '-# Discord write workflow を実行できませんでした。',
+      results: [],
+    },
+  }];
+}
+
+const body = response.body || {};
+const result = {
+  id: prepared.request_id || 'discord_write',
+  workflow_key: 'discord.safe_write',
+  operation: prepared.operation,
+  status: 'ok',
+  channel_id: prepared.current_channel_id,
+  summary: prepared.result_kind,
+};
+let safeReply = 'Discord にメッセージを送信しました。';
+if (prepared.operation === 'discord.send_thread_message') {
+  result.thread_id = prepared.target_id;
+  result.message_id = String(body.id || '');
+  safeReply = 'Discord thread にメッセージを送信しました。';
+} else if (prepared.operation === 'discord.create_thread') {
+  result.thread_id = String(body.id || '');
+  safeReply = 'スレッドを作成しました。\\n対象: ' + prepared.title;
+} else {
+  result.message_id = String(body.id || '');
+}
+
+return [{
+  json: {
+    ok: true,
+    reason: 'ok',
+    safe_reply: safeReply,
+    results: [result],
+  },
+}];
+`,
+    },
+    position: [1020, 300],
+  },
+  output: [{ ok: true, safe_reply: 'スレッドを作成しました。', results: [] }],
 });
 
 const respond = node({
@@ -238,17 +253,18 @@ const respond = node({
   config: {
     name: 'Respond With Safe Write Result',
     parameters: {
-      respondWith: 'json',
-      responseBody: '={{ $json }}',
+      respondWith: 'firstIncomingItem',
       options: {
         responseCode: 200,
       },
     },
-    position: [840, 300],
+    position: [1280, 300],
   },
 });
 
 export default workflow('openclaw-discord-write', 'OpenClaw Discord Write')
   .add(webhookTrigger)
-  .to(writeDiscord)
+  .to(prepareWriteRequest)
+  .to(discordWriteRequest)
+  .to(summarizeWrite)
   .to(respond);
