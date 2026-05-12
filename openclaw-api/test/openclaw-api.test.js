@@ -47,6 +47,7 @@ const {
 } = require("../src/contracts");
 const {
   createN8nDispatcher,
+  normalizeDispatchResponse,
 } = require("../src/n8n-dispatcher");
 const {
   createNotionBridge,
@@ -4510,6 +4511,38 @@ test("n8n dispatcher sends only safe metadata while keeping the webhook secret i
   assert.doesNotMatch(JSON.stringify(calls[0].body), /synthetic-dispatch-secret/);
 });
 
+test("n8n dispatcher preserves sanitized Discord channel and thread lists for finalization", () => {
+  const result = normalizeDispatchResponse({
+    ok: true,
+    safe_reply: "Discord サーバーのチャンネル一覧を確認しました。",
+    results: [
+      {
+        id: "list_1",
+        workflow_key: "discord.server_read",
+        operation: "discord.list_channels",
+        status: "ok",
+        summary: "channels=2",
+        channels: [
+          { id: "1501907581835153510", name: "はじまり\nの酒場", type: 0, parent_id: "1201092282254893066" },
+          { id: "bad-id", name: "@everyone https://example.com", type: "not-a-number", parent_id: "bad-parent" },
+        ],
+        threads: [
+          { id: "1503796506073764094", name: "妖精さん道場", type: 11, parent_id: "840827137451229210" },
+        ],
+      },
+    ],
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.results[0].channels, [
+    { id: "1501907581835153510", name: "はじまり の酒場", type: 0, parent_id: "1201092282254893066" },
+    { id: "", name: "[mention_removed] [external_url]", type: undefined, parent_id: "" },
+  ]);
+  assert.deepEqual(result.results[0].threads, [
+    { id: "1503796506073764094", name: "妖精さん道場", type: 11, parent_id: "840827137451229210" },
+  ]);
+});
+
 test("n8n dispatcher can route Discord workflows to per-workflow URLs", async () => {
   const calledUrls = [];
   const dispatcher = createN8nDispatcher({
@@ -4660,24 +4693,31 @@ test("discord respond direct mode dispatches Discord read workflow with safe met
       };
     },
   };
-  const runAgentCommand = async () => JSON.stringify({
-    payloads: [
-      {
-        text: JSON.stringify({
-          body: "Discord read workflow に渡します。",
-          n8n_workflow_requests: [
-            {
-              id: "read_1",
-              workflow_key: "discord.server_read",
-              operation: "discord.fetch_recent_summary",
-              target: { guild_id: "840827137451229205" },
-              input: { purpose: "サーバー全体の直近投稿を要約", max_channels: 20, messages_per_channel: 5 },
-            },
-          ],
-        }),
-      },
-    ],
-  });
+  const runAgentCommand = async ({ message }) => {
+    if (/direct handoff finalizer/.test(message)) {
+      assert.match(message, /workflow_results/);
+      assert.match(message, /作業相談が増えています/);
+      return JSON.stringify({ body: "作業相談が増えている流れを確認しました。" });
+    }
+    return JSON.stringify({
+      payloads: [
+        {
+          text: JSON.stringify({
+            body: "Discord read workflow に渡します。",
+            n8n_workflow_requests: [
+              {
+                id: "read_1",
+                workflow_key: "discord.server_read",
+                operation: "discord.fetch_recent_summary",
+                target: { guild_id: "840827137451229205" },
+                input: { purpose: "サーバー全体の直近投稿を要約", max_channels: 20, messages_per_channel: 5 },
+              },
+            ],
+          }),
+        },
+      ],
+    });
+  };
 
   await withServer({ runAgentCommand, n8nDispatcher }, async (baseUrl) => {
     const response = await fetch(`${baseUrl}/discord/respond`, {
@@ -4702,7 +4742,8 @@ test("discord respond direct mode dispatches Discord read workflow with safe met
     const body = await response.json();
     assert.equal(response.status, 200);
     assert.equal(body.action, "reply");
-    assert.equal(body.body, "直近の投稿を確認しました。\n- 作業相談が増えています");
+    assert.equal(body.body, "作業相談が増えている流れを確認しました。");
+    assert.equal(body.workflow_finalized, true);
   });
 });
 
@@ -5089,31 +5130,44 @@ test("discord respond direct mode honors explicit false Discord read intent flag
   });
 });
 
-test("discord respond direct mode refuses targeted Discord fetch without target", async () => {
+test("discord respond direct mode fills current channel target for Discord fetch without target", async () => {
   const n8nDispatcher = {
     enabled: true,
-    run: async () => {
-      throw new Error("untargeted fetch_messages should not dispatch");
+    run: async ({ request }) => {
+      assert.equal(request.operation, "discord.fetch_messages");
+      assert.equal(request.target.channel_id, "1501907581835153510");
+      return {
+        ok: true,
+        reason: "ok",
+        safe_reply: "現在のチャンネルを確認しました。",
+        results: [{ id: request.id, workflow_key: request.workflow_key, operation: request.operation, status: "ok", summary: "messages=3" }],
+      };
     },
   };
-  const runAgentCommand = async () => JSON.stringify({
-    payloads: [
-      {
-        text: JSON.stringify({
-          body: "Discord read workflow に渡します。",
-          n8n_workflow_requests: [
-            {
-              id: "read_1",
-              workflow_key: "discord.server_read",
-              operation: "discord.fetch_messages",
-              target: { guild_id: "840827137451229205" },
-              input: { limit: 10 },
-            },
-          ],
-        }),
-      },
-    ],
-  });
+  const runAgentCommand = async ({ message }) => {
+    if (/direct handoff finalizer/.test(message)) {
+      assert.match(message, /messages=3/);
+      return JSON.stringify({ body: "現在のチャンネルから3件確認しました。" });
+    }
+    return JSON.stringify({
+      payloads: [
+        {
+          text: JSON.stringify({
+            body: "Discord read workflow に渡します。",
+            n8n_workflow_requests: [
+              {
+                id: "read_1",
+                workflow_key: "discord.server_read",
+                operation: "discord.fetch_messages",
+                target: { guild_id: "840827137451229205" },
+                input: { limit: 10 },
+              },
+            ],
+          }),
+        },
+      ],
+    });
+  };
 
   await withServer({ runAgentCommand, n8nDispatcher }, async (baseUrl) => {
     const response = await fetch(`${baseUrl}/discord/respond`, {
@@ -5138,35 +5192,49 @@ test("discord respond direct mode refuses targeted Discord fetch without target"
     const body = await response.json();
     assert.equal(response.status, 200);
     assert.equal(body.action, "reply");
-    assert.equal(body.reason, "discord_read_target_required");
+    assert.equal(body.body, "現在のチャンネルから3件確認しました。");
+    assert.equal(body.workflow_finalized, true);
   });
 });
 
-test("discord respond direct mode refuses untargeted summary without server-wide intent", async () => {
+test("discord respond direct mode fills current channel target for untargeted summary without server-wide intent", async () => {
   const n8nDispatcher = {
     enabled: true,
-    run: async () => {
-      throw new Error("untargeted summary should not dispatch without server-wide intent");
+    run: async ({ request }) => {
+      assert.equal(request.operation, "discord.fetch_recent_summary");
+      assert.equal(request.target.channel_id, "1501907581835153510");
+      return {
+        ok: true,
+        reason: "ok",
+        safe_reply: "現在のチャンネルの直近を確認しました。",
+        results: [{ id: request.id, workflow_key: request.workflow_key, operation: request.operation, status: "ok", summary: "current_channel_summary" }],
+      };
     },
   };
-  const runAgentCommand = async () => JSON.stringify({
-    payloads: [
-      {
-        text: JSON.stringify({
-          body: "Discord read workflow に渡します。",
-          n8n_workflow_requests: [
-            {
-              id: "read_1",
-              workflow_key: "discord.server_read",
-              operation: "discord.fetch_recent_summary",
-              target: { guild_id: "840827137451229205" },
-              input: { messages_per_channel: 5 },
-            },
-          ],
-        }),
-      },
-    ],
-  });
+  const runAgentCommand = async ({ message }) => {
+    if (/direct handoff finalizer/.test(message)) {
+      assert.match(message, /current_channel_summary/);
+      return JSON.stringify({ body: "現在のチャンネルの流れを確認しました。" });
+    }
+    return JSON.stringify({
+      payloads: [
+        {
+          text: JSON.stringify({
+            body: "Discord read workflow に渡します。",
+            n8n_workflow_requests: [
+              {
+                id: "read_1",
+                workflow_key: "discord.server_read",
+                operation: "discord.fetch_recent_summary",
+                target: { guild_id: "840827137451229205" },
+                input: { messages_per_channel: 5 },
+              },
+            ],
+          }),
+        },
+      ],
+    });
+  };
 
   await withServer({ runAgentCommand, n8nDispatcher }, async (baseUrl) => {
     const response = await fetch(`${baseUrl}/discord/respond`, {
@@ -5191,7 +5259,8 @@ test("discord respond direct mode refuses untargeted summary without server-wide
     const body = await response.json();
     assert.equal(response.status, 200);
     assert.equal(body.action, "reply");
-    assert.equal(body.reason, "discord_read_target_required");
+    assert.equal(body.body, "現在のチャンネルの流れを確認しました。");
+    assert.equal(body.workflow_finalized, true);
   });
 });
 
@@ -5200,6 +5269,8 @@ test("discord respond direct mode allows server-wide summary only for explicit s
     enabled: true,
     run: async ({ request }) => {
       assert.equal(request.operation, "discord.fetch_recent_summary");
+      assert.equal(request.target.channel_id || "", "");
+      assert.equal(request.target.thread_id || "", "");
       return {
         ok: true,
         reason: "ok",
@@ -5208,24 +5279,31 @@ test("discord respond direct mode allows server-wide summary only for explicit s
       };
     },
   };
-  const runAgentCommand = async () => JSON.stringify({
-    payloads: [
-      {
-        text: JSON.stringify({
-          body: "Discord read workflow に渡します。",
-          n8n_workflow_requests: [
-            {
-              id: "read_1",
-              workflow_key: "discord.server_read",
-              operation: "discord.fetch_recent_summary",
-              target: { guild_id: "840827137451229205" },
-              input: { scope: "server", purpose: "サーバー全体の要約", messages_per_channel: 5 },
-            },
-          ],
-        }),
-      },
-    ],
-  });
+  const runAgentCommand = async ({ message }) => {
+    if (/direct handoff finalizer/.test(message)) {
+      assert.doesNotMatch(message, /サーバー全体の直近投稿を要約して/);
+      assert.doesNotMatch(message, /original_payload/);
+      return JSON.stringify({ body: "Discord サーバーの直近投稿を踏まえて整理しました。" });
+    }
+    return JSON.stringify({
+      payloads: [
+        {
+          text: JSON.stringify({
+            body: "Discord read workflow に渡します。",
+            n8n_workflow_requests: [
+              {
+                id: "read_1",
+                workflow_key: "discord.server_read",
+                operation: "discord.fetch_recent_summary",
+                target: { guild_id: "840827137451229205" },
+                input: { scope: "server", purpose: "サーバー全体の要約", messages_per_channel: 5 },
+              },
+            ],
+          }),
+        },
+      ],
+    });
+  };
 
   await withServer({ runAgentCommand, n8nDispatcher }, async (baseUrl) => {
     const response = await fetch(`${baseUrl}/discord/respond`, {
@@ -5250,7 +5328,8 @@ test("discord respond direct mode allows server-wide summary only for explicit s
     const body = await response.json();
     assert.equal(response.status, 200);
     assert.equal(body.action, "reply");
-    assert.equal(body.body, "Discord サーバーの直近投稿を確認しました。");
+    assert.equal(body.body, "Discord サーバーの直近投稿を踏まえて整理しました。");
+    assert.equal(body.workflow_finalized, true);
   });
 });
 
@@ -5304,6 +5383,8 @@ test("discord respond direct mode refuses channel list without explicit server-w
     assert.equal(response.status, 200);
     assert.equal(body.action, "reply");
     assert.equal(body.reason, "discord_read_target_required");
+    assert.match(body.body, /読取範囲/);
+    assert.match(body.body, /サーバー全体/);
   });
 });
 
@@ -5316,28 +5397,41 @@ test("discord respond direct mode allows channel list only with explicit server-
         ok: true,
         reason: "ok",
         safe_reply: "Discord サーバーのチャンネル一覧を確認しました。",
-        results: [{ id: request.id, operation: request.operation, status: "ok" }],
+        results: [{
+          id: request.id,
+          workflow_key: "discord.server_read",
+          operation: request.operation,
+          status: "ok",
+          summary: "channels=1",
+          channels: [{ id: "840827137451229210", name: "はじまりの酒場", type: 0, parent_id: "1201092282254893066" }],
+        }],
       };
     },
   };
-  const runAgentCommand = async () => JSON.stringify({
-    payloads: [
-      {
-        text: JSON.stringify({
-          body: "Discord read workflow に渡します。",
-          n8n_workflow_requests: [
-            {
-              id: "list_1",
-              workflow_key: "discord.server_read",
-              operation: "discord.list_channels",
-              target: { guild_id: "840827137451229205" },
-              input: { scope: "server", purpose: "サーバー全体のチャンネル確認" },
-            },
-          ],
-        }),
-      },
-    ],
-  });
+  const runAgentCommand = async ({ message }) => {
+    if (/direct handoff finalizer/.test(message)) {
+      assert.match(message, /はじまりの酒場/);
+      return JSON.stringify({ body: "Discord サーバーのチャンネル一覧を踏まえて整理しました。" });
+    }
+    return JSON.stringify({
+      payloads: [
+        {
+          text: JSON.stringify({
+            body: "Discord read workflow に渡します。",
+            n8n_workflow_requests: [
+              {
+                id: "list_1",
+                workflow_key: "discord.server_read",
+                operation: "discord.list_channels",
+                target: { guild_id: "840827137451229205" },
+                input: { scope: "server", purpose: "サーバー全体のチャンネル確認" },
+              },
+            ],
+          }),
+        },
+      ],
+    });
+  };
 
   await withServer({ runAgentCommand, n8nDispatcher }, async (baseUrl) => {
     const response = await fetch(`${baseUrl}/discord/respond`, {
@@ -5362,7 +5456,8 @@ test("discord respond direct mode allows channel list only with explicit server-
     const body = await response.json();
     assert.equal(response.status, 200);
     assert.equal(body.action, "reply");
-    assert.equal(body.body, "Discord サーバーのチャンネル一覧を確認しました。");
+    assert.equal(body.body, "Discord サーバーのチャンネル一覧を踏まえて整理しました。");
+    assert.equal(body.workflow_finalized, true);
   });
 });
 

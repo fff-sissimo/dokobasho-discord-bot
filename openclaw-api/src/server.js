@@ -13,10 +13,12 @@ const {
   buildCompactAgentPrompt,
   buildAutonomyPrompt,
   buildDirectAgentPrompt,
+  buildDirectWorkflowResultPrompt,
   buildDirectFailureResponse,
   buildObserveResponse,
   buildRetryAgentPrompt,
   loadWorkspaceContext,
+  normalizeDirectReplyText,
   normalizeSafeDiagnostics,
   parseAgentResponse,
   parseAutonomyResponse,
@@ -1361,7 +1363,7 @@ const hasDiscordWriteIntent = (payload) => {
 
 const hasDiscordReadIntent = (payload) => {
   const discord = payload && payload.context && payload.context.discord ? payload.context.discord : {};
-  return discord.explicit_read_requested === true;
+  return discord.explicit_read_requested === true || discord.explicit_server_read_requested === true;
 };
 
 const hasDiscordWorkIntent = (payload) => {
@@ -1404,6 +1406,29 @@ const requestHasTarget = (request) => {
 const requestHasDiscordTarget = (request) => {
   const target = request && request.target ? request.target : {};
   return Boolean(target.channel_id || target.thread_id || target.message_id);
+};
+
+const withDiscordRequestTargetDefaults = ({ payload, request }) => {
+  if (!request || String(request.workflow_key || "") !== "discord.server_read") return request;
+  const operation = String(request.operation || "");
+  if (!["discord.fetch_recent_summary", "discord.fetch_messages", "discord.fetch_thread_messages"].includes(operation)) {
+    return request;
+  }
+  if (operation === "discord.fetch_recent_summary" && hasExplicitServerWideDiscordReadIntent(payload)) {
+    return request;
+  }
+  if (requestHasDiscordTarget(request)) return request;
+  const discord = getPayloadDiscordContext(payload);
+  const target = {
+    ...(request.target && typeof request.target === "object" && !Array.isArray(request.target) ? request.target : {}),
+  };
+  if (!target.guild_id && discord.guildId) target.guild_id = discord.guildId;
+  if (discord.threadId) {
+    target.thread_id = discord.threadId;
+  } else if (discord.channelId) {
+    target.channel_id = discord.channelId;
+  }
+  return { ...request, target };
 };
 
 const validateN8nWorkflowRequestForPayload = ({ payload, request }) => {
@@ -1490,18 +1515,21 @@ const executeN8nWorkflowRound = async ({ payload, response, n8nDispatcher, logge
   const safeReplies = [];
   const workflowResults = [];
   for (const request of requests.slice(0, 3)) {
-    const validation = validateN8nWorkflowRequestForPayload({ payload, request });
+    const dispatchRequest = withDiscordRequestTargetDefaults({ payload, request });
+    const validation = validateN8nWorkflowRequestForPayload({ payload, request: dispatchRequest });
     if (!validation.ok) {
       const body = String(request && request.workflow_key || "").startsWith("discord.")
-        ? "Discord workflow の対象または実行条件を確認できなかったため、作業を止めました。"
+        ? validation.reason === "discord_read_target_required"
+          ? "Discord の読取範囲を確認できませんでした。現在のチャンネル/スレッドを読むか、サーバー全体・チャンネル一覧などの範囲を明示してください。"
+          : "Discord workflow の対象または実行条件を確認できなかったため、作業を止めました。"
         : "Notion の対象または実行条件を確認できなかったため、作業を止めました。";
       return buildN8nNoticeResponse(validation.reason, body);
     }
-    const result = await n8nDispatcher.run({ payload, request });
+    const result = await n8nDispatcher.run({ payload, request: dispatchRequest });
     workflowResults.push({
-      id: request.id,
-      workflow_key: request.workflow_key,
-      operation: request.operation,
+      id: dispatchRequest.id,
+      workflow_key: dispatchRequest.workflow_key,
+      operation: dispatchRequest.operation,
       ok: result.ok,
       reason: result.reason,
       results: result.results,
@@ -1510,8 +1538,8 @@ const executeN8nWorkflowRound = async ({ payload, response, n8nDispatcher, logge
       if (logger && typeof logger.warn === "function") {
         logger.warn({
           request_id: safeAuditIdentifier(payload.request_id),
-          workflow_key: safeAuditCode(request.workflow_key, 80),
-          operation: safeAuditCode(request.operation, 80),
+          workflow_key: safeAuditCode(dispatchRequest.workflow_key, 80),
+          operation: safeAuditCode(dispatchRequest.operation, 80),
           reason: safeAuditCode(result.reason, 80),
         }, "[openclaw-api] n8n workflow dispatch failed");
       }
@@ -1524,6 +1552,99 @@ const executeN8nWorkflowRound = async ({ payload, response, n8nDispatcher, logge
     body: safeReplies.length > 0 ? safeReplies.join("\n").slice(0, 1600) : response.body,
     n8n_workflow_results: workflowResults,
   };
+};
+
+const executeDirectWorkflowFinalizationRound = async ({
+  payload,
+  response,
+  workspaceContext,
+  config,
+  runAgentCommand,
+  logger,
+  trace,
+  timeoutMs,
+  attemptMode,
+}) => {
+  const workflowResults = Array.isArray(response && response.n8n_workflow_results)
+    ? response.n8n_workflow_results
+    : [];
+  if (workflowResults.length === 0) return response;
+  if (!workflowResults.some((result) => result && result.workflow_key === "discord.server_read")) return response;
+  if (timeoutMs < config.retryMinTimeoutMs) {
+    if (logger && typeof logger.warn === "function") {
+      logger.warn({
+        request_id: safeAuditIdentifier(payload && payload.request_id),
+        timeout_ms: safeAuditNumber(timeoutMs),
+      }, "[openclaw-api] skipped direct workflow finalization due to insufficient time");
+    }
+    return response;
+  }
+  const finalizationPayload = {
+    schema_version: 1,
+    source: "openclaw-api",
+    task: "finalize_after_n8n_workflow",
+    request: {
+      id: safeAuditIdentifier(payload && payload.request_id),
+      guild_id: safeAuditIdentifier(payload && payload.guild_id, 40),
+      channel_id: safeAuditIdentifier(payload && payload.channel && payload.channel.id, 40),
+      channel_type: safeAuditCode(payload && payload.channel && payload.channel.type, 40),
+      thread_id: safeAuditIdentifier(payload && payload.channel && payload.channel.thread_id, 40),
+      parent_channel_id: safeAuditIdentifier(payload && payload.channel && payload.channel.parent_channel_id, 40),
+      message_id: safeAuditIdentifier(payload && payload.message && payload.message.id, 40),
+      discord_intent: {
+        explicit_read_requested: payload && payload.context && payload.context.discord && payload.context.discord.explicit_read_requested === true,
+        explicit_write_requested: payload && payload.context && payload.context.discord && payload.context.discord.explicit_write_requested === true,
+        explicit_server_read_requested: payload && payload.context && payload.context.discord && payload.context.discord.explicit_server_read_requested === true,
+      },
+    },
+    initial_response: {
+      action: response.action,
+      body: normalizeDirectReplyText(response.body || ""),
+      reason: safeAuditCode(response.reason, 80),
+    },
+    workflow_results: workflowResults,
+  };
+  try {
+    const result = await executeOpenClawPrompt({
+      config,
+      payload: finalizationPayload,
+      workspaceContext,
+      runAgentCommand,
+      projectPayload: false,
+      timeoutMs,
+      promptBuilder: buildDirectWorkflowResultPrompt,
+      responseParser: parseDirectAgentResponse,
+      sessionAttempt: "workflow-finalize-1",
+      logger,
+      trace,
+      attempt: "workflow-finalize",
+      attemptMode,
+    });
+    if (!result.response || result.response.action !== "reply" || !String(result.response.body || "").trim()) {
+      return {
+        ...response,
+        workflow_finalized: false,
+      };
+    }
+    return {
+      ...response,
+      ...result.response,
+      n8n_workflow_requests: [],
+      n8n_workflow_results: workflowResults,
+      workflow_finalized: true,
+    };
+  } catch (error) {
+    if (logger && typeof logger.warn === "function") {
+      logger.warn({
+        request_id: safeAuditIdentifier(payload && payload.request_id),
+        error_code: safeAuditCode(error && (error.code || error.name), 80) || "workflow_finalization_failed",
+      }, "[openclaw-api] direct workflow finalization failed");
+    }
+    return {
+      ...response,
+      workflow_finalized: false,
+    };
+  }
 };
 
 const firstAttemptTimeoutMs = ({ config, requestStartedAt }) =>
@@ -1983,6 +2104,17 @@ const createServer = ({
           response,
           n8nDispatcher,
           logger,
+        });
+        response = await executeDirectWorkflowFinalizationRound({
+          payload,
+          response,
+          workspaceContext,
+          config,
+          runAgentCommand,
+          logger,
+          trace,
+          timeoutMs: remainingRequestTimeoutMs({ config, requestStartedAt }),
+          attemptMode,
         });
       } else {
         response = await executeNotionRound({

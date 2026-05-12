@@ -1028,7 +1028,7 @@ const hasCurrentDiscordReadTarget = (text) =>
 const hasExplicitDiscordServerReadRequest = ({ content, explicitTrigger, channel }) => {
   const text = normalizeMessageContent(content);
   if (!explicitTrigger || !isDiscordIntentEligibleChannel(channel)) return false;
-  return /(?:サーバー全体|全チャンネル|チャンネル一覧|全体のチャンネル|server[-\s]?wide|guild[-\s]?wide|list channels)/i.test(text) &&
+  return /(?:サーバー全体|サーバ全体|全チャンネル|チャンネル一覧|全体のチャンネル|(?:この)?discord\s*サーバ(?:ー)?の中身|discord\s*サーバ(?:ー)?内|discord\s*サーバ(?:ー)?を広く|discord\s*サーバ(?:ー)?内を広く|(?:discord|サーバ(?:ー)?|このサーバ(?:ー)?).{0,16}(?:各チャンネル|複数チャンネル)|(?:各チャンネル|複数チャンネル).{0,16}(?:discord|サーバ(?:ー)?|このサーバ(?:ー)?)|server[-\s]?wide|guild[-\s]?wide|list channels)/i.test(text) &&
     hasDiscordReadVerb(text);
 };
 

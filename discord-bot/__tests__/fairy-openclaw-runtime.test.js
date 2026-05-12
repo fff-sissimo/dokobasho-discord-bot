@@ -283,6 +283,21 @@ describe("fairy OpenClaw runtime", () => {
     });
     expect(serverReadPayload.execution).toEqual({ mode: "direct_agent", reason: "discord_server_read_intent" });
 
+    const broadDiscordPayload = build("<@bot_1> このDiscordサーバの中身を広く見て、自分に必要な能力を考えて", { messageId: "msg_broad_discord" });
+    expect(broadDiscordPayload.context.discord).toMatchObject({
+      explicit_read_requested: true,
+      explicit_write_requested: false,
+      explicit_server_read_requested: true,
+    });
+    expect(broadDiscordPayload.execution).toEqual({ mode: "direct_agent", reason: "discord_server_read_intent" });
+
+    const webServerPayload = build("<@bot_1> 開発サーバーの中身を確認して", { messageId: "msg_web_server" });
+    expect(webServerPayload.context.discord.explicit_server_read_requested).toBe(false);
+    const broadWebServerPayload = build("<@bot_1> 開発サーバを広く確認して", { messageId: "msg_broad_web_server" });
+    expect(broadWebServerPayload.context.discord.explicit_server_read_requested).toBe(false);
+    const youtubePayload = build("<@bot_1> YouTube の複数チャンネルを確認して", { messageId: "msg_youtube_channels" });
+    expect(youtubePayload.context.discord.explicit_server_read_requested).toBe(false);
+
     const writePayload = build("<@bot_1> ここに短く投稿して", { messageId: "msg_write" });
     expect(writePayload.context.discord).toMatchObject({
       explicit_read_requested: false,

@@ -75,10 +75,21 @@ const parseResponseJson = async (response) => {
 const normalizeDispatchResponse = (value, fallbackReason = "n8n_dispatch_failed") => {
   const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
   const safeReply = normalizeDirectReplyText(source.safe_reply || source.body || source.message || "");
+  const normalizeDiscordListItems = (items) => Array.isArray(items)
+    ? items.slice(0, 30).map((entry) => {
+        const item = entry && typeof entry === "object" && !Array.isArray(entry) ? entry : {};
+        return {
+          id: String(item.id || "").replace(/[^0-9]/g, "").slice(0, 40),
+          name: normalizeDirectReplyText(item.name || "").replace(/\n+/g, " ").slice(0, 80),
+          type: Number.isFinite(Number(item.type)) ? Number(item.type) : undefined,
+          parent_id: String(item.parent_id || "").replace(/[^0-9]/g, "").slice(0, 40),
+        };
+      }).filter((item) => item.id || item.name)
+    : undefined;
   const results = Array.isArray(source.results)
     ? source.results.slice(0, 3).map((result) => {
         const item = result && typeof result === "object" && !Array.isArray(result) ? result : {};
-        return {
+        const normalized = {
           id: String(item.id || "").slice(0, 80),
           workflow_key: String(item.workflow_key || "").slice(0, 80),
           operation: String(item.operation || "").slice(0, 80),
@@ -91,6 +102,11 @@ const normalizeDispatchResponse = (value, fallbackReason = "n8n_dispatch_failed"
           summary: normalizeDirectReplyText(item.summary || item.result_summary || "").slice(0, 400),
           reason: String(item.reason || "").replace(/[^a-z0-9_:-]+/gi, "_").slice(0, 80),
         };
+        const channels = normalizeDiscordListItems(item.channels);
+        const threads = normalizeDiscordListItems(item.threads);
+        if (channels && channels.length > 0) normalized.channels = channels;
+        if (threads && threads.length > 0) normalized.threads = threads;
+        return normalized;
       })
     : [];
   return {
