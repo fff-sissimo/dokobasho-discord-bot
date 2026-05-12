@@ -91,88 +91,6 @@ services:
       - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}
       - BOT_TOKEN=${BOT_TOKEN}
 
-  openclaw-api:
-    image: node:22-alpine
-    restart: always
-    environment:
-      - APP_REPO=${APP_REPO}
-      - APP_BRANCH=${APP_BRANCH}
-      - OPENCLAW_API_KEY=${OPENCLAW_API_KEY}
-      - OPENCLAW_API_HOST=0.0.0.0
-      - OPENCLAW_API_PORT=8788
-      - OPENCLAW_WORKSPACE_DIR=/opt/dokobasho-openclaw
-      - OPENCLAW_AGENT_MODE=${OPENCLAW_AGENT_MODE:-local}
-      - OPENCLAW_AGENT_ID=${OPENCLAW_AGENT_ID:-}
-      - OPENCLAW_AGENT_SESSION_ID=${OPENCLAW_AGENT_SESSION_ID:-dokobasho-fairy-discord-v1}
-      - OPENCLAW_AGENT_SESSION_SCOPE=${OPENCLAW_AGENT_SESSION_SCOPE:-request}
-      - OPENCLAW_AGENT_THINKING=${OPENCLAW_AGENT_THINKING:-low}
-      - OPENCLAW_AGENT_TIMEOUT_SECONDS=${OPENCLAW_AGENT_TIMEOUT_SECONDS:-120}
-      - OPENCLAW_REQUEST_TIMEOUT_MS=${OPENCLAW_REQUEST_TIMEOUT_MS:-160000}
-      - OPENCLAW_REQUEST_AUDIT_PATH=${OPENCLAW_REQUEST_AUDIT_PATH:-/var/lib/dokobasho/fairy-openclaw-state/request-audit.jsonl}
-      - OPENCLAW_FIRST_ATTEMPT_TIMEOUT_MS=${OPENCLAW_FIRST_ATTEMPT_TIMEOUT_MS:-75000}
-      - OPENCLAW_RETRY_MIN_TIMEOUT_MS=${OPENCLAW_RETRY_MIN_TIMEOUT_MS:-60000}
-      - OPENCLAW_KILL_GRACE_MS=${OPENCLAW_KILL_GRACE_MS:-10000}
-      # Diagnostic window: keep stage traces on Hostinger unless explicitly disabled.
-      - OPENCLAW_TRACE_LOGS=${OPENCLAW_TRACE_LOGS:-true}
-      - OPENCLAW_WORKSPACE_CONTEXT_MAX_CHARS=${OPENCLAW_WORKSPACE_CONTEXT_MAX_CHARS:-12000}
-      - OPENCLAW_PROMPT_FILES=${OPENCLAW_PROMPT_FILES:-skills/n8n-workflow-dispatcher/SKILL.md,RUNTIME_PROMPT.md,IDENTITY.md,SOUL.md,TOOLS.md,MEMORY.md}
-      - OPENCLAW_NOTION_ENABLED=${OPENCLAW_NOTION_ENABLED:-true}
-      - OPENCLAW_NOTION_TOKEN=${OPENCLAW_NOTION_TOKEN:-}
-      - OPENCLAW_NOTION_VERSION=${OPENCLAW_NOTION_VERSION:-2025-09-03}
-      - OPENCLAW_NOTION_API_BASE_URL=${OPENCLAW_NOTION_API_BASE_URL:-https://api.notion.com/v1}
-      - OPENCLAW_NOTION_MAX_RESULTS=${OPENCLAW_NOTION_MAX_RESULTS:-5}
-      - OPENCLAW_NOTION_MAX_RESULT_CHARS=${OPENCLAW_NOTION_MAX_RESULT_CHARS:-4000}
-      - OPENCLAW_N8N_DISPATCH_ENABLED=${OPENCLAW_N8N_DISPATCH_ENABLED:-true}
-      - OPENCLAW_N8N_DISPATCH_URL=${OPENCLAW_N8N_DISPATCH_URL:-http://n8n:5678/webhook/openclaw/workflow-dispatch}
-      - OPENCLAW_N8N_WORKFLOW_URLS_JSON=${OPENCLAW_N8N_WORKFLOW_URLS_JSON:-}
-      - OPENCLAW_N8N_DISPATCH_SECRET=${OPENCLAW_N8N_DISPATCH_SECRET}
-      - OPENCLAW_N8N_ALLOWED_WORKFLOWS=${OPENCLAW_N8N_ALLOWED_WORKFLOWS:-notion.safe_ops,discord.server_read,discord.safe_write}
-      - OPENCLAW_N8N_DISPATCH_TIMEOUT_MS=${OPENCLAW_N8N_DISPATCH_TIMEOUT_MS:-20000}
-    command:
-      - sh
-      - -lc
-      - >-
-        set -e;
-        apk add --no-cache git >/dev/null;
-        npm install -g openclaw@2026.5.2 >/dev/null;
-        appdir=/opt/dokobasho/app;
-        lockdir=/opt/dokobasho/.git-sync.lock;
-        lock_ttl_seconds=$${GIT_SYNC_LOCK_TTL_SECONDS:-300};
-        while ! mkdir "$$lockdir" 2>/dev/null; do
-          lock_mtime=$$(stat -c %Y "$$lockdir" 2>/dev/null || echo 0);
-          now=$$(date +%s);
-          if [ "$$lock_mtime" -gt 0 ] && [ $$((now - lock_mtime)) -gt "$$lock_ttl_seconds" ]; then
-            echo "[git-sync] removing stale lock: $$lockdir";
-            rm -rf "$$lockdir";
-            continue;
-          fi;
-          sleep 1;
-        done;
-        echo "$$$$" > "$$lockdir/pid";
-        cleanup(){ rm -f "$$lockdir/pid" 2>/dev/null || true; rmdir "$$lockdir" 2>/dev/null || true; };
-        trap cleanup EXIT;
-        mkdir -p "$$(dirname "$$appdir")";
-        if [ ! -d "$$appdir/.git" ]; then
-          git clone --depth 1 --branch "$APP_BRANCH" "$APP_REPO" "$$appdir";
-        else
-          cd "$$appdir" && git fetch --depth 1 origin "$APP_BRANCH" && git reset --hard "origin/$APP_BRANCH";
-        fi;
-        cd "$$appdir" && echo "[git-sync] HEAD=$$(git rev-parse --short HEAD) branch=$APP_BRANCH";
-        trap - EXIT;
-        cleanup;
-        rm -rf /root/.openclaw/workspace; mkdir -p /root/.openclaw/workspace; cp -a /opt/dokobasho-openclaw/. /root/.openclaw/workspace/; cd "$$appdir/openclaw-api" && node src/server.js
-    healthcheck:
-      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:8788/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 60s
-    volumes:
-      - /docker/n8n/discord-bot-runtime:/opt/dokobasho
-      - /docker/n8n/dokobasho-fairy-openclaw:/opt/dokobasho-openclaw:ro
-      - /docker/n8n/openclaw-state:/root/.openclaw
-      - /docker/n8n/fairy-openclaw-state:/var/lib/dokobasho/fairy-openclaw-state
-
   discord-bot:
     image: node:20-alpine
     restart: always
@@ -200,16 +118,8 @@ services:
       - APP_BRANCH=${APP_BRANCH}
       - NODE_AUTH_TOKEN=${NODE_AUTH_TOKEN}
       - NOTION_TOKEN=${NOTION_TOKEN}
-      - FAIRY_RUNTIME_MODE=${FAIRY_RUNTIME_MODE:-n8n}
-      - OPENCLAW_API_BASE_URL=${OPENCLAW_API_BASE_URL:-http://openclaw-api:8788/discord/respond}
-      # OPENCLAW_API_URL is a legacy alias. Keep it unset unless an older image still requires compatibility.
-      # - OPENCLAW_API_URL=${OPENCLAW_API_URL}
-      - OPENCLAW_API_KEY=${OPENCLAW_API_KEY}
-      - OPENCLAW_API_TIMEOUT_MS=${OPENCLAW_API_TIMEOUT_MS:-180000}
-      - FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS=${FAIRY_OPENCLAW_ALLOWED_CHANNEL_IDS}
-      - FAIRY_OPENCLAW_ALLOWED_CATEGORY_IDS=${FAIRY_OPENCLAW_ALLOWED_CATEGORY_IDS}
-      - FAIRY_OPENCLAW_CHANNEL_REGISTRY_JSON=${FAIRY_OPENCLAW_CHANNEL_REGISTRY_JSON}
-      - FAIRY_OPENCLAW_STATE_DIR=${FAIRY_OPENCLAW_STATE_DIR:-/var/lib/dokobasho/fairy-openclaw-state}
+      - FAIRY_ENABLED=${FAIRY_ENABLED:-false}
+      - FAIRY_ENABLE_MESSAGE_TRIGGER=${FAIRY_ENABLE_MESSAGE_TRIGGER:-true}
     command:
       - sh
       - -lc
@@ -244,7 +154,6 @@ services:
         cd "$$appdir/discord-bot" && sh scripts/runtime-bootstrap.sh index.js
     volumes:
       - /docker/n8n/discord-bot-runtime:/opt/dokobasho
-      - /docker/n8n/fairy-openclaw-state:/var/lib/dokobasho/fairy-openclaw-state
       - ${GOOGLE_SA_KEY_FILE}:/app/keys/google-service-key.json:ro
 
   discord-scheduler:
@@ -272,16 +181,6 @@ services:
       - APP_BRANCH=${APP_BRANCH}
       - NODE_AUTH_TOKEN=${NODE_AUTH_TOKEN}
       - NOTION_TOKEN=${NOTION_TOKEN}
-      - FAIRY_RUNTIME_MODE=${FAIRY_RUNTIME_MODE:-n8n}
-      - OPENCLAW_API_BASE_URL=${OPENCLAW_API_BASE_URL:-http://openclaw-api:8788/discord/respond}
-      - OPENCLAW_API_KEY=${OPENCLAW_API_KEY}
-      - OPENCLAW_API_TIMEOUT_MS=${OPENCLAW_API_TIMEOUT_MS:-85000}
-      - FAIRY_OPENCLAW_STATE_DIR=${FAIRY_OPENCLAW_STATE_DIR:-/var/lib/dokobasho/fairy-openclaw-state}
-      - OPENCLAW_REQUEST_AUDIT_PATH=${OPENCLAW_REQUEST_AUDIT_PATH:-/var/lib/dokobasho/fairy-openclaw-state/request-audit.jsonl}
-      - OPENCLAW_AUTONOMY_HEARTBEAT_ENABLED=${OPENCLAW_AUTONOMY_HEARTBEAT_ENABLED:-true}
-      - OPENCLAW_AUTONOMY_HEARTBEAT_CRON=${OPENCLAW_AUTONOMY_HEARTBEAT_CRON:-*/15 * * * *}
-      - OPENCLAW_AUTONOMY_DREAMING_ENABLED=${OPENCLAW_AUTONOMY_DREAMING_ENABLED:-true}
-      - OPENCLAW_AUTONOMY_DREAMING_CRON=${OPENCLAW_AUTONOMY_DREAMING_CRON:-17 3 * * *}
     command:
       - sh
       - -lc
@@ -322,7 +221,6 @@ services:
       start_period: 60s
     volumes:
       - /docker/n8n/discord-bot-runtime:/opt/dokobasho
-      - /docker/n8n/fairy-openclaw-state:/var/lib/dokobasho/fairy-openclaw-state
       - ${GOOGLE_SA_KEY_FILE}:/app/keys/google-service-key.json:ro
 
 volumes:

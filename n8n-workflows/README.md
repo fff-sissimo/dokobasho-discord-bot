@@ -1,9 +1,11 @@
-# OpenClaw Discord n8n workflows
+# Retired OpenClaw Discord n8n workflows
 
-This directory is the source of truth for the OpenClaw Discord n8n workflows.
-They are not auto-imported by Docker Compose. Provision them with the n8n MCP
-workflow SDK before enabling `discord.server_read` or `discord.safe_write` in
-production.
+OpenClaw direct runtime was retired on 2026-05-13. This directory is retained
+only as historical source for the existing n8n workflows until they are
+exported, disabled, or deleted in a separate n8n change.
+
+Do not provision these workflows for a new runtime. Docker Compose does not
+auto-import them.
 
 ## Workflows
 
@@ -16,29 +18,19 @@ production.
   - workflow key: `discord.safe_write`
   - production workflow id: `vjGcfoCIIfVvwfkq`
 
-## Provisioning
+## Retirement boundary
 
-Use the official n8n MCP flow:
-
-1. Validate each source with `validate_workflow`.
-2. Create or update the workflow from the matching source file.
-3. Publish the workflow.
-4. Recreate `n8n` and `n8n-runners` so they receive `OPENCLAW_N8N_DISPATCH_SECRET`
-   and `DISCORD_BOT_TOKEN` / `BOT_TOKEN`.
-
-The OpenClaw API has default workflow URLs for these paths, so
-`OPENCLAW_N8N_WORKFLOW_URLS_JSON` is only needed when the webhook paths differ.
-Keep `OPENCLAW_N8N_DISPATCH_ENABLED=true`,
-`OPENCLAW_N8N_ALLOWED_WORKFLOWS=notion.safe_ops,discord.server_read,discord.safe_write`,
-and put `skills/n8n-workflow-dispatcher/SKILL.md` at the front of
-`OPENCLAW_PROMPT_FILES` for direct mode. Use
-`OPENCLAW_WORKSPACE_CONTEXT_MAX_CHARS=12000` or higher so the dispatcher skill
-is not truncated out of the runtime prompt.
+- The workflow source files are not changed in the OpenClaw retirement pass.
+- `OPENCLAW_N8N_DISPATCH_SECRET` remains available to `n8n` and `n8n-runners`
+  while the old live workflows still exist, so a container recreate does not
+  silently change their authorization behavior.
+- The retired `openclaw-api` service is no longer provisioned. No new runtime
+  should call these workflow webhooks.
+- Later n8n cleanup should export the live workflows, disable them, and then
+  remove this directory and the compatibility secret from compose.
 
 ## Runtime boundary
 
 - Discord bot tokens belong only to `n8n` and `n8n-runners`.
-- `openclaw-api` holds only the n8n dispatch secret and sends safe metadata to
-  n8n. The OpenClaw child process does not receive the dispatch secret.
 - Read and write are separated. The write workflow only supports current
   channel/thread message send and current channel thread creation.

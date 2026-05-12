@@ -62,7 +62,7 @@ describe("discord context collector", () => {
     expect(channel.messages.fetch).toHaveBeenCalledWith({ limit: 10, cache: false });
     expect(result.entries.map((entry) => entry.message_id)).toEqual(["m1", "m2", "m3"]);
     expect(result.entries[2]).toMatchObject({
-      author_id: "bot_1",
+      author_user_id: "bot_1",
       author_is_bot: true,
       context_source: "recent",
       content: "bot reply",

@@ -16,16 +16,6 @@ const {
   collectRecentChannelContextEntries: collectDiscordContextEntries,
   resolveDiscordContextLimits,
 } = require("./src/discord-context");
-const { fairyCoreAdapter } = require("./src/fairy-core-adapter");
-const { createOpenAiFirstReplyComposer } = fairyCoreAdapter;
-const {
-  createOpenClawClient,
-  createOpenClawInteractionHandler,
-  createOpenClawMessageHandler,
-  createOpenClawRuntimeConfig,
-  createOpenClawStateStore,
-  normalizeRuntimeMode,
-} = require("./src/fairy-openclaw-runtime");
 const { createPermanentMemorySyncServer } = require("./src/permanent-memory-sync-server");
 const logger = require('./src/logger');
 const { MESSAGES } = require('./src/message-templates');
@@ -130,62 +120,25 @@ const collectRecentChannelContextEntries = async (interaction) => {
 let fairyInteractionHandler = null;
 let fairyMessageHandler = null;
 let permanentMemorySyncRuntime = null;
+const fairyEnabled = parseBoolean(process.env.FAIRY_ENABLED, false);
 const fairyMessageTriggerEnabled = parseBoolean(process.env.FAIRY_ENABLE_MESSAGE_TRIGGER, true);
-let fairyRuntimeConfig = { mode: "n8n" };
-try {
-  fairyRuntimeConfig = createOpenClawRuntimeConfig(process.env);
-  if (fairyRuntimeConfig.mode === "openclaw") {
-    const openClawClient = createOpenClawClient({
-      apiUrl: fairyRuntimeConfig.apiUrl,
-      apiKey: fairyRuntimeConfig.apiKey,
-      timeoutMs: fairyRuntimeConfig.timeoutMs,
-    });
-    const openClawStateStore = createOpenClawStateStore({
-      stateDir: fairyRuntimeConfig.stateDir,
-    });
-    fairyInteractionHandler = createOpenClawInteractionHandler({
-      openClawClient,
-      allowedChannelIds: fairyRuntimeConfig.allowedChannelIds,
-      allowedCategoryIds: fairyRuntimeConfig.allowedCategoryIds,
-      guildId: fairyRuntimeConfig.guildId,
-      channelRegistry: fairyRuntimeConfig.channelRegistry,
-      stateStore: openClawStateStore,
-      contextEntriesSource: collectInteractionContextResult,
-      logger,
-    });
-    fairyMessageHandler = createOpenClawMessageHandler({
-      openClawClient,
-      allowedChannelIds: fairyRuntimeConfig.allowedChannelIds,
-      allowedCategoryIds: fairyRuntimeConfig.allowedCategoryIds,
-      guildId: fairyRuntimeConfig.guildId,
-      channelRegistry: fairyRuntimeConfig.channelRegistry,
-      stateStore: openClawStateStore,
-      contextEntriesSource: collectMessageContextResult,
-      logger,
-    });
-    const allowedChannelCount = Array.isArray(fairyRuntimeConfig.allowedChannelIds)
-      ? fairyRuntimeConfig.allowedChannelIds.length
-      : 0;
-    const allowedCategoryCount = Array.isArray(fairyRuntimeConfig.allowedCategoryIds)
-      ? fairyRuntimeConfig.allowedCategoryIds.length
-      : 0;
-    logger.info(
-      `[fairy] OpenClaw runtime enabled for ${allowedChannelCount} verified channel(s) and ${allowedCategoryCount} verified category(s)`
-    );
-  } else {
+if (fairyEnabled) {
+  try {
     const slowPathClient = createSlowPathWebhookClient({
       n8nBase: process.env.N8N_BASE,
       webhookPath: process.env.N8N_SLOW_PATH_WEBHOOK_PATH,
       timeoutMs: parsePositiveInt(process.env.N8N_SLOW_PATH_TIMEOUT_MS, 8000),
     });
-    const firstReplyComposer = process.env.OPENAI_API_KEY
-      ? createOpenAiFirstReplyComposer({
-          apiKey: process.env.OPENAI_API_KEY,
-          model: process.env.FIRST_REPLY_AI_MODEL || "o4-mini",
-          timeoutMs: parsePositiveInt(process.env.FIRST_REPLY_AI_TIMEOUT_MS, 5000),
-          apiBase: process.env.OPENAI_BASE_URL || "https://api.openai.com",
-        })
-      : undefined;
+    let firstReplyComposer;
+    if (process.env.OPENAI_API_KEY) {
+      const { fairyCoreAdapter } = require("./src/fairy-core-adapter");
+      firstReplyComposer = fairyCoreAdapter.createOpenAiFirstReplyComposer({
+        apiKey: process.env.OPENAI_API_KEY,
+        model: process.env.FIRST_REPLY_AI_MODEL || "o4-mini",
+        timeoutMs: parsePositiveInt(process.env.FIRST_REPLY_AI_TIMEOUT_MS, 5000),
+        apiBase: process.env.OPENAI_BASE_URL || "https://api.openai.com",
+      });
+    }
     fairyInteractionHandler = createFairyInteractionHandler({
       slowPathClient,
       contextSource: (interaction) => collectRecentChannelContext(interaction),
@@ -198,13 +151,12 @@ try {
       contextEntriesSource: collectMessageContextResult,
       firstReplyComposer,
     });
+    logger.info("[fairy] response runtime enabled");
+  } catch (error) {
+    logger.warn({ err: error }, "[fairy] disabled due to invalid configuration");
   }
-} catch (error) {
-  if (fairyRuntimeConfig.mode === "openclaw" || normalizeRuntimeMode(process.env.FAIRY_RUNTIME_MODE) === "openclaw") {
-    logger.error({ err: error }, "[fairy] OpenClaw runtime configuration failed");
-    process.exit(1);
-  }
-  logger.warn({ err: error }, "[fairy] disabled due to invalid configuration");
+} else {
+  logger.info("[fairy] response runtime disabled");
 }
 
 const permanentMemorySyncEnabled = parseBoolean(process.env.PERMANENT_MEMORY_SYNC_ENABLED, true);
@@ -305,6 +257,7 @@ client.on("messageCreate", async (message) => {
     );
   }
   if (!isMentionToBot && !isReplyToBot) return;
+  if (!fairyEnabled) return;
 
   if (fairyMessageTriggerEnabled && fairyMessageHandler) {
     try {
@@ -367,8 +320,6 @@ client.on("messageCreate", async (message) => {
     }
   }
 
-  if (fairyRuntimeConfig.mode === "openclaw") return;
-
   if (!webhookUrl) return;
   if (!webhookRequest.shouldSend()) return;
 
@@ -412,6 +363,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
         if (interaction.isChatInputCommand() && interaction.commandName === 'remind') {
             await handleCommand(interaction);
         } else if (interaction.isChatInputCommand() && interaction.commandName === FAIRY_COMMAND_NAME) {
+            if (!fairyEnabled) {
+                await interaction.reply({ content: MESSAGES.errors.fairyDisabled, ephemeral: true });
+                return;
+            }
             if (!fairyInteractionHandler) {
                 await interaction.reply({ content: MESSAGES.errors.fairyNotConfigured, ephemeral: true });
                 return;

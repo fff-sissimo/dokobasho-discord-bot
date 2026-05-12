@@ -41,28 +41,27 @@ describe("fairy runtime rollout runbook contract", () => {
     expect(bootstrap).toContain("trap cleanup EXIT INT TERM");
   });
 
-  it(".env_example は OpenClaw API endpoint の正本 env 名を使う", () => {
+  it(".env_example は fairy 応答停止を既定にし、OpenClaw env を持たない", () => {
     const envExample = fs.readFileSync(envExamplePath, "utf8");
-    expect(envExample).toContain("OPENCLAW_API_BASE_URL=http://openclaw-api:8788/discord/respond");
-    expect(envExample).toContain("# OPENCLAW_API_URL=");
-    expect(envExample).not.toMatch(/^OPENCLAW_API_URL=/m);
+    expect(envExample).toContain("FAIRY_ENABLED=false");
+    expect(envExample).not.toMatch(/^FAIRY_RUNTIME_MODE=/m);
+    expect(envExample).not.toMatch(/^OPENCLAW_/m);
+    expect(envExample).not.toMatch(/^FAIRY_OPENCLAW_/m);
   });
 
-  it("README と Hostinger compose に scheduler autonomy env と state volume を持つ", () => {
+  it("README と Hostinger compose は fairy 停止既定で OpenClaw bot runtime env を持たない", () => {
     const readme = fs.readFileSync(readmePath, "utf8");
     const compose = fs.readFileSync(hostingerComposeExamplePath, "utf8");
 
-    expect(readme).toContain("OPENCLAW_AUTONOMY_HEARTBEAT_CRON");
-    expect(readme).toContain("OPENCLAW_AUTONOMY_DREAMING_CRON");
-    expect(readme).toContain("autonomy-audit.jsonl");
-    expect(readme).toContain("dreams/YYYY-MM-DD.json");
+    expect(readme).toContain("FAIRY_ENABLED=false");
+    expect(readme).toContain("fairy 応答停止");
 
-    expect(compose).toContain("FAIRY_RUNTIME_MODE=${FAIRY_RUNTIME_MODE:-n8n}");
-    expect(compose).toContain("OPENCLAW_REQUEST_AUDIT_PATH=${OPENCLAW_REQUEST_AUDIT_PATH:-/var/lib/dokobasho/fairy-openclaw-state/request-audit.jsonl}");
-    expect(compose).toContain("OPENCLAW_API_BASE_URL=${OPENCLAW_API_BASE_URL:-http://openclaw-api:8788/discord/respond}");
-    expect(compose).toContain("skills/n8n-workflow-dispatcher/SKILL.md");
-    expect(compose).toContain("OPENCLAW_AUTONOMY_HEARTBEAT_CRON=${OPENCLAW_AUTONOMY_HEARTBEAT_CRON:-*/15 * * * *}");
-    expect(compose).toContain("OPENCLAW_AUTONOMY_DREAMING_CRON=${OPENCLAW_AUTONOMY_DREAMING_CRON:-17 3 * * *}");
-    expect(compose).toContain("/docker/n8n/fairy-openclaw-state:/var/lib/dokobasho/fairy-openclaw-state");
+    const discordStart = compose.indexOf("  discord-bot:");
+    const discordRuntimeSection = compose.slice(discordStart, compose.indexOf("\nvolumes:", discordStart));
+    expect(discordRuntimeSection).toContain("FAIRY_ENABLED=${FAIRY_ENABLED:-false}");
+    expect(discordRuntimeSection).not.toContain("FAIRY_RUNTIME_MODE");
+    expect(discordRuntimeSection).not.toContain("OPENCLAW_");
+    expect(discordRuntimeSection).not.toContain("FAIRY_OPENCLAW_");
+    expect(discordRuntimeSection).not.toContain("/docker/n8n/fairy-openclaw-state");
   });
 });

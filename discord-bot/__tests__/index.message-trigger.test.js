@@ -1,6 +1,18 @@
 describe("index fairy message trigger integration", () => {
-  const setup = ({ fetchReferenceAuthorId = "bot_001", repliedUserId = "bot_001", adapterThrows = false } = {}) => {
+  const setup = ({
+    fetchReferenceAuthorId = "bot_001",
+    repliedUserId = "bot_001",
+    adapterThrows = false,
+    fairyEnabled = true,
+    openAiApiKey = "",
+  } = {}) => {
     jest.resetModules();
+    process.env.FAIRY_ENABLED = fairyEnabled ? "true" : "false";
+    if (openAiApiKey) {
+      process.env.OPENAI_API_KEY = openAiApiKey;
+    } else {
+      delete process.env.OPENAI_API_KEY;
+    }
 
     const handlers = {};
     const fairyMessageHandler = jest.fn().mockResolvedValue({
@@ -102,6 +114,7 @@ describe("index fairy message trigger integration", () => {
         errors: {
           generic: "generic",
           reminderNotConfigured: "reminder",
+          fairyDisabled: "fairy disabled",
         },
       },
     }));
@@ -144,8 +157,37 @@ describe("index fairy message trigger integration", () => {
   };
 
   afterEach(() => {
+    delete process.env.FAIRY_ENABLED;
+    delete process.env.OPENAI_API_KEY;
     jest.resetModules();
     jest.clearAllMocks();
+  });
+
+  it("FAIRY_ENABLED=false では mention/reply に無応答で handler を呼ばない", async () => {
+    const { handlers, fairyMessageHandler, resolveReplyAntecedentEntry, message } = setup({ fairyEnabled: false });
+
+    await handlers.messageCreate(message);
+
+    expect(resolveReplyAntecedentEntry).not.toHaveBeenCalled();
+    expect(fairyMessageHandler).not.toHaveBeenCalled();
+  });
+
+  it("FAIRY_ENABLED=false では /fairy に停止メッセージを ephemeral 返信する", async () => {
+    const { handlers, fairyMessageHandler } = setup({ fairyEnabled: false });
+    const interaction = {
+      isChatInputCommand: jest.fn(() => true),
+      isButton: jest.fn(() => false),
+      commandName: "fairy",
+      reply: jest.fn().mockResolvedValue(undefined),
+    };
+
+    await handlers.interactionCreate(interaction);
+
+    expect(fairyMessageHandler).not.toHaveBeenCalled();
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: "fairy disabled",
+      ephemeral: true,
+    });
   });
 
   it("reply trigger で antecedent resolver の結果を fairyMessageHandler へ渡す", async () => {
@@ -287,7 +329,7 @@ describe("index fairy message trigger integration", () => {
   });
 
   it("fairy-core adapter の読み込みに失敗しても bot 全体は起動し、fairy だけ disable する", () => {
-    const { logger } = setup({ adapterThrows: true });
+    const { logger } = setup({ adapterThrows: true, openAiApiKey: "test-api-key" });
 
     expect(logger.warn).toHaveBeenCalledWith(
       expect.objectContaining({ err: expect.any(Error) }),

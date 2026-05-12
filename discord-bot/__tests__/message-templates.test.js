@@ -9,6 +9,7 @@ describe('message templates', () => {
         expect(MESSAGES.errors.invalidTime).toContain('時刻の指定が正しくない');
         expect(MESSAGES.errors.invalidTimezone).toContain('タイムゾーン');
         expect(MESSAGES.errors.keyGenerationFailed).toContain('キーがうまく');
+        expect(MESSAGES.errors.fairyDisabled).toContain('停止中');
     });
 
     it('formats create responses', () => {

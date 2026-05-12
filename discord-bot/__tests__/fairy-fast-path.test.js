@@ -111,7 +111,7 @@ describe("fairy fast path", () => {
         command_name: "fairy",
         trigger_source: "slash_command",
         source_message_id: null,
-        context_excerpt: ["latest context", "another line"],
+        context_excerpt: ["latest context"],
         context_entries: [
           {
             message_id: "msg_ctx_001",

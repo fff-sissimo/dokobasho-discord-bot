@@ -1,6 +1,7 @@
 const MESSAGES = {
     errors: {
         reminderNotConfigured: 'リマインダー機能は今は使えないみたいだよ。',
+        fairyDisabled: 'Fairy機能は現在停止中だよ。',
         fairyNotConfigured: 'Fairy機能の接続先が未設定だよ。管理者に確認してね。',
         generic: 'エラーが起きたよ。ログを見てね。',
         keyGenerationFailed: 'キーがうまく作れなかったよ。もう一回試してね。',
