@@ -238,6 +238,64 @@ services:
       - /docker/n8n/fairy-openclaw-state:/var/lib/dokobasho/fairy-openclaw-state
       - ${GOOGLE_SA_KEY_FILE}:/app/keys/google-service-key.json:ro
 
+  discord-resource-service:
+    image: node:20-alpine
+    restart: always
+    environment:
+      - SHEET_ID=${SHEET_ID}
+      - GOOGLE_SA_KEY_PATH=${GOOGLE_SA_KEY_PATH}
+      - DEFAULT_TZ=${DEFAULT_TZ}
+      - APP_REPO=${APP_REPO}
+      - APP_BRANCH=${APP_BRANCH}
+      - NODE_AUTH_TOKEN=${NODE_AUTH_TOKEN}
+      - RESOURCE_API_HOST=0.0.0.0
+      - RESOURCE_API_PORT=${RESOURCE_API_PORT:-8790}
+      - RESOURCE_API_PATH_PREFIX=${RESOURCE_API_PATH_PREFIX:-/internal/remind}
+      - RESOURCE_API_TOKEN=${RESOURCE_API_TOKEN}
+    command:
+      - sh
+      - -lc
+      - >-
+        set -e;
+        apk add --no-cache git >/dev/null;
+        appdir=/opt/dokobasho/app;
+        lockdir=/opt/dokobasho/.git-sync.lock;
+        lock_ttl_seconds=$${GIT_SYNC_LOCK_TTL_SECONDS:-300};
+        while ! mkdir "$$lockdir" 2>/dev/null; do
+          lock_mtime=$$(stat -c %Y "$$lockdir" 2>/dev/null || echo 0);
+          now=$$(date +%s);
+          if [ "$$lock_mtime" -gt 0 ] && [ $$((now - lock_mtime)) -gt "$$lock_ttl_seconds" ]; then
+            echo "[git-sync] removing stale lock: $$lockdir";
+            rm -rf "$$lockdir";
+            continue;
+          fi;
+          sleep 1;
+        done;
+        echo "$$$$" > "$$lockdir/pid";
+        cleanup(){ rm -f "$$lockdir/pid" 2>/dev/null || true; rmdir "$$lockdir" 2>/dev/null || true; };
+        trap cleanup EXIT;
+        mkdir -p "$$(dirname "$$appdir")";
+        if [ ! -d "$$appdir/.git" ]; then
+          git clone --depth 1 --branch "$APP_BRANCH" "$APP_REPO" "$$appdir";
+        else
+          cd "$$appdir" && git fetch --depth 1 origin "$APP_BRANCH" && git reset --hard "origin/$APP_BRANCH";
+        fi;
+        cd "$$appdir" && echo "[git-sync] HEAD=$$(git rev-parse --short HEAD) branch=$APP_BRANCH";
+        trap - EXIT;
+        cleanup;
+        cd "$$appdir/discord-bot" && sh scripts/runtime-bootstrap.sh resource-server.js
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:'+(process.env.RESOURCE_API_PORT||8790)+'/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    volumes:
+      - /docker/n8n/discord-bot-runtime:/opt/dokobasho
+      - ${GOOGLE_SA_KEY_FILE}:/app/keys/google-service-key.json:ro
+    networks:
+      - dokobasho-internal
+
   discord-scheduler:
     image: node:20-alpine
     restart: always
@@ -309,4 +367,8 @@ volumes:
   traefik_data:
     external: true
   n8n_data:
+    external: true
+
+networks:
+  dokobasho-internal:
     external: true

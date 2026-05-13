@@ -68,6 +68,10 @@ Discord上で動作する多機能ボット。リマインダー機能と、停�
     - `PERMANENT_MEMORY_SYNC_DIR`: (任意) Markdown保存ディレクトリ。未指定時 `/opt/dokobasho/permanent-memory`。
     - `PERMANENT_MEMORY_SYNC_FILE`: (任意) Markdown保存ファイル名。未指定時 `permanent-memory.md`。
     - `PERMANENT_MEMORY_READ_MAX_CHARS`: (任意) 読取APIで返す最大文字数。未指定時 `8000`。
+    - `RESOURCE_API_HOST`: (任意) Hermes連携用 reminder 内部APIの待受ホスト。未指定時 `0.0.0.0`。
+    - `RESOURCE_API_PORT`: (任意) Hermes連携用 reminder 内部APIの待受ポート。未指定時 `8790`。
+    - `RESOURCE_API_PATH_PREFIX`: (任意) reminder 内部APIのpath prefix。未指定時 `/internal/remind`。
+    - `RESOURCE_API_TOKEN`: (推奨) Hermes plugin から `x-resource-api-token` で送る共有トークン。
 
 4.  **Google Service Account と Google Sheets API の設定:**
     - Google Cloud Platformでプロジェクトを作成し、Google Sheets APIを有効にします。
@@ -98,6 +102,12 @@ Discord上で動作する多機能ボット。リマインダー機能と、停�
     npm run start-scheduler
     ```
 
+-   **Hermes reminder 内部APIの起動:**
+    Discord Gatewayへログインせず、Hermes plugin から reminder 資産だけを呼び出す場合に起動します。
+    ```bash
+    npm run start-resource-server
+    ```
+
 -   **テストの実行:**
     ```bash
     npm test
@@ -115,6 +125,10 @@ Discord上で動作する多機能ボット。リマインダー機能と、停�
     ```bash
     docker compose up -d discord-scheduler
     ```
+
+-   **Hermes reminder 内部API service:**
+    Hostinger構成では `discord-resource-service` を外部公開portなしで起動し、Hermes側コンテナと共通の external network `dokobasho-internal` で接続します。
+    事前にVPSで `docker network create dokobasho-internal` を実行しておきます。
 
 -   **共有イメージ:**
     `discord-bot` と `discord-scheduler` は `dokobasho-discord-bot:${DISCORD_BOT_IMAGE_TAG:-local}` を共有します。

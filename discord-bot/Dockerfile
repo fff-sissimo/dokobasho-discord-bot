@@ -8,6 +8,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 
 COPY src ./src
-COPY index.js deploy-commands.js scheduler.js ./
+COPY scripts ./scripts
+COPY index.js deploy-commands.js scheduler.js resource-server.js ./
 
 CMD ["node", "index.js"]

@@ -7,7 +7,8 @@
     "start": "node index.js",
     "deploy-commands": "node deploy-commands.js",
     "start-scheduler": "node scheduler.js",
-    "test": "jest --coverage"
+    "test": "jest --coverage",
+    "start-resource-server": "node resource-server.js"
   },
   "dependencies": {
     "chrono-node": "^2.9.0",
