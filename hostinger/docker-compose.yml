@@ -321,6 +321,8 @@ services:
       - APP_BRANCH=${APP_BRANCH}
       - NODE_AUTH_TOKEN=${NODE_AUTH_TOKEN}
       - NOTION_TOKEN=${NOTION_TOKEN}
+      - SCHEDULER_DISCORD_DELIVERY_MODE=${SCHEDULER_DISCORD_DELIVERY_MODE:-gateway}
+      - DISCORD_API_BASE_URL=${DISCORD_API_BASE_URL:-https://discord.com/api/v10}
     command:
       - sh
       - -lc

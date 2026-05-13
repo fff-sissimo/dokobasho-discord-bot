@@ -72,6 +72,8 @@ Discord上で動作する多機能ボット。リマインダー機能と、停�
     - `RESOURCE_API_PORT`: (任意) Hermes連携用 reminder 内部APIの待受ポート。未指定時 `8790`。
     - `RESOURCE_API_PATH_PREFIX`: (任意) reminder 内部APIのpath prefix。未指定時 `/internal/remind`。
     - `RESOURCE_API_TOKEN`: (推奨) Hermes plugin から `x-resource-api-token` で送る共有トークン。
+    - `SCHEDULER_DISCORD_DELIVERY_MODE`: (任意) `gateway` または `rest`。Hermes Gateway一本化時は `rest` を使い、schedulerのDiscord Gateway loginを止めます。
+    - `DISCORD_API_BASE_URL`: (任意) Discord REST API base URL。未指定時 `https://discord.com/api/v10`。
 
 4.  **Google Service Account と Google Sheets API の設定:**
     - Google Cloud Platformでプロジェクトを作成し、Google Sheets APIを有効にします。
