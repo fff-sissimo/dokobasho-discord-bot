@@ -9,6 +9,7 @@ Discord上で動作する多機能ボット。リマインダー機能と、停�
 - **Local slow-path 機能**: 将来 `FAIRY_ENABLED=true` にした場合のみ、`/fairy` コマンド、Botへのメンション、Botへの返信で一次回答を返し、n8n slow-path に処理を引き継ぎます。
   - 一次回答生成と slow-path payload contract は repo 内の local 実装を利用します。Hostinger runtime は private package install に依存しません。
 - **n8n連携**: `FAIRY_ENABLED=true` かつ `FAIRY_ENABLE_MESSAGE_TRIGGER=false` の場合、メンションや返信に反応して指定したn8nのWebhookに情報を送信します。
+- **画像生成**: テスト用チャンネルで自然文画像生成依頼を確認ボタン付きで受け付け、`/image` コマンドでは確認なしでn8n画像生成Webhookへ接続します。
 
 ## 開発環境のセットアップ
 
@@ -74,6 +75,23 @@ Discord上で動作する多機能ボット。リマインダー機能と、停�
     - `RESOURCE_API_TOKEN`: (推奨) Hermes plugin から `x-resource-api-token` で送る共有トークン。
     - `SCHEDULER_DISCORD_DELIVERY_MODE`: (任意) `gateway` または `rest`。Hermes Gateway一本化時は `rest` を使い、schedulerのDiscord Gateway loginを止めます。
     - `DISCORD_API_BASE_URL`: (任意) Discord REST API base URL。未指定時 `https://discord.com/api/v10`。
+    - `DOKOBASHO_IMAGE_ENABLED`: 画像生成runtimeの明示enable。未指定/defaultは `false`。初回E2E時だけ `true` にしてください。
+    - `DOKOBASHO_IMAGE_WEBHOOK_URL`: 画像生成用n8n Webhook URL。
+    - `DOKOBASHO_IMAGE_WEBHOOK_TOKEN`: 画像生成WebhookのBearer token。秘密値として管理し、READMEやログへ直書きしないでください。
+    - `DOKOBASHO_IMAGE_ALLOWED_CHANNEL_IDS`: 初回E2Eで画像生成を許可するDiscordチャンネルIDのカンマ区切り。未設定/空は全許可になりません。
+    - `DOKOBASHO_IMAGE_ALLOW_ALL_CHANNELS`: 全チャンネル許可の明示フラグ。全公開前は `false` のままにしてください。
+    - `DOKOBASHO_IMAGE_DISABLED_GUILD_IDS`: 緊急停止/段階公開用の停止サーバーIDカンマ区切り。
+    - `DOKOBASHO_IMAGE_DISABLED_USER_IDS`: 緊急停止/段階公開用の停止ユーザーIDカンマ区切り。
+    - `DOKOBASHO_IMAGE_TIMEOUT_MS`: Hermes側のn8n Webhook timeout。未指定時 `130000`。
+    - `DOKOBASHO_IMAGE_INTENT_CONFIDENCE_THRESHOLD`: 自然文画像生成判定の閾値。未指定時 `0.80`。
+    - `DOKOBASHO_IMAGE_CONFIRMATION_TTL_SECONDS`: 確認ボタンの有効期限。未指定時 `180`。
+    - `DOKOBASHO_IMAGE_INTENT_MODEL`: `OPENAI_API_KEY` がある場合に使う画像生成意図判定モデル。
+    - `DOKOBASHO_IMAGE_INTENT_TIMEOUT_MS`: 画像生成意図判定のtimeout。未指定時 `5000`。
+    - `DOKOBASHO_IMAGE_USER_LIMIT_PER_HOUR`: 第2フェーズ用のユーザー単位レート制限。未指定時 `5`。
+    - `DOKOBASHO_IMAGE_GUILD_LIMIT_PER_DAY`: 第2フェーズ用のサーバー単位レート制限。未指定時 `100`。
+    - `DOKOBASHO_IMAGE_GUILD_CONCURRENCY`: サーバー単位同時実行数。未指定時 `2`。
+    - `DOKOBASHO_IMAGE_GUILD_QUEUE_SIZE`: サーバー単位queue上限。未指定時 `5`。
+    - `DOKOBASHO_IMAGE_QUEUE_TTL_SECONDS`: queue待ち期限。未指定時 `900`。
 
 4.  **Google Service Account と Google Sheets API の設定:**
     - Google Cloud Platformでプロジェクトを作成し、Google Sheets APIを有効にします。
@@ -114,6 +132,16 @@ Discord上で動作する多機能ボット。リマインダー機能と、停�
     ```bash
     npm test
     ```
+
+### 画像生成の運用メモ
+
+- `/image` コマンド登録後に使えます。初回E2Eでは `DOKOBASHO_IMAGE_ENABLED=true`、`DOKOBASHO_IMAGE_WEBHOOK_TOKEN`、`DOKOBASHO_IMAGE_ALLOWED_CHANNEL_IDS` の指定が必須です。
+- `DOKOBASHO_IMAGE_ALLOWED_CHANNEL_IDS` が未設定/空の場合、画像生成は全チャンネル許可になりません。全チャンネルへ公開する場合だけ `DOKOBASHO_IMAGE_ALLOW_ALL_CHANNELS=true` を明示してください。
+- `DOKOBASHO_IMAGE_DISABLED_GUILD_IDS` / `DOKOBASHO_IMAGE_DISABLED_USER_IDS` でサーバー/ユーザー単位の停止ができます。該当時はn8nやintent detectorを呼びません。
+- n8n Webhook token と OpenAI API key は秘密値です。`.env` やSecret Managerで管理し、リポジトリ、README、ログへ直書きしないでください。
+- Discord本文にはprompt全文、model、request_idを原則表示しません。失敗時も安全な短文だけを返します。
+- 現在の画像生成state、rate limit、queueはin-memoryの単一プロセス前提です。複数プロセス/複数インスタンス運用ではDB等の共有storeへ差し替えてください。
+- n8n側はexecution dataにprompt本文、画像base64、secretが長期保存されない設定を確認してからlive E2Eへ進めてください。
 
 ### Docker 運用時の補足
 

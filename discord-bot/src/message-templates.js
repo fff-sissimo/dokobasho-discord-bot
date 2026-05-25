@@ -26,6 +26,45 @@ const MESSAGES = {
         deleteConfirm: (key) => `本当にリマインダー「${key}」を削除する？一度消したら戻せないよ。`,
         deleteSuccess: (key) => `✅ リマインダー「${key}」を削除したよ。`,
     },
+    imageGeneration: {
+        confirmation: ({ purpose, summary }) => {
+            const parts = ['画像を生成しますか？'];
+            if (purpose) parts.push(`用途: ${purpose}`);
+            const safeSummary = String(summary || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+            if (safeSummary) parts.push(`内容: ${safeSummary}`);
+            return parts.join('\n');
+        },
+        accepted: '画像生成を受け付けました。少し待ってください。',
+        queued: (position) => `画像生成を受け付けました。現在${position}番目です。`,
+        rateLimited: (timestamp) => `画像生成の上限に達しました。次は ${timestamp} 以降に使えます。`,
+        completed: '完了しました。',
+        cancelled: 'キャンセルしました。',
+        expired: '期限切れです。',
+        buttons: {
+            generate: '生成する',
+            cancel: 'キャンセル',
+        },
+        errors: {
+            invalid_request: '画像生成の依頼内容を読み取れませんでした。内容を少し具体的にして再試行してください。',
+            auth_failed: '画像生成の設定に問題があります。管理者に確認してください。',
+            credential_error: '画像生成の設定に問題があります。管理者に確認してください。',
+            rate_limited: '画像生成の上限に達しました。少し時間を置いて再試行してください。',
+            queue_full: '画像生成が混み合っています。少し時間を置いて再試行してください。',
+            upstream_unavailable: '画像生成が混み合っています。少し時間を置いて再試行してください。',
+            timeout: '画像生成が混み合っています。少し時間を置いて再試行してください。',
+            quota_exceeded: '画像生成の設定に問題があります。管理者に確認してください。',
+            model_unavailable: '画像生成の設定に問題があります。管理者に確認してください。',
+            forbidden: 'この操作は依頼者本人だけができます。',
+            not_confirming: 'この画像生成リクエストは現在確認できません。',
+            expired: 'この画像生成リクエストは期限切れです。',
+            not_found: 'この画像生成リクエストは見つかりませんでした。',
+            not_cancellable: 'この画像生成リクエストはキャンセルできません。',
+            actor_disabled: '画像生成はこのサーバーまたはユーザーでは現在停止されています。',
+            channel_not_allowed: 'このチャンネルでは画像生成を使えません。',
+            disabled: '画像生成は現在停止中です。',
+            unknown: '画像生成に失敗しました。少し時間を置いて再試行してください。',
+        },
+    },
     commands: {
         remind: {
             description: 'リマインダーを管理するよ。',
@@ -93,6 +132,14 @@ const MESSAGES = {
             description: '依頼内容を受け取り、処理の進捗を返すよ。',
             options: {
                 request: '依頼内容（省略可）',
+            },
+        },
+        image: {
+            description: '画像を生成します。',
+            options: {
+                prompt: '生成したい画像の内容',
+                purpose: '用途',
+                model: '品質モード',
             },
         },
     },

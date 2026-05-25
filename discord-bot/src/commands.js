@@ -2,6 +2,7 @@ const { MESSAGES } = require('./message-templates');
 
 const remindMessages = MESSAGES.commands.remind;
 const fairyMessages = MESSAGES.commands.fairy;
+const imageMessages = MESSAGES.commands.image;
 
 const commands = [
     {
@@ -144,6 +145,43 @@ const commands = [
                 description: fairyMessages.options.request,
                 type: 3,
                 required: false,
+            },
+        ],
+    },
+    {
+        name: 'image',
+        description: imageMessages.description,
+        options: [
+            {
+                name: 'prompt',
+                description: imageMessages.options.prompt,
+                type: 3,
+                required: true,
+            },
+            {
+                name: 'purpose',
+                description: imageMessages.options.purpose,
+                type: 3,
+                required: false,
+                choices: [
+                    { name: 'thumbnail', value: 'thumbnail' },
+                    { name: 'waiting_screen', value: 'waiting_screen' },
+                    { name: 'hp_visual', value: 'hp_visual' },
+                    { name: 'announcement', value: 'announcement' },
+                    { name: 'member_intro', value: 'member_intro' },
+                    { name: 'other', value: 'other' },
+                ],
+            },
+            {
+                name: 'model',
+                description: imageMessages.options.model,
+                type: 3,
+                required: false,
+                choices: [
+                    { name: 'fast', value: 'fast' },
+                    { name: 'standard', value: 'standard' },
+                    { name: 'high_quality', value: 'high_quality' },
+                ],
             },
         ],
     },

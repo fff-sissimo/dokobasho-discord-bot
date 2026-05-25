@@ -20,6 +20,10 @@ const { createPermanentMemorySyncServer } = require("./src/permanent-memory-sync
 const logger = require('./src/logger');
 const { MESSAGES } = require('./src/message-templates');
 const { createWebhookRequestBuilder } = require('./src/n8n-webhook');
+const { parseImageGenerationConfig } = require("./src/image-generation-config");
+const { createImageGenerationIntentDetector } = require("./src/image-generation-intent");
+const { createImageGenerationService } = require("./src/image-generation-service");
+const { createImageGenerationDiscordHandler, IMAGE_BUTTON_PREFIX } = require("./src/image-generation-discord-handler");
 
 const token = getBotToken();
 const webhookUrl = process.env.N8N_WEBHOOK_URL;
@@ -120,6 +124,7 @@ const collectRecentChannelContextEntries = async (interaction) => {
 let fairyInteractionHandler = null;
 let fairyMessageHandler = null;
 let permanentMemorySyncRuntime = null;
+let imageGenerationHandler = null;
 const fairyEnabled = parseBoolean(process.env.FAIRY_ENABLED, false);
 const fairyMessageTriggerEnabled = parseBoolean(process.env.FAIRY_ENABLE_MESSAGE_TRIGGER, true);
 if (fairyEnabled) {
@@ -157,6 +162,46 @@ if (fairyEnabled) {
   }
 } else {
   logger.info("[fairy] response runtime disabled");
+}
+
+const imageGenerationConfig = parseImageGenerationConfig(process.env);
+if (!imageGenerationConfig.enabled) {
+  logger.info("[image-generation] runtime disabled by DOKOBASHO_IMAGE_ENABLED");
+} else if (!imageGenerationConfig.webhookToken) {
+  logger.warn("[image-generation] runtime disabled because DOKOBASHO_IMAGE_WEBHOOK_TOKEN is not configured");
+} else {
+try {
+  let openAiImageIntentDetector = null;
+  if (process.env.OPENAI_API_KEY) {
+    try {
+      const { createOpenAiImageIntentDetector } = require("./src/image-generation-openai-intent");
+      openAiImageIntentDetector = createOpenAiImageIntentDetector({
+        apiKey: process.env.OPENAI_API_KEY,
+        model: process.env.DOKOBASHO_IMAGE_INTENT_MODEL || process.env.IMAGE_GENERATION_INTENT_MODEL,
+        apiBase: process.env.OPENAI_BASE_URL || "https://api.openai.com",
+        timeoutMs: parsePositiveInt(process.env.DOKOBASHO_IMAGE_INTENT_TIMEOUT_MS, 5000),
+      });
+    } catch (error) {
+      logger.warn({ err: error }, "[image-generation] OpenAI intent detector disabled; using deterministic fallback");
+    }
+  }
+  const imageIntentDetector = createImageGenerationIntentDetector({
+    detector: openAiImageIntentDetector,
+    threshold: imageGenerationConfig.intentConfidenceThreshold,
+  });
+  const imageGenerationService = createImageGenerationService({
+    config: imageGenerationConfig,
+    intentDetector: imageIntentDetector,
+  });
+  imageGenerationHandler = createImageGenerationDiscordHandler({
+    service: imageGenerationService,
+    logger,
+    confirmationTtlMs: imageGenerationConfig.confirmationTtlSeconds * 1000,
+  });
+  logger.info("[image-generation] runtime enabled");
+} catch (error) {
+  logger.warn({ err: error }, "[image-generation] runtime disabled due to invalid configuration");
+}
 }
 
 const permanentMemorySyncEnabled = parseBoolean(process.env.PERMANENT_MEMORY_SYNC_ENABLED, true);
@@ -228,6 +273,16 @@ client.on("messageCreate", async (message) => {
   if (!client.user || message.author.bot) {
     if (message.author.id === client.user?.id) rememberBotMessage(message.id);
     return;
+  }
+
+  if (imageGenerationHandler) {
+    try {
+      const imageResult = await imageGenerationHandler.handleMessage(message);
+      if (imageResult && imageResult.handled) return;
+    } catch (error) {
+      logger.error({ err: error }, "[image-generation] message handler failed");
+      return;
+    }
   }
   
   let isReplyToBot = message.mentions.repliedUser?.id === client.user.id;
@@ -360,6 +415,23 @@ client.on(Events.InteractionCreate, async (interaction) => {
     };
 
     try {
+        if (interaction.isChatInputCommand && interaction.isChatInputCommand() && interaction.commandName === 'image') {
+            if (imageGenerationHandler) {
+                await imageGenerationHandler.handleInteraction(interaction);
+            } else {
+                await interaction.reply({ content: MESSAGES.imageGeneration.errors.credential_error, ephemeral: true });
+            }
+        } else if (
+            interaction.isButton &&
+            interaction.isButton() &&
+            String(interaction.customId || '').startsWith(`${IMAGE_BUTTON_PREFIX}:`)
+        ) {
+            if (imageGenerationHandler) {
+                await imageGenerationHandler.handleInteraction(interaction);
+            } else {
+                await interaction.reply({ content: MESSAGES.imageGeneration.errors.credential_error, ephemeral: true });
+            }
+        } else
         if (interaction.isChatInputCommand() && interaction.commandName === 'remind') {
             await handleCommand(interaction);
         } else if (interaction.isChatInputCommand() && interaction.commandName === FAIRY_COMMAND_NAME) {
