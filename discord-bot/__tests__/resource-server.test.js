@@ -154,12 +154,112 @@ describe('resource server reminder bridge', () => {
       const authorized = await postJson(
         `${base}/internal/remind/list`,
         { scope: 'user', user_id: 'user-1' },
-        { 'x-resource-api-token': 'secret-token' }
+        {
+          'x-resource-api-token': 'secret-token',
+          'x-resource-caller-user-id': 'user-1',
+          'x-resource-guild-id': 'guild-1',
+          'x-resource-channel-id': 'channel-1',
+        }
       );
       expect(authorized.status).toBe(200);
       expect(authorized.body.ok).toBe(true);
     } finally {
       await runtime.stop();
     }
+  });
+
+  it('rejects payload identity that differs from authenticated authority headers', async () => {
+    const runtime = await createResourceServer({ port: 0, host: '127.0.0.1', token: 'secret-token' }).start();
+    try {
+      const response = await postJson(
+        `http://127.0.0.1:${runtime.port}/internal/remind/list`,
+        { scope: 'user', user_id: 'attacker-user' },
+        {
+          'x-resource-api-token': 'secret-token',
+          'x-resource-caller-user-id': 'owner-user',
+          'x-resource-guild-id': 'guild-1',
+          'x-resource-channel-id': 'channel-1',
+        }
+      );
+
+      expect(response).toMatchObject({
+        status: 403,
+        body: { ok: false, error: 'context_mismatch' },
+      });
+      expect(sheets.listReminders).not.toHaveBeenCalled();
+    } finally {
+      await runtime.stop();
+    }
+  });
+
+  it('requires authenticated authority headers for reminder operations', async () => {
+    const runtime = await createResourceServer({ port: 0, host: '127.0.0.1', token: 'secret-token' }).start();
+    try {
+      const response = await postJson(
+        `http://127.0.0.1:${runtime.port}/internal/remind/list`,
+        { scope: 'user', user_id: 'owner-user' },
+        { 'x-resource-api-token': 'secret-token' }
+      );
+
+      expect(response).toMatchObject({
+        status: 403,
+        body: { ok: false, error: 'trusted_context_required' },
+      });
+      expect(sheets.listReminders).not.toHaveBeenCalled();
+    } finally {
+      await runtime.stop();
+    }
+  });
+
+  it('denies server scope without a separately verified admin capability', async () => {
+    const runtime = await createResourceServer({ port: 0, host: '127.0.0.1', token: 'secret-token' }).start();
+    try {
+      const response = await postJson(
+        `http://127.0.0.1:${runtime.port}/internal/remind/add`,
+        {
+          scope: 'server',
+          user_id: 'owner-user',
+          guild_id: 'guild-1',
+          channel_id: 'channel-1',
+          target_channel_id: 'channel-1',
+          time: '明日10時',
+          content: 'server reminder',
+          is_admin: true,
+        },
+        {
+          'x-resource-api-token': 'secret-token',
+          'x-resource-caller-user-id': 'owner-user',
+          'x-resource-guild-id': 'guild-1',
+          'x-resource-channel-id': 'channel-1',
+        }
+      );
+
+      expect(response).toMatchObject({
+        status: 403,
+        body: { ok: false, error: 'server_scope_not_authorized' },
+      });
+      expect(sheets.addReminder).not.toHaveBeenCalled();
+    } finally {
+      await runtime.stop();
+    }
+  });
+
+  it('does not delete another caller reminder even when the key is known', async () => {
+    sheets.getReminderByKey.mockResolvedValue({
+      id: 'reminder-1',
+      key: 'ABCDEFGH',
+      scope: 'user',
+      user_id: 'other-user',
+      guild_id: 'guild-1',
+      channel_id: '',
+    });
+
+    const result = await deleteReminderFromPayload(
+      { scope: 'user', key: 'ABCDEFGH', user_id: 'owner-user' },
+      { authority: { userId: 'owner-user', guildId: 'guild-1', channelId: 'channel-1' } }
+    );
+
+    expect(result).toMatchObject({ ok: false, code: 'not_found' });
+    expect(sheets.deleteReminderById).not.toHaveBeenCalled();
   });
 });

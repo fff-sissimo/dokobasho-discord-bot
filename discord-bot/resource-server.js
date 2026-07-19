@@ -76,6 +76,43 @@ const requireField = (body, field) => {
   return value;
 };
 
+const authorityError = (code) => Object.assign(new Error(code), { statusCode: 403, code });
+
+const readAuthorityHeaders = (req) => ({
+  userId: normalizeString(req.headers['x-resource-caller-user-id']),
+  guildId: normalizeString(req.headers['x-resource-guild-id']),
+  channelId: normalizeString(req.headers['x-resource-channel-id']),
+});
+
+const bindPayloadToAuthority = (body, authority) => {
+  if (!authority || !authority.userId || !authority.guildId || !authority.channelId) {
+    throw authorityError('trusted_context_required');
+  }
+  const supplied = {
+    userId: normalizeString(body.user_id),
+    guildId: normalizeString(body.guild_id),
+    channelId: normalizeString(body.channel_id),
+  };
+  if (
+    (supplied.userId && supplied.userId !== authority.userId)
+    || (supplied.guildId && supplied.guildId !== authority.guildId)
+    || (supplied.channelId && supplied.channelId !== authority.channelId)
+  ) {
+    throw authorityError('context_mismatch');
+  }
+  const scope = normalizeScope(body.scope);
+  if (scope === 'server') {
+    throw authorityError('server_scope_not_authorized');
+  }
+  return {
+    ...body,
+    user_id: authority.userId,
+    guild_id: authority.guildId,
+    channel_id: authority.channelId,
+    is_admin: false,
+  };
+};
+
 async function generateUniqueReminderKey(scope) {
   for (let attempt = 0; attempt < MAX_KEY_ATTEMPTS; attempt += 1) {
     const candidate = generateReminderKey();
@@ -227,12 +264,13 @@ async function listRemindersFromPayload(body) {
   };
 }
 
-async function deleteReminderFromPayload(body) {
+async function deleteReminderFromPayload(body, { authority } = {}) {
   await getSheetsClient();
 
-  const key = requireField(body, 'key');
-  const scope = normalizeScope(body.scope);
-  const isAdmin = parseBoolean(body.is_admin, false);
+  const effectiveBody = authority ? bindPayloadToAuthority(body, authority) : body;
+  const key = requireField(effectiveBody, 'key');
+  const scope = normalizeScope(effectiveBody.scope);
+  const isAdmin = parseBoolean(effectiveBody.is_admin, false);
 
   if (scope === 'server' && !isAdmin) {
     return { ok: false, status: 'rejected', code: 'admin_required', reply_content: MESSAGES.responses.adminRequiredForDelete };
@@ -241,6 +279,15 @@ async function deleteReminderFromPayload(body) {
   const reminder = await getReminderByKey(key, scope);
   if (!reminder) {
     return { ok: false, status: 'not_found', code: 'not_found', reply_content: MESSAGES.responses.notFound };
+  }
+  if (authority) {
+    const belongsToCaller = scope === 'user'
+      ? normalizeString(reminder.user_id) === authority.userId
+      : normalizeString(reminder.channel_id) === authority.channelId
+        && normalizeString(reminder.guild_id) === authority.guildId;
+    if (!belongsToCaller) {
+      return { ok: false, status: 'not_found', code: 'not_found', reply_content: MESSAGES.responses.notFound };
+    }
   }
 
   const deleteResult = await deleteReminderById(reminder.id);
@@ -319,14 +366,14 @@ function createResourceServer(options = {}) {
         return;
       }
 
-      const body = await readJsonBody(req, maxBodyBytes);
+      const body = bindPayloadToAuthority(await readJsonBody(req, maxBodyBytes), readAuthorityHeaders(req));
       let result;
       if (url.pathname === `${pathPrefix}/add`) {
         result = await addReminderFromPayload(body, options);
       } else if (url.pathname === `${pathPrefix}/list`) {
         result = await listRemindersFromPayload(body);
       } else if (url.pathname === `${pathPrefix}/delete`) {
-        result = await deleteReminderFromPayload(body);
+        result = await deleteReminderFromPayload(body, { authority: readAuthorityHeaders(req) });
       } else {
         sendJson(res, 404, { ok: false, error: 'not_found' });
         return;
