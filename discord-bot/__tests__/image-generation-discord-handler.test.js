@@ -149,11 +149,11 @@ test("other user confirm and cancel are rejected ephemerally without delivery", 
   expect(confirm.deferUpdate).toHaveBeenCalled();
   expect(confirm.followUp).toHaveBeenCalledWith(expect.objectContaining({
     content: "この操作は依頼者本人だけができます。",
-    ephemeral: true,
+    flags: [64],
   }));
   expect(cancel.reply).toHaveBeenCalledWith(expect.objectContaining({
     content: "この操作は依頼者本人だけができます。",
-    ephemeral: true,
+    flags: [64],
   }));
   expect(confirm.update).not.toHaveBeenCalled();
   expect(cancel.update).not.toHaveBeenCalled();
@@ -369,7 +369,7 @@ test("confirm rejection after ACK keeps original display and sends ephemeral saf
   expect(interaction.message.edit).not.toHaveBeenCalled();
   expect(interaction.followUp).toHaveBeenCalledWith(expect.objectContaining({
     content: "この画像生成リクエストは現在確認できません。",
-    ephemeral: true,
+    flags: [64],
   }));
   expect(clearTimeoutFn).not.toHaveBeenCalled();
 });
@@ -401,7 +401,7 @@ test("queued cancel is owner-only and updates message on owner cancellation", as
   expect(clearTimeoutFn).not.toHaveBeenCalled();
   await handler.handleInteraction(owner);
 
-  expect(other.reply).toHaveBeenCalledWith(expect.objectContaining({ ephemeral: true }));
+  expect(other.reply).toHaveBeenCalledWith(expect.objectContaining({ flags: [64] }));
   expect(owner.update).toHaveBeenCalledWith({
     content: "キャンセルしました。",
     components: [],
@@ -462,7 +462,7 @@ test("cancel rejection does not overwrite message", async () => {
   expect(interaction.update).not.toHaveBeenCalled();
   expect(interaction.reply).toHaveBeenCalledWith(expect.objectContaining({
     content: "この画像生成リクエストはキャンセルできません。",
-    ephemeral: true,
+    flags: [64],
   }));
 });
 

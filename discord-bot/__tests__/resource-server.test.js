@@ -53,6 +53,11 @@ describe('resource server reminder bridge', () => {
     chrono.parseDate.mockReturnValue(new Date('2026-05-13T01:00:00.000Z'));
   });
 
+  it('refuses a non-loopback listener without an API token', async () => {
+    await expect(createResourceServer({ port: 0, host: '0.0.0.0', token: '' }).start())
+      .rejects.toThrow('token is required for non-loopback internal API listeners');
+  });
+
   afterEach(() => {
     delete process.env.DEFAULT_TZ;
   });

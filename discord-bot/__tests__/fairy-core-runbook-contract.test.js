@@ -4,6 +4,7 @@ const path = require("node:path");
 const readmePath = path.resolve(__dirname, "..", "..", "README.md");
 const envExamplePath = path.resolve(__dirname, "..", ".env_example");
 const hostingerComposeExamplePath = path.resolve(__dirname, "..", "..", "hostinger", "docker-compose.example.yml");
+const hostingerComposePath = path.resolve(__dirname, "..", "..", "hostinger", "docker-compose.yml");
 const runtimeBootstrapPath = path.resolve(__dirname, "..", "scripts", "runtime-bootstrap.sh");
 
 describe("fairy runtime rollout runbook contract", () => {
@@ -39,6 +40,16 @@ describe("fairy runtime rollout runbook contract", () => {
     expect(bootstrap).toContain("sha256sum");
     expect(bootstrap).toMatch(/while ! mkdir[\s\S]+if \[ ! -d node_modules \][\s\S]+npm ci --omit=dev/);
     expect(bootstrap).toContain("trap cleanup EXIT INT TERM");
+  });
+
+  it("Hostinger compose 実体と example のGoogle鍵volumeは未設定でも構文を壊さない", () => {
+    const compose = fs.readFileSync(hostingerComposePath, "utf8");
+    const example = fs.readFileSync(hostingerComposeExamplePath, "utf8");
+
+    for (const content of [compose, example]) {
+      expect(content).toContain("${GOOGLE_SA_KEY_FILE:-./google-service-key.json}:/app/keys/google-service-key.json:ro");
+      expect(content).not.toContain("${GOOGLE_SA_KEY_FILE}:/app/keys/google-service-key.json:ro");
+    }
   });
 
   it(".env_example は fairy 応答停止を既定にし、OpenClaw env を持たない", () => {

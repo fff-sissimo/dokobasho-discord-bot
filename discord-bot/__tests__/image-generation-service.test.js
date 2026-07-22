@@ -200,7 +200,8 @@ describe("image-generation-service", () => {
   });
 
   it("allows only one confirm path to call n8n", async () => {
-    const { service, n8nClient } = createService();
+    const rateLimiter = createAllowRateLimiter();
+    const { service, n8nClient } = createService({ rateLimiter });
     await prepare(service);
 
     const first = await service.confirm({ requestId: "req-1", userId: "user-1" });
@@ -216,6 +217,7 @@ describe("image-generation-service", () => {
       action: "completed",
       image: { base64: "base64-data", mimeType: "image/png" },
     });
+    expect(rateLimiter.refund).not.toHaveBeenCalled();
     expect(second).toMatchObject({
       action: "rejected",
       reason: "not_confirming",

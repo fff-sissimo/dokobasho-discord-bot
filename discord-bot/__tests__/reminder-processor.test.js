@@ -43,9 +43,16 @@ describe('Reminder Processor', () => {
     });
 
     it('should not process if no reminders are due', async () => {
-        await processReminders(mockDiscordClient);
+        const result = await processReminders(mockDiscordClient);
         expect(sheets.getPendingReminders).toHaveBeenCalledTimes(1);
         expect(sheets.updateReminder).not.toHaveBeenCalled();
+        expect(result).toEqual({ processed: 0, sent: 0, failed: 0 });
+    });
+
+    it('should propagate reminder source failures so health is not reported as successful', async () => {
+        sheets.getPendingReminders.mockRejectedValue(new Error('sheets unavailable'));
+
+        await expect(processReminders(mockDiscordClient)).rejects.toThrow('sheets unavailable');
     });
 
     it('should process a non-recurring reminder', async () => {
@@ -190,5 +197,24 @@ describe('Reminder Processor', () => {
         expect(sheets.updateReminder.mock.calls[1][2]).toEqual({ rowIndex: reminder.rowIndex });
         expect(secondCallArg.status).toBe('failed');
         expect(secondCallArg.retry_count).toBe(3);
+    });
+
+    it('should not mark a reminder as sent when the Discord user is missing', async () => {
+        const reminder = {
+            id: 'id-missing-user', content: 'Missing user', scope: 'user',
+            user_id: 'missing-user', notify_time_utc: new Date().toISOString(),
+            recurring: 'off', status: 'pending', retry_count: 0, rowIndex: 7,
+        };
+        sheets.getPendingReminders.mockResolvedValue([reminder]);
+        mockDiscordClient.users.fetch.mockResolvedValue(null);
+
+        const result = await processReminders(mockDiscordClient);
+
+        expect(sheets.updateReminder).toHaveBeenCalledTimes(2);
+        expect(sheets.updateReminder.mock.calls[1][1]).toMatchObject({
+            status: 'pending',
+            retry_count: 1,
+        });
+        expect(result).toEqual({ processed: 1, sent: 0, failed: 1 });
     });
 });

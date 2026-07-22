@@ -16,6 +16,7 @@ const { resolveTimezone, adjustDateForTimezone } = require('./src/timezone');
 const { MESSAGES } = require('./src/message-templates');
 const { generateReminderKey } = require('./src/reminder-key');
 const { normalizeTimeInput } = require('./src/time-input');
+const { assertInternalApiSecurity } = require('./src/internal-api-security');
 
 const DEFAULT_HOST = '0.0.0.0';
 const DEFAULT_PORT = 8790;
@@ -350,6 +351,16 @@ function createResourceServer(options = {}) {
     start: () => new Promise((resolve, reject) => {
       const port = options.port ?? parsePositiveInt(process.env.RESOURCE_API_PORT, DEFAULT_PORT);
       const host = options.host ?? process.env.RESOURCE_API_HOST ?? DEFAULT_HOST;
+      const allowInsecureLoopback = options.allowInsecureLoopback ?? parseBoolean(
+        process.env.INTERNAL_API_ALLOW_INSECURE_LOOPBACK,
+        false
+      );
+      try {
+        assertInternalApiSecurity({ host, token, allowInsecureLoopback });
+      } catch (error) {
+        reject(error);
+        return;
+      }
       server.once('error', reject);
       server.listen(port, host, () => {
         server.off('error', reject);
@@ -371,9 +382,6 @@ function createResourceServer(options = {}) {
 if (require.main === module) {
   const runtime = createResourceServer();
   runtime.start().then(({ port, host }) => {
-    if (!process.env.RESOURCE_API_TOKEN) {
-      logger.warn('[resource-server] RESOURCE_API_TOKEN is not set; internal API accepts unauthenticated requests.');
-    }
     logger.info(`[resource-server] listening on ${host}:${port}`);
   }).catch((error) => {
     logger.error({ err: error }, '[resource-server] failed to start');

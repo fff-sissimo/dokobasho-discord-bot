@@ -31,3 +31,16 @@ test("commands includes /image with prompt, purpose choices, and model choices",
     }),
   ]));
 });
+
+test("vc-memo start requires explicit recording consent", () => {
+  const vcMemo = commands.find((command) => command.name === "vc-memo");
+  const start = vcMemo.options.find((option) => option.name === "start");
+
+  expect(start.options).toEqual(expect.arrayContaining([
+    expect.objectContaining({
+      name: "consent",
+      type: 5,
+      required: true,
+    }),
+  ]));
+});

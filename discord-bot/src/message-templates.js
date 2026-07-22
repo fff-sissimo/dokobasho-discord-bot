@@ -142,6 +142,27 @@ const MESSAGES = {
                 model: '品質モード',
             },
         },
+        vcMemo: {
+            description: 'ボイスチャットの要約ドラフトを管理するよ。',
+            options: {
+                subcommand: '実行するサブコマンド',
+                guild_id: 'サーバーID',
+                channel_id: 'チャンネルID',
+            },
+            errors: {
+                disabled: 'VC Memo機能は現在無効化されています。',
+                noSession: 'アクティブなセッションがありません。',
+                sessionError: 'セッションエラーが発生しました。',
+                processingError: '処理中にエラーが発生しました。',
+                draftDiscarded: 'ドラフトを破棄したよ。',
+            },
+            responses: {
+                started: 'ボイスチャットへの録音を開始したよ！',
+                stopped: '録音を停止してドラフトを生成したよ。',
+                status: (sessionId, state) => `セッションID: \`${sessionId}\`\n状態: ${state}`,
+                discarded: 'ドラフトを破棄したよ。',
+            },
+        },
     },
 };
 

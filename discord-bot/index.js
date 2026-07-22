@@ -1,7 +1,7 @@
 const path = require("path");
 require("dotenv").config({ path: path.join(__dirname, ".env") });
 
-const { Client, GatewayIntentBits, Events } = require("discord.js");
+const { Client, GatewayIntentBits, Events, MessageFlags, PermissionFlagsBits } = require("discord.js");
 const { getBotToken } = require("./src/config");
 const { getSheetsClient } = require('./src/google-sheets');
 const { handleCommand, handleButton } = require('./src/command-handler');
@@ -24,6 +24,8 @@ const { parseImageGenerationConfig } = require("./src/image-generation-config");
 const { createImageGenerationIntentDetector } = require("./src/image-generation-intent");
 const { createImageGenerationService } = require("./src/image-generation-service");
 const { createImageGenerationDiscordHandler, IMAGE_BUTTON_PREFIX } = require("./src/image-generation-discord-handler");
+const vcMemo = require("./src/vc-memo");
+const { editReply, ephemeralDefer } = require("./src/interaction-replies");
 
 const token = getBotToken();
 const webhookUrl = process.env.N8N_WEBHOOK_URL;
@@ -50,9 +52,11 @@ const parseOptionalString = (raw, fallback = "") => {
   return value === "" ? fallback : value;
 };
 
+const escapeRegExp = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 const contentMentionsBot = (content, botUserId) => {
   if (!botUserId) return false;
-  const mentionPattern = new RegExp(`<@!?${String(botUserId)}>`);
+  const mentionPattern = new RegExp(`<@!?${escapeRegExp(botUserId)}>`);
   return mentionPattern.test(String(content || ""));
 };
 
@@ -74,7 +78,38 @@ const readMessageContextContent = (message) => {
   const botId = message && message.client && message.client.user ? String(message.client.user.id || "") : "";
   const raw = String((message && message.content) || "");
   if (!botId) return raw.trim();
-  return raw.replace(new RegExp(`<@!?${botId}>`, "g"), " ").replace(/\s+/g, " ").trim();
+  return raw.replace(new RegExp(`<@!?${escapeRegExp(botId)}>`, "g"), " ").replace(/\s+/g, " ").trim();
+};
+
+const DISCORD_MESSAGE_CONTENT_LIMIT = 2000;
+
+const truncateText = (value, maxLength, marker = "\n...") => {
+  const text = String(value || "");
+  if (text.length <= maxLength) return text;
+  if (maxLength <= 0) return "";
+  if (maxLength <= marker.length) return text.substring(0, maxLength);
+  return `${text.substring(0, maxLength - marker.length)}${marker}`;
+};
+
+const buildVcMemoStopReplyContent = (result) => {
+  const draft = String((result && result.draft) || "");
+  const fullContent = `${MESSAGES.commands.vcMemo.responses.stopped}\n\n\`\`\`\n${draft}\n\`\`\``;
+  if (fullContent.length <= DISCORD_MESSAGE_CONTENT_LIMIT) {
+    return fullContent;
+  }
+
+  const sessionLine = result && result.sessionId ? `\nセッション: ${result.sessionId}` : "";
+  let prefix = `${MESSAGES.commands.vcMemo.responses.stopped}\n\n全文は保存済みです。Discordではプレビューのみ表示します。${sessionLine}\n\n\`\`\`\n`;
+  const suffix = "\n```\n(プレビューはDiscordの文字数制限に合わせて省略しています)";
+  let previewLength = DISCORD_MESSAGE_CONTENT_LIMIT - prefix.length - suffix.length;
+
+  if (previewLength < 0 && sessionLine) {
+    prefix = `${MESSAGES.commands.vcMemo.responses.stopped}\n\n全文は保存済みです。Discordではプレビューのみ表示します。\n\n\`\`\`\n`;
+    previewLength = DISCORD_MESSAGE_CONTENT_LIMIT - prefix.length - suffix.length;
+  }
+
+  const preview = truncateText(draft, previewLength);
+  return `${prefix}${preview}${suffix}`;
 };
 
 const collectInteractionContextResult = (source) => {
@@ -216,6 +251,7 @@ if (permanentMemorySyncEnabled) {
       port: parsePositiveInt(process.env.PERMANENT_MEMORY_SYNC_PORT, 8789),
       maxReadChars: parsePositiveInt(process.env.PERMANENT_MEMORY_READ_MAX_CHARS, 8000),
       host: parseOptionalString(process.env.PERMANENT_MEMORY_SYNC_HOST, "0.0.0.0"),
+      allowInsecureLoopback: parseBoolean(process.env.INTERNAL_API_ALLOW_INSECURE_LOOPBACK, false),
       logger,
     });
     permanentMemorySyncRuntime = syncServer;
@@ -253,12 +289,17 @@ const isRecentBotMessage = (messageId) => {
 };
 // --- End Cache ---
 
+const clientIntents = [
+  GatewayIntentBits.Guilds,
+  GatewayIntentBits.GuildMessages,
+  GatewayIntentBits.GuildVoiceStates,
+];
+if (parseBoolean(process.env.DISCORD_MESSAGE_CONTENT_INTENT_ENABLED, true)) {
+  clientIntents.push(GatewayIntentBits.MessageContent);
+}
+
 const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-  ],
+  intents: clientIntents,
 });
 
 client.once(Events.ClientReady, (c) => {
@@ -266,6 +307,12 @@ client.once(Events.ClientReady, (c) => {
   getSheetsClient().catch(err => {
     logger.error('[Startup] Failed to initialize Google Sheets Client. Reminders will not work.', err);
   });
+  const vcMemoEnabled = parseBoolean(process.env.VC_MEMO_ENABLED, false);
+  if (vcMemoEnabled) {
+    logger.info('[vc-memo] runtime enabled');
+  } else {
+    logger.info('[vc-memo] runtime disabled');
+  }
 });
 
 // --- n8n Webhook Handler ---
@@ -394,7 +441,7 @@ client.on("messageCreate", async (message) => {
 // --- Main Interaction Handler ---
 client.on(Events.InteractionCreate, async (interaction) => {
     const handleError = async (error, int) => {
-        logger.error('[InteractionCreate] Error:', error);
+        logger.error({ err: error }, '[InteractionCreate] Error');
         const commandName = int && int.isChatInputCommand && int.isChatInputCommand() ? int.commandName : undefined;
         const message = commandName === FAIRY_COMMAND_NAME
             ? MESSAGES.errors.generic
@@ -402,10 +449,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
                 ? MESSAGES.errors.reminderNotConfigured
                 : MESSAGES.errors.generic;
         
-        const replyPayload = { content: message, components: [], ephemeral: true };
+        const replyPayload = { content: message, components: [], flags: [MessageFlags.Ephemeral] };
         try {
             if (int.deferred || int.replied) {
-                await int.editReply(replyPayload);
+                await int.editReply(editReply(message, { components: [] }));
             } else {
                 await int.reply(replyPayload);
             }
@@ -419,7 +466,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
             if (imageGenerationHandler) {
                 await imageGenerationHandler.handleInteraction(interaction);
             } else {
-                await interaction.reply({ content: MESSAGES.imageGeneration.errors.credential_error, ephemeral: true });
+                await interaction.reply({ content: MESSAGES.imageGeneration.errors.credential_error, flags: [MessageFlags.Ephemeral] });
             }
         } else if (
             interaction.isButton &&
@@ -429,18 +476,18 @@ client.on(Events.InteractionCreate, async (interaction) => {
             if (imageGenerationHandler) {
                 await imageGenerationHandler.handleInteraction(interaction);
             } else {
-                await interaction.reply({ content: MESSAGES.imageGeneration.errors.credential_error, ephemeral: true });
+                await interaction.reply({ content: MESSAGES.imageGeneration.errors.credential_error, flags: [MessageFlags.Ephemeral] });
             }
         } else
         if (interaction.isChatInputCommand() && interaction.commandName === 'remind') {
             await handleCommand(interaction);
         } else if (interaction.isChatInputCommand() && interaction.commandName === FAIRY_COMMAND_NAME) {
             if (!fairyEnabled) {
-                await interaction.reply({ content: MESSAGES.errors.fairyDisabled, ephemeral: true });
+                await interaction.reply({ content: MESSAGES.errors.fairyDisabled, flags: [MessageFlags.Ephemeral] });
                 return;
             }
             if (!fairyInteractionHandler) {
-                await interaction.reply({ content: MESSAGES.errors.fairyNotConfigured, ephemeral: true });
+                await interaction.reply({ content: MESSAGES.errors.fairyNotConfigured, flags: [MessageFlags.Ephemeral] });
                 return;
             }
             const result = await fairyInteractionHandler(interaction);
@@ -460,6 +507,123 @@ client.on(Events.InteractionCreate, async (interaction) => {
             }
         } else if (interaction.isButton() && interaction.customId.startsWith('delete-confirm_')) {
             await handleButton(interaction);
+        } else if (interaction.isChatInputCommand() && interaction.commandName === 'vc-memo') {
+            if (!vcMemo.checkFeatureEnabled()) {
+                await interaction.reply({ content: MESSAGES.commands.vcMemo.errors.disabled, flags: [MessageFlags.Ephemeral] });
+                return;
+            }
+            const subcommand = interaction.options.getSubcommand();
+            const guildId = interaction.guild?.id || interaction.options.getString('guild_id');
+            const controller = {
+                userId: interaction.user?.id,
+                canManageGuild: Boolean(interaction.memberPermissions?.has?.(PermissionFlagsBits.ManageGuild)),
+            };
+            if (subcommand === 'start') {
+                await interaction.deferReply(ephemeralDefer());
+                const consentConfirmed = interaction.options.getBoolean('consent', true);
+                const requestedChannelId = interaction.options.getString('channel_id');
+                const memberVoiceChannelId = interaction.member?.voice?.channel?.id;
+                const channelId = requestedChannelId || memberVoiceChannelId;
+                if (!guildId) {
+                    await interaction.editReply(editReply('DMでは実行できません。サーバーでコマンドを実行してください。'));
+                    return;
+                }
+                if (!channelId) {
+                    await interaction.editReply(editReply('参加中のボイスチャンネルが見つかりません。VCに参加してから実行するか、channel_id を指定してください。'));
+                    return;
+                }
+                if (!memberVoiceChannelId || memberVoiceChannelId !== channelId) {
+                    await interaction.editReply(editReply('録音対象のボイスチャンネルに参加してから実行してください。'));
+                    return;
+                }
+                if (!controller.canManageGuild) {
+                    await interaction.editReply(editReply('VC Memoの開始にはサーバー管理権限が必要です。'));
+                    return;
+                }
+                const result = await vcMemo.start(client, {
+                    guildId,
+                    channelId,
+                    ownerUserId: interaction.user?.id,
+                    consentConfirmed,
+                    canManageGuild: controller.canManageGuild,
+                });
+                logger.info({
+                    guildId,
+                    channelId,
+                    guild: interaction.guild?.name,
+                    memberVoiceChannel: interaction.member?.voice?.channel?.id,
+                    memberVoiceChannelName: interaction.member?.voice?.channel?.name,
+                }, '[vc-memo] start command options');
+                if (result.error) {
+                    const errorMessages = {
+                        'A session is already active': 'すでにVC Memoセッションがアクティブです。',
+                        'Another session is already active in this guild': 'このサーバーでは、すでにVC Memoセッションがアクティブです。',
+                        'Recording consent is required': '録音を開始するには、参加者全員の同意確認が必要です。',
+                        'Feature is disabled': 'VC Memo機能が無効化されています。',
+                        'Guild' : 'このサーバーはVC Memoの対象外です。',
+                        'Channel' : 'このチャンネルはVC Memoの対象外です。',
+                    };
+                    const detail = result.error;
+                    let userMessage;
+                    for (const [key, msg] of Object.entries(errorMessages)) {
+                        if (detail.includes(key)) {
+                            userMessage = msg;
+                            break;
+                        }
+                    }
+                    if (!userMessage) {
+                        userMessage = `エラーが発生しました: ${detail}`;
+                    }
+                    await interaction.editReply(editReply(`❌ ${userMessage}`));
+                } else {
+                    await interaction.editReply(editReply(MESSAGES.commands.vcMemo.responses.started));
+                }
+            } else if (subcommand === 'stop') {
+                await interaction.deferReply(ephemeralDefer());
+                const activeSession = vcMemo.getActiveSession ? vcMemo.getActiveSession(guildId) : null;
+                if (!activeSession) {
+                    await interaction.editReply(editReply(MESSAGES.commands.vcMemo.errors.noSession));
+                    return;
+                }
+                try {
+                    const result = await vcMemo.stop(activeSession, controller);
+                    if (result.error) {
+                        await interaction.editReply(editReply(`❌ ${result.error}`));
+                    } else {
+                        await interaction.editReply(editReply(buildVcMemoStopReplyContent(result)));
+                    }
+                } catch (err) {
+                    logger.error({ err }, '[vc-memo] stop failed');
+                    await interaction.editReply(editReply(`❌ ${MESSAGES.commands.vcMemo.errors.processingError}`));
+                }
+            } else if (subcommand === 'status') {
+                await interaction.deferReply(ephemeralDefer());
+                const sessionId = interaction.options.getString('session_id') ||
+                    (vcMemo.getCurrentSession ? vcMemo.getCurrentSession(guildId) : (vcMemo.getActiveSession ? vcMemo.getActiveSession(guildId) : null));
+                if (!sessionId) {
+                    await interaction.editReply(editReply(MESSAGES.commands.vcMemo.errors.noSession));
+                    return;
+                }
+                const result = vcMemo.getStatus(sessionId);
+                if (result.error) {
+                    await interaction.editReply(editReply(`❌ ${result.error}`));
+                } else {
+                    await interaction.editReply(editReply(MESSAGES.commands.vcMemo.responses.status(result.sessionId, result.state)));
+                }
+            } else if (subcommand === 'discard') {
+                await interaction.deferReply(ephemeralDefer());
+                const sessionId = vcMemo.getCurrentSession ? vcMemo.getCurrentSession(guildId) : (vcMemo.getActiveSession ? vcMemo.getActiveSession(guildId) : null);
+                if (!sessionId) {
+                    await interaction.editReply(editReply(MESSAGES.commands.vcMemo.errors.noSession));
+                    return;
+                }
+                const result = vcMemo.discard(sessionId, controller);
+                if (result.error) {
+                    await interaction.editReply(editReply(`❌ ${result.error}`));
+                } else {
+                    await interaction.editReply(editReply(MESSAGES.commands.vcMemo.responses.discarded));
+                }
+            }
         }
     } catch (error) {
         await handleError(error, interaction);
@@ -496,18 +660,30 @@ const shutdown = async (signal) => {
   process.exit(0);
 };
 
-process.on("SIGTERM", () => {
+const processHandlerRegistryKey = Symbol.for("dokobasho.discordBot.processHandlers");
+const registerProcessHandler = (eventName, handler) => {
+  const registry = globalThis[processHandlerRegistryKey] || new Map();
+  const previousHandler = registry.get(eventName);
+  if (previousHandler) {
+    process.off(eventName, previousHandler);
+  }
+  process.on(eventName, handler);
+  registry.set(eventName, handler);
+  globalThis[processHandlerRegistryKey] = registry;
+};
+
+registerProcessHandler("SIGTERM", () => {
   void shutdown("SIGTERM");
 });
 
-process.on("SIGINT", () => {
+registerProcessHandler("SIGINT", () => {
   void shutdown("SIGINT");
 });
 
-process.on("unhandledRejection", (error) => {
+registerProcessHandler("unhandledRejection", (error) => {
   logger.error("[unhandledRejection]", error);
 });
 
-process.on("uncaughtException", (error) => {
+registerProcessHandler("uncaughtException", (error) => {
   logger.error("[uncaughtException]", error);
 });

@@ -4,6 +4,7 @@ const http = require("node:http");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { mkdir, appendFile, readFile } = require("node:fs/promises");
+const { assertInternalApiSecurity } = require("./internal-api-security");
 
 const DEFAULT_PATH = "/internal/permanent-memory/sync";
 const DEFAULT_READ_PATH = "/internal/permanent-memory/read";
@@ -166,6 +167,7 @@ const createPermanentMemorySyncServer = ({
   maxBodyBytes = DEFAULT_MAX_BODY_BYTES,
   maxReadChars = DEFAULT_MAX_READ_CHARS,
   logger = console,
+  allowInsecureLoopback = false,
 } = {}) => {
   const normalizedRoute = parseRoutePath(routePath);
   const normalizedReadRoute = parseRoutePath(readPath || DEFAULT_READ_PATH);
@@ -336,6 +338,8 @@ const createPermanentMemorySyncServer = ({
         const activePort = typeof addr === "object" && addr ? addr.port : port;
         return { port: activePort, stop };
       }
+
+      assertInternalApiSecurity({ host, token: expectedToken, allowInsecureLoopback });
 
       server = http.createServer((req, res) => {
         void handleRequest(req, res);

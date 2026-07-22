@@ -5,9 +5,16 @@ describe("index fairy message trigger integration", () => {
     adapterThrows = false,
     fairyEnabled = true,
     openAiApiKey = "",
+    messageContentIntentEnabled,
+    vcMemoStopResult,
   } = {}) => {
     jest.resetModules();
     process.env.FAIRY_ENABLED = fairyEnabled ? "true" : "false";
+    if (messageContentIntentEnabled === undefined) {
+      delete process.env.DISCORD_MESSAGE_CONTENT_INTENT_ENABLED;
+    } else {
+      process.env.DISCORD_MESSAGE_CONTENT_INTENT_ENABLED = messageContentIntentEnabled ? "true" : "false";
+    }
     if (openAiApiKey) {
       process.env.OPENAI_API_KEY = openAiApiKey;
     } else {
@@ -32,6 +39,14 @@ describe("index fairy message trigger integration", () => {
       warn: jest.fn(),
       error: jest.fn(),
     };
+    const vcMemo = {
+      checkFeatureEnabled: jest.fn(() => true),
+      start: jest.fn().mockResolvedValue({ id: "session_001" }),
+      stop: jest.fn().mockResolvedValue(vcMemoStopResult || { sessionId: "session_001", draft: "# VCメモ ドラフト\n\n本文" }),
+      getStatus: jest.fn(),
+      discard: jest.fn(),
+      getActiveSession: jest.fn(() => "session_001"),
+    };
     const client = {
       user: { id: "bot_001" },
       on: jest.fn((event, handler) => {
@@ -43,21 +58,29 @@ describe("index fairy message trigger integration", () => {
       login: jest.fn().mockResolvedValue("ok"),
       destroy: jest.fn().mockResolvedValue(undefined),
     };
+    const ClientMock = jest.fn(() => client);
 
     jest.doMock(
       "discord.js",
       () => ({
-        Client: jest.fn(() => client),
+        Client: ClientMock,
         GatewayIntentBits: {
           Guilds: 1,
           GuildMessages: 2,
           MessageContent: 4,
           GuildMessageReactions: 8,
           DirectMessages: 16,
+          GuildVoiceStates: 32,
         },
         Events: {
           ClientReady: "clientReady",
           InteractionCreate: "interactionCreate",
+        },
+        MessageFlags: {
+          Ephemeral: 64,
+        },
+        PermissionFlagsBits: {
+          ManageGuild: 32,
         },
       }),
       { virtual: true }
@@ -116,6 +139,21 @@ describe("index fairy message trigger integration", () => {
           reminderNotConfigured: "reminder",
           fairyDisabled: "fairy disabled",
         },
+        commands: {
+          vcMemo: {
+            errors: {
+              disabled: "vc memo disabled",
+              noSession: "no session",
+              processingError: "processing error",
+            },
+            responses: {
+              started: "started",
+              stopped: "stopped",
+              status: (sessionId, state) => `${sessionId}:${state}`,
+              discarded: "discarded",
+            },
+          },
+        },
       },
     }));
     jest.doMock("../src/n8n-webhook", () => ({
@@ -124,6 +162,7 @@ describe("index fairy message trigger integration", () => {
         buildHeaders: jest.fn(() => ({})),
       })),
     }));
+    jest.doMock("../src/vc-memo", () => vcMemo);
 
     jest.isolateModules(() => {
       require("../index");
@@ -149,9 +188,11 @@ describe("index fairy message trigger integration", () => {
 
     return {
       handlers,
+      ClientMock,
       fairyMessageHandler,
       resolveReplyAntecedentEntry,
       logger,
+      vcMemo,
       message,
     };
   };
@@ -159,8 +200,25 @@ describe("index fairy message trigger integration", () => {
   afterEach(() => {
     delete process.env.FAIRY_ENABLED;
     delete process.env.OPENAI_API_KEY;
+    delete process.env.DISCORD_MESSAGE_CONTENT_INTENT_ENABLED;
     jest.resetModules();
     jest.clearAllMocks();
+  });
+
+  it("Discord client は voice state と message content intent をデフォルトで要求する", () => {
+    const { ClientMock } = setup({ fairyEnabled: false });
+
+    expect(ClientMock).toHaveBeenCalledWith({
+      intents: expect.arrayContaining([1, 2, 4, 32]),
+    });
+  });
+
+  it("DISCORD_MESSAGE_CONTENT_INTENT_ENABLED=false では privileged intent を要求しない", () => {
+    const { ClientMock } = setup({ fairyEnabled: false, messageContentIntentEnabled: false });
+
+    const [{ intents }] = ClientMock.mock.calls[0];
+    expect(intents).toEqual(expect.arrayContaining([1, 2, 32]));
+    expect(intents).not.toContain(4);
   });
 
   it("FAIRY_ENABLED=false では mention/reply に無応答で handler を呼ばない", async () => {
@@ -186,8 +244,170 @@ describe("index fairy message trigger integration", () => {
     expect(fairyMessageHandler).not.toHaveBeenCalled();
     expect(interaction.reply).toHaveBeenCalledWith({
       content: "fairy disabled",
-      ephemeral: true,
+      flags: [64],
     });
+  });
+
+  it("/vc-memo start は参加中の voice channel を既定の録音対象にする", async () => {
+    const { handlers, vcMemo } = setup({ fairyEnabled: false });
+    const interaction = {
+      isChatInputCommand: jest.fn(() => true),
+      isButton: jest.fn(() => false),
+      commandName: "vc-memo",
+      guild: { id: "guild_001", name: "guild" },
+      user: { id: "owner_001" },
+      member: { voice: { channel: { id: "voice_001", name: "General" } } },
+      memberPermissions: { has: jest.fn(() => true) },
+      channelId: "text_001",
+      options: {
+        getSubcommand: jest.fn(() => "start"),
+        getString: jest.fn(() => null),
+        getBoolean: jest.fn(() => true),
+      },
+      deferReply: jest.fn().mockResolvedValue(undefined),
+      editReply: jest.fn().mockResolvedValue(undefined),
+      reply: jest.fn().mockResolvedValue(undefined),
+    };
+
+    await handlers.interactionCreate(interaction);
+
+    expect(vcMemo.start).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({
+        guildId: "guild_001",
+        channelId: "voice_001",
+        ownerUserId: "owner_001",
+        consentConfirmed: true,
+        canManageGuild: true,
+      })
+    );
+    expect(interaction.editReply).toHaveBeenCalledWith({
+      content: "started",
+    });
+  });
+
+  it("/vc-memo start はサーバー管理権限がない利用者では開始しない", async () => {
+    const { handlers, vcMemo } = setup({ fairyEnabled: false });
+    const interaction = {
+      isChatInputCommand: jest.fn(() => true),
+      isButton: jest.fn(() => false),
+      commandName: "vc-memo",
+      guild: { id: "guild_001", name: "guild" },
+      user: { id: "member_001" },
+      member: { voice: { channel: { id: "voice_001", name: "General" } } },
+      memberPermissions: { has: jest.fn(() => false) },
+      channelId: "text_001",
+      options: {
+        getSubcommand: jest.fn(() => "start"),
+        getString: jest.fn(() => null),
+        getBoolean: jest.fn(() => true),
+      },
+      deferReply: jest.fn().mockResolvedValue(undefined),
+      editReply: jest.fn().mockResolvedValue(undefined),
+      reply: jest.fn().mockResolvedValue(undefined),
+    };
+
+    await handlers.interactionCreate(interaction);
+
+    expect(vcMemo.start).not.toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalledWith({
+      content: "VC Memoの開始にはサーバー管理権限が必要です。",
+    });
+  });
+
+  it("/vc-memo start は voice channel 未参加かつ channel_id 未指定なら開始しない", async () => {
+    const { handlers, vcMemo } = setup({ fairyEnabled: false });
+    const interaction = {
+      isChatInputCommand: jest.fn(() => true),
+      isButton: jest.fn(() => false),
+      commandName: "vc-memo",
+      guild: { id: "guild_001", name: "guild" },
+      user: { id: "owner_001" },
+      member: { voice: {} },
+      memberPermissions: { has: jest.fn(() => false) },
+      channelId: "text_001",
+      options: {
+        getSubcommand: jest.fn(() => "start"),
+        getString: jest.fn(() => null),
+        getBoolean: jest.fn(() => true),
+      },
+      deferReply: jest.fn().mockResolvedValue(undefined),
+      editReply: jest.fn().mockResolvedValue(undefined),
+      reply: jest.fn().mockResolvedValue(undefined),
+    };
+
+    await handlers.interactionCreate(interaction);
+
+    expect(vcMemo.start).not.toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalledWith({
+      content: "参加中のボイスチャンネルが見つかりません。VCに参加してから実行するか、channel_id を指定してください。",
+    });
+  });
+
+  it("/vc-memo start は参加していない voice channel 指定では開始しない", async () => {
+    const { handlers, vcMemo } = setup({ fairyEnabled: false });
+    const interaction = {
+      isChatInputCommand: jest.fn(() => true),
+      isButton: jest.fn(() => false),
+      commandName: "vc-memo",
+      guild: { id: "guild_001", name: "guild" },
+      user: { id: "owner_001" },
+      member: { voice: { channel: { id: "voice_001", name: "General" } } },
+      memberPermissions: { has: jest.fn(() => false) },
+      channelId: "text_001",
+      options: {
+        getSubcommand: jest.fn(() => "start"),
+        getString: jest.fn((name) => (name === "channel_id" ? "voice_999" : null)),
+        getBoolean: jest.fn(() => true),
+      },
+      deferReply: jest.fn().mockResolvedValue(undefined),
+      editReply: jest.fn().mockResolvedValue(undefined),
+      reply: jest.fn().mockResolvedValue(undefined),
+    };
+
+    await handlers.interactionCreate(interaction);
+
+    expect(vcMemo.start).not.toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalledWith({
+      content: "録音対象のボイスチャンネルに参加してから実行してください。",
+    });
+  });
+
+  it("/vc-memo stop は長文ドラフトをDiscord制限内の保存済みプレビューとして返す", async () => {
+    const longDraft = `# VCメモ ドラフト\n\n${"詳細メモ本文。".repeat(800)}`;
+    const { handlers, vcMemo } = setup({
+      fairyEnabled: false,
+      vcMemoStopResult: { sessionId: "session_001", draft: longDraft },
+    });
+    const interaction = {
+      isChatInputCommand: jest.fn(() => true),
+      isButton: jest.fn(() => false),
+      commandName: "vc-memo",
+      guild: { id: "guild_001", name: "guild" },
+      user: { id: "owner_001" },
+      memberPermissions: { has: jest.fn(() => false) },
+      options: {
+        getSubcommand: jest.fn(() => "stop"),
+        getString: jest.fn(() => null),
+      },
+      deferReply: jest.fn().mockResolvedValue(undefined),
+      editReply: jest.fn().mockResolvedValue(undefined),
+      reply: jest.fn().mockResolvedValue(undefined),
+    };
+
+    await handlers.interactionCreate(interaction);
+
+    expect(vcMemo.getActiveSession).toHaveBeenCalledWith("guild_001");
+    expect(vcMemo.stop).toHaveBeenCalledWith("session_001", {
+      userId: "owner_001",
+      canManageGuild: false,
+    });
+    const [{ content, flags }] = interaction.editReply.mock.calls[0];
+    expect(flags).toBeUndefined();
+    expect(content.length).toBeLessThanOrEqual(2000);
+    expect(content).toContain("プレビュー");
+    expect(content).toMatch(/全文.*保存済み/);
+    expect(content).toContain("```");
   });
 
   it("reply trigger で antecedent resolver の結果を fairyMessageHandler へ渡す", async () => {

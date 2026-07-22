@@ -412,6 +412,8 @@ const createImageGenerationService = ({
     return false;
   };
 
+  const releaseRateLease = (requestId) => rateLeases.delete(requestId);
+
   const handleQueuedJobRejected = (requestId, error) => {
     queuedJobs.delete(requestId);
     const code = error && error.code ? error.code : "queue_rejected";
@@ -452,6 +454,7 @@ const createImageGenerationService = ({
     }
 
     if (result && result.success && result.image_base64) {
+      releaseRateLease(requestId);
       stateStore.markCompleted(requestId, { now: now() });
       return {
         action: "completed",
@@ -468,6 +471,8 @@ const createImageGenerationService = ({
       result && result.error && result.error.category ? result.error.category : "unknown";
     if (errorCategory === "invalid_request" || errorCategory === "auth_failed" || errorCategory === "credential_error") {
       refundRateLease(requestId);
+    } else {
+      releaseRateLease(requestId);
     }
     stateStore.markFailed(requestId, { errorCategory, now: now() });
     return {

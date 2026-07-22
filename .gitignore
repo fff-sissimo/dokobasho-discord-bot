@@ -47,4 +47,5 @@ hostinger/docker-compose.yml
 # Coverage
 # =====================
 discord-bot/coverage/
+discord-bot/.cache/
 openclaw-api/coverage/

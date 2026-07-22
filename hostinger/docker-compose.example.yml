@@ -171,7 +171,7 @@ services:
         cd "$$appdir/discord-bot" && sh scripts/runtime-bootstrap.sh index.js
     volumes:
       - /docker/n8n/discord-bot-runtime:/opt/dokobasho
-      - ${GOOGLE_SA_KEY_FILE}:/app/keys/google-service-key.json:ro
+      - ${GOOGLE_SA_KEY_FILE:-./google-service-key.json}:/app/keys/google-service-key.json:ro
 
   discord-scheduler:
     image: node:20-alpine
@@ -238,7 +238,7 @@ services:
       start_period: 60s
     volumes:
       - /docker/n8n/discord-bot-runtime:/opt/dokobasho
-      - ${GOOGLE_SA_KEY_FILE}:/app/keys/google-service-key.json:ro
+      - ${GOOGLE_SA_KEY_FILE:-./google-service-key.json}:/app/keys/google-service-key.json:ro
 
 volumes:
   traefik_data:

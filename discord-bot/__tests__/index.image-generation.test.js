@@ -42,8 +42,9 @@ describe("index image generation integration", () => {
 
     jest.doMock("discord.js", () => ({
       Client: jest.fn(() => client),
-      GatewayIntentBits: { Guilds: 1, GuildMessages: 2, MessageContent: 4 },
+      GatewayIntentBits: { Guilds: 1, GuildMessages: 2, MessageContent: 4, GuildVoiceStates: 32 },
       Events: { ClientReady: "clientReady", InteractionCreate: "interactionCreate" },
+      MessageFlags: { Ephemeral: 64 },
     }), { virtual: true });
     jest.doMock("dotenv", () => ({ config: jest.fn(() => ({})) }), { virtual: true });
     jest.doMock("../src/config", () => ({ getBotToken: () => "token" }));

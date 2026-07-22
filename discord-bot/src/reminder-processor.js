@@ -9,18 +9,13 @@ const { MESSAGES } = require('./message-templates');
  */
 async function processReminders(discordClient) {
     logger.debug('Checking for pending reminders...');
-    
-    let reminders;
-    try {
-        reminders = await getPendingReminders();
-    } catch (error) {
-        logger.error({ err: error }, 'Error fetching pending reminders');
-        return;
-    }
+
+    const reminders = await getPendingReminders();
+    const result = { processed: reminders.length, sent: 0, failed: 0 };
 
     if (reminders.length === 0) {
         logger.debug('No reminders due.');
-        return;
+        return result;
     }
 
     logger.info(`Found ${reminders.length} reminders to process.`);
@@ -36,22 +31,22 @@ async function processReminders(discordClient) {
             const message = MESSAGES.reminders.notification(reminder.content);
             if (reminder.scope === 'user') {
                 const user = await discordClient.users.fetch(reminder.user_id);
-                if (user) await user.send(message);
-                else logger.warn({ reminderId: reminder.id, userId: reminder.user_id }, 'User not found for reminder. Skipping.');
+                if (!user) throw new Error('Discord user not found for reminder delivery.');
+                await user.send(message);
             } else if (reminder.scope === 'channel') {
                 const channel = await discordClient.channels.fetch(reminder.channel_id);
-                if (channel) await channel.send(message);
-                else logger.warn({ reminderId: reminder.id, channelId: reminder.channel_id }, 'Channel not found for reminder. Skipping.');
+                if (!channel) throw new Error('Discord channel not found for reminder delivery.');
+                await channel.send(message);
             } else if (reminder.scope === 'server') {
-                if (reminder.channel_id) {
-                    const channel = await discordClient.channels.fetch(reminder.channel_id);
-                    if (channel) await channel.send(message);
-                    else logger.warn({ reminderId: reminder.id, channelId: reminder.channel_id }, 'Channel not found for server-scoped reminder. Skipping.');
-                } else {
-                    logger.warn({ reminderId: reminder.id }, 'Server-scoped reminder has no channel to send to. Skipping.');
-                }
+                if (!reminder.channel_id) throw new Error('Server-scoped reminder has no delivery channel.');
+                const channel = await discordClient.channels.fetch(reminder.channel_id);
+                if (!channel) throw new Error('Discord channel not found for server reminder delivery.');
+                await channel.send(message);
+            } else {
+                throw new Error(`Unsupported reminder scope: ${String(reminder.scope)}`);
             }
             logger.info({ reminderId: reminder.id }, 'Sent notification.');
+            result.sent += 1;
 
             // 3. Update status after sending
             if (reminder.recurring !== 'off') {
@@ -70,6 +65,7 @@ async function processReminders(discordClient) {
                 logger.debug({ reminderId: reminder.id }, 'Marked reminder as sent.');
             }
         } catch (error) {
+            result.failed += 1;
             logger.error({ reminderId: reminder.id, err: error }, 'Failed to process reminder.');
             // Revert status to pending for retry, increment retry count
             const retryCount = parseInt(reminder.retry_count || '0', 10) + 1;
@@ -87,6 +83,8 @@ async function processReminders(discordClient) {
             });
         }
     }
+
+    return result;
 }
 
 module.exports = { processReminders };

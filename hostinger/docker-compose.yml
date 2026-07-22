@@ -93,7 +93,7 @@ services:
     restart: always
     environment:
       - APP_REPO=${APP_REPO}
-      - APP_BRANCH=${APP_BRANCH}
+      - APP_COMMIT=${APP_COMMIT:-}
       - OPENCLAW_API_KEY=${OPENCLAW_API_KEY}
       - OPENCLAW_API_HOST=0.0.0.0
       - OPENCLAW_API_PORT=8788
@@ -144,11 +144,13 @@ services:
         trap cleanup EXIT;
         mkdir -p "$$(dirname "$$appdir")";
         if [ ! -d "$$appdir/.git" ]; then
-          git clone --depth 1 --branch "$APP_BRANCH" "$APP_REPO" "$$appdir";
-        else
-          cd "$$appdir" && git fetch --depth 1 origin "$APP_BRANCH" && git reset --hard "origin/$APP_BRANCH";
+          git clone --no-checkout "$$APP_REPO" "$$appdir";
         fi;
-        cd "$$appdir" && echo "[git-sync] HEAD=$$(git rev-parse --short HEAD) branch=$APP_BRANCH";
+        case "$$APP_COMMIT" in ''|*[!0-9a-fA-F]*) echo "[git-sync] APP_COMMIT must be a full 40-character SHA" >&2; exit 1;; esac;
+        [ "$${#APP_COMMIT}" -eq 40 ] || { echo "[git-sync] APP_COMMIT must be a full 40-character SHA" >&2; exit 1; };
+        cd "$$appdir" && git fetch --depth 1 origin "$$APP_COMMIT" && git checkout --detach "$$APP_COMMIT";
+        [ "$$(git rev-parse HEAD)" = "$$APP_COMMIT" ] || { echo "[git-sync] checkout verification failed" >&2; exit 1; };
+        cd "$$appdir" && echo "[git-sync] HEAD=$$(git rev-parse HEAD)";
         trap - EXIT;
         cleanup;
         rm -rf /root/.openclaw/workspace; mkdir -p /root/.openclaw/workspace; cp -a /opt/dokobasho-openclaw/. /root/.openclaw/workspace/; cd "$$appdir/openclaw-api" && node src/server.js
@@ -165,7 +167,7 @@ services:
       - /docker/n8n/fairy-openclaw-state:/var/lib/dokobasho/fairy-openclaw-state
 
   discord-bot:
-    image: node:20-alpine
+    image: node:22-alpine
     restart: always
     depends_on:
       - n8n
@@ -188,10 +190,35 @@ services:
       - FIRST_REPLY_AI_TIMEOUT_MS=${FIRST_REPLY_AI_TIMEOUT_MS}
       - OPENAI_BASE_URL=${OPENAI_BASE_URL}
       - APP_REPO=${APP_REPO}
-      - APP_BRANCH=${APP_BRANCH}
+      - APP_COMMIT=${APP_COMMIT:-}
       - NODE_AUTH_TOKEN=${NODE_AUTH_TOKEN}
       - NOTION_TOKEN=${NOTION_TOKEN}
       - FAIRY_RUNTIME_MODE=${FAIRY_RUNTIME_MODE:-n8n}
+      - FAIRY_ENABLED=${FAIRY_ENABLED:-false}
+      - DISCORD_MESSAGE_CONTENT_INTENT_ENABLED=${DISCORD_MESSAGE_CONTENT_INTENT_ENABLED:-true}
+      - PERMANENT_MEMORY_SYNC_ENABLED=${PERMANENT_MEMORY_SYNC_ENABLED:-true}
+      - PERMANENT_MEMORY_SYNC_HOST=0.0.0.0
+      - PERMANENT_MEMORY_SYNC_PORT=${PERMANENT_MEMORY_SYNC_PORT:-8789}
+      - PERMANENT_MEMORY_SYNC_PATH=${PERMANENT_MEMORY_SYNC_PATH:-/internal/permanent-memory/sync}
+      - PERMANENT_MEMORY_READ_PATH=${PERMANENT_MEMORY_READ_PATH:-/internal/permanent-memory/read}
+      - PERMANENT_MEMORY_SYNC_TOKEN=${PERMANENT_MEMORY_SYNC_TOKEN}
+      - PERMANENT_MEMORY_SYNC_DIR=/opt/dokobasho/permanent-memory
+      - PERMANENT_MEMORY_SYNC_FILE=${PERMANENT_MEMORY_SYNC_FILE:-permanent-memory.md}
+      - PERMANENT_MEMORY_READ_MAX_CHARS=${PERMANENT_MEMORY_READ_MAX_CHARS:-8000}
+      - VC_MEMO_ENABLED=${VC_MEMO_ENABLED:-false}
+      - VC_MEMO_OPENAI_API_KEY=${VC_MEMO_OPENAI_API_KEY:-}
+      - VC_MEMO_OPENAI_BASE_URL=${VC_MEMO_OPENAI_BASE_URL:-https://api.openai.com/v1}
+      - VC_MEMO_STT_LANGUAGE=${VC_MEMO_STT_LANGUAGE:-ja}
+      - VC_MEMO_STT_MAX_WAV_BYTES=${VC_MEMO_STT_MAX_WAV_BYTES:-20971520}
+      - VC_MEMO_MAX_SESSION_BYTES=${VC_MEMO_MAX_SESSION_BYTES:-104857600}
+      - VC_MEMO_STT_TIMEOUT_MS=${VC_MEMO_STT_TIMEOUT_MS:-60000}
+      - VC_MEMO_STT_RETRIES=${VC_MEMO_STT_RETRIES:-3}
+      - VC_MEMO_SUMMARY_MODEL=${VC_MEMO_SUMMARY_MODEL:-gpt-4o-mini}
+      - VC_MEMO_SUMMARY_TIMEOUT_MS=${VC_MEMO_SUMMARY_TIMEOUT_MS:-60000}
+      - VC_MEMO_SUMMARY_MAX_CHUNK_CHARS=${VC_MEMO_SUMMARY_MAX_CHUNK_CHARS:-24000}
+      - VC_MEMO_ALLOWED_GUILD_IDS=${VC_MEMO_ALLOWED_GUILD_IDS:-}
+      - VC_MEMO_ALLOWED_CHANNEL_IDS=${VC_MEMO_ALLOWED_CHANNEL_IDS:-}
+      - VC_MEMO_CACHE_DIR=/opt/dokobasho/vc-memo
       - OPENCLAW_API_BASE_URL=${OPENCLAW_API_BASE_URL:-http://openclaw-api:8788/discord/respond}
       # OPENCLAW_API_URL is a legacy alias. Keep it unset unless an older image still requires compatibility.
       # - OPENCLAW_API_URL=${OPENCLAW_API_URL}
@@ -242,28 +269,30 @@ services:
         trap cleanup EXIT;
         mkdir -p "$$(dirname "$$appdir")";
         if [ ! -d "$$appdir/.git" ]; then
-          git clone --depth 1 --branch "$APP_BRANCH" "$APP_REPO" "$$appdir";
-        else
-          cd "$$appdir" && git fetch --depth 1 origin "$APP_BRANCH" && git reset --hard "origin/$APP_BRANCH";
+          git clone --no-checkout "$$APP_REPO" "$$appdir";
         fi;
-        cd "$$appdir" && echo "[git-sync] HEAD=$$(git rev-parse --short HEAD) branch=$APP_BRANCH";
+        case "$$APP_COMMIT" in ''|*[!0-9a-fA-F]*) echo "[git-sync] APP_COMMIT must be a full 40-character SHA" >&2; exit 1;; esac;
+        [ "$${#APP_COMMIT}" -eq 40 ] || { echo "[git-sync] APP_COMMIT must be a full 40-character SHA" >&2; exit 1; };
+        cd "$$appdir" && git fetch --depth 1 origin "$$APP_COMMIT" && git checkout --detach "$$APP_COMMIT";
+        [ "$$(git rev-parse HEAD)" = "$$APP_COMMIT" ] || { echo "[git-sync] checkout verification failed" >&2; exit 1; };
+        cd "$$appdir" && echo "[git-sync] HEAD=$$(git rev-parse HEAD)";
         trap - EXIT;
         cleanup;
         cd "$$appdir/discord-bot" && sh scripts/runtime-bootstrap.sh index.js
     volumes:
       - /docker/n8n/discord-bot-runtime:/opt/dokobasho
       - /docker/n8n/fairy-openclaw-state:/var/lib/dokobasho/fairy-openclaw-state
-      - ${GOOGLE_SA_KEY_FILE}:/app/keys/google-service-key.json:ro
+      - ${GOOGLE_SA_KEY_FILE:-./google-service-key.json}:/app/keys/google-service-key.json:ro
 
   discord-resource-service:
-    image: node:20-alpine
+    image: node:22-alpine
     restart: always
     environment:
       - SHEET_ID=${SHEET_ID}
       - GOOGLE_SA_KEY_PATH=${GOOGLE_SA_KEY_PATH}
       - DEFAULT_TZ=${DEFAULT_TZ}
       - APP_REPO=${APP_REPO}
-      - APP_BRANCH=${APP_BRANCH}
+      - APP_COMMIT=${APP_COMMIT:-}
       - NODE_AUTH_TOKEN=${NODE_AUTH_TOKEN}
       - RESOURCE_API_HOST=0.0.0.0
       - RESOURCE_API_PORT=${RESOURCE_API_PORT:-8790}
@@ -293,11 +322,13 @@ services:
         trap cleanup EXIT;
         mkdir -p "$$(dirname "$$appdir")";
         if [ ! -d "$$appdir/.git" ]; then
-          git clone --depth 1 --branch "$APP_BRANCH" "$APP_REPO" "$$appdir";
-        else
-          cd "$$appdir" && git fetch --depth 1 origin "$APP_BRANCH" && git reset --hard "origin/$APP_BRANCH";
+          git clone --no-checkout "$$APP_REPO" "$$appdir";
         fi;
-        cd "$$appdir" && echo "[git-sync] HEAD=$$(git rev-parse --short HEAD) branch=$APP_BRANCH";
+        case "$$APP_COMMIT" in ''|*[!0-9a-fA-F]*) echo "[git-sync] APP_COMMIT must be a full 40-character SHA" >&2; exit 1;; esac;
+        [ "$${#APP_COMMIT}" -eq 40 ] || { echo "[git-sync] APP_COMMIT must be a full 40-character SHA" >&2; exit 1; };
+        cd "$$appdir" && git fetch --depth 1 origin "$$APP_COMMIT" && git checkout --detach "$$APP_COMMIT";
+        [ "$$(git rev-parse HEAD)" = "$$APP_COMMIT" ] || { echo "[git-sync] checkout verification failed" >&2; exit 1; };
+        cd "$$appdir" && echo "[git-sync] HEAD=$$(git rev-parse HEAD)";
         trap - EXIT;
         cleanup;
         cd "$$appdir/discord-bot" && sh scripts/runtime-bootstrap.sh resource-server.js
@@ -309,12 +340,12 @@ services:
       start_period: 60s
     volumes:
       - /docker/n8n/discord-bot-runtime:/opt/dokobasho
-      - ${GOOGLE_SA_KEY_FILE}:/app/keys/google-service-key.json:ro
+      - ${GOOGLE_SA_KEY_FILE:-./google-service-key.json}:/app/keys/google-service-key.json:ro
     networks:
       - dokobasho-internal
 
   discord-scheduler:
-    image: node:20-alpine
+    image: node:22-alpine
     restart: always
     environment:
       - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}
@@ -335,7 +366,7 @@ services:
       - FIRST_REPLY_AI_TIMEOUT_MS=${FIRST_REPLY_AI_TIMEOUT_MS}
       - OPENAI_BASE_URL=${OPENAI_BASE_URL}
       - APP_REPO=${APP_REPO}
-      - APP_BRANCH=${APP_BRANCH}
+      - APP_COMMIT=${APP_COMMIT:-}
       - NODE_AUTH_TOKEN=${NODE_AUTH_TOKEN}
       - NOTION_TOKEN=${NOTION_TOKEN}
       - SCHEDULER_DISCORD_DELIVERY_MODE=${SCHEDULER_DISCORD_DELIVERY_MODE:-gateway}
@@ -364,11 +395,13 @@ services:
         trap cleanup EXIT;
         mkdir -p "$$(dirname "$$appdir")";
         if [ ! -d "$$appdir/.git" ]; then
-          git clone --depth 1 --branch "$APP_BRANCH" "$APP_REPO" "$$appdir";
-        else
-          cd "$$appdir" && git fetch --depth 1 origin "$APP_BRANCH" && git reset --hard "origin/$APP_BRANCH";
+          git clone --no-checkout "$$APP_REPO" "$$appdir";
         fi;
-        cd "$$appdir" && echo "[git-sync] HEAD=$$(git rev-parse --short HEAD) branch=$APP_BRANCH";
+        case "$$APP_COMMIT" in ''|*[!0-9a-fA-F]*) echo "[git-sync] APP_COMMIT must be a full 40-character SHA" >&2; exit 1;; esac;
+        [ "$${#APP_COMMIT}" -eq 40 ] || { echo "[git-sync] APP_COMMIT must be a full 40-character SHA" >&2; exit 1; };
+        cd "$$appdir" && git fetch --depth 1 origin "$$APP_COMMIT" && git checkout --detach "$$APP_COMMIT";
+        [ "$$(git rev-parse HEAD)" = "$$APP_COMMIT" ] || { echo "[git-sync] checkout verification failed" >&2; exit 1; };
+        cd "$$appdir" && echo "[git-sync] HEAD=$$(git rev-parse HEAD)";
         trap - EXIT;
         cleanup;
         cd "$$appdir/discord-bot" && sh scripts/runtime-bootstrap.sh scheduler.js
@@ -380,7 +413,7 @@ services:
       start_period: 60s
     volumes:
       - /docker/n8n/discord-bot-runtime:/opt/dokobasho
-      - ${GOOGLE_SA_KEY_FILE}:/app/keys/google-service-key.json:ro
+      - ${GOOGLE_SA_KEY_FILE:-./google-service-key.json}:/app/keys/google-service-key.json:ro
 
 volumes:
   traefik_data:

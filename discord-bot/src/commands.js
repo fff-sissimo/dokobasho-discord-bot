@@ -3,6 +3,7 @@ const { MESSAGES } = require('./message-templates');
 const remindMessages = MESSAGES.commands.remind;
 const fairyMessages = MESSAGES.commands.fairy;
 const imageMessages = MESSAGES.commands.image;
+const vcMemoMessages = MESSAGES.commands.vcMemo;
 
 const commands = [
     {
@@ -182,6 +183,60 @@ const commands = [
                     { name: 'standard', value: 'standard' },
                     { name: 'high_quality', value: 'high_quality' },
                 ],
+            },
+        ],
+    },
+    {
+        name: 'vc-memo',
+        description: vcMemoMessages.description,
+        options: [
+            {
+                name: 'start',
+                description: 'ボイスチャットで録音を始めるよ。',
+                type: 1,
+                options: [
+                    {
+                        name: 'consent',
+                        description: '参加者全員の録音同意を確認しました。',
+                        type: 5,
+                        required: true,
+                    },
+                    {
+                        name: 'guild_id',
+                        description: vcMemoMessages.options.guild_id,
+                        type: 3,
+                        required: false,
+                    },
+                    {
+                        name: 'channel_id',
+                        description: vcMemoMessages.options.channel_id,
+                        type: 3,
+                        required: false,
+                    },
+                ],
+            },
+            {
+                name: 'stop',
+                description: '録音を停止してドラフトを生成するよ。',
+                type: 1,
+            },
+            {
+                name: 'status',
+                description: '現在のセッション状態を表示するよ。',
+                type: 1,
+                options: [
+                    {
+                        name: 'session_id',
+                        description: 'セッションID',
+                        type: 3,
+                        required: false,
+                    },
+                ],
+            },
+            {
+                name: 'discard',
+                description: '現在のドラフトを破棄するよ。',
+                type: 1,
             },
         ],
     },

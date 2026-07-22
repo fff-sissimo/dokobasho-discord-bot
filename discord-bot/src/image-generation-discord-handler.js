@@ -5,6 +5,7 @@ const {
   AttachmentBuilder,
   ButtonBuilder,
   ButtonStyle,
+  MessageFlags,
 } = require("discord.js");
 const { MESSAGES } = require("./message-templates");
 
@@ -74,10 +75,10 @@ const replyEphemeral = async (interaction, content) => {
   if (!interaction || typeof interaction.reply !== "function") return null;
   if (interaction.deferred || interaction.replied) {
     return interaction.followUp
-      ? interaction.followUp({ content, ephemeral: true })
+      ? interaction.followUp({ content, flags: [MessageFlags.Ephemeral] })
       : null;
   }
-  return interaction.reply({ content, ephemeral: true });
+  return interaction.reply({ content, flags: [MessageFlags.Ephemeral] });
 };
 
 const isConfirmRejectionReason = (reason) => (
@@ -103,7 +104,16 @@ const createImageGenerationDiscordHandler = ({
   if (!service) throw new Error("service is required");
   const confirmationTimers = new Map();
   const originalMessages = new Map();
-  const terminalRequestIds = new Set();
+  const terminalRequestIds = new Map();
+  const terminalRequestIdTtlMs = 24 * 60 * 60 * 1000;
+
+  const cleanupOldTerminalIds = (now = Date.now()) => {
+    for (const [requestId, timestamp] of terminalRequestIds.entries()) {
+      if (now - timestamp > terminalRequestIdTtlMs) {
+        terminalRequestIds.delete(requestId);
+      }
+    }
+  };
 
   const handleMessage = async (message) => {
     if (!message || !message.author || message.author.bot) return { handled: false };
@@ -310,6 +320,7 @@ const createImageGenerationDiscordHandler = ({
     completionPromise
       .then((completion) => {
         const completionRequestId = completion && completion.requestId ? completion.requestId : requestId;
+        cleanupOldTerminalIds();
         if (terminalRequestIds.has(completionRequestId)) return null;
         return deliverResult({
           result: completion,
@@ -402,7 +413,8 @@ const createImageGenerationDiscordHandler = ({
 
   const cleanupTerminal = (requestId, { terminal = false } = {}) => {
     if (!requestId) return;
-    if (terminal) terminalRequestIds.add(requestId);
+    cleanupOldTerminalIds();
+    if (terminal) terminalRequestIds.set(requestId, Date.now());
     originalMessages.delete(requestId);
     clearConfirmationTimer(requestId);
   };

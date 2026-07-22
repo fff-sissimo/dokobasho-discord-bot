@@ -2,6 +2,7 @@ const logger = require('./logger');
 const { ActionRowBuilder, ButtonBuilder, ButtonStyle } = require("discord.js");
 const { v4: uuidv4 } = require('uuid');
 const chrono = require('chrono-node');
+const { editReply, ephemeralDefer } = require('./interaction-replies');
 const { 
     getSheetsClient,
     getReminderByKey,
@@ -31,7 +32,7 @@ async function generateUniqueReminderKey(scope) {
 
 // --- Command Handler Logic ---
 async function handleCommand(interaction) {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply(ephemeralDefer());
     
     try {
         await getSheetsClient(); // Check for config early
@@ -95,7 +96,7 @@ async function handleCommand(interaction) {
             }
             const newReminder = { id: uuidv4(), key, content, scope, guild_id: interaction.guild?.id, channel_id: channelId, user_id: interaction.user.id, notify_time_utc: parsedDate.toISOString(), timezone: resolvedTimezone.label, recurring, visibility, created_by: interaction.user.id, created_at: new Date().toISOString(), status: 'pending', last_sent: '', retry_count: 0, metadata: '{}' };
             await addReminder(newReminder);
-            await interaction.editReply({ content: MESSAGES.responses.created(key, displayDate), ephemeral: visibility === 'ephemeral' });
+            await interaction.editReply(editReply(MESSAGES.responses.created(key, displayDate)));
 
         } else if (subcommand === 'get') {
             await interaction.editReply({ content: MESSAGES.responses.getDisabled });
@@ -119,7 +120,7 @@ async function handleCommand(interaction) {
             }).join('\n');
             const total = filteredReminders.length;
             const displayed = Math.min(limit, total);
-            await interaction.editReply({ content: MESSAGES.responses.listHeader(scope, total, displayed, listContent), ephemeral: true });
+            await interaction.editReply(editReply(MESSAGES.responses.listHeader(scope, total, displayed, listContent)));
 
 
         } else if (subcommand === 'delete') {

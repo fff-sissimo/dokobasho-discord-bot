@@ -30,6 +30,15 @@ const getJson = async (url, headers = {}) => {
 };
 
 describe('permanent memory sync server', () => {
+  it('refuses a non-loopback listener without a sync token', async () => {
+    await expect(createPermanentMemorySyncServer({
+      outputDir: os.tmpdir(),
+      port: 0,
+      host: '0.0.0.0',
+      token: '',
+    }).start()).rejects.toThrow('token is required for non-loopback internal API listeners');
+  });
+
   it('builds markdown entry from sync payload', () => {
     const markdown = buildPermanentMemoryMarkdown({
       generated_at: '2026-02-24T12:34:56.000Z',
@@ -218,6 +227,8 @@ describe('permanent memory sync server', () => {
       outputDir: tmpDir,
       outputFile: 'permanent-memory.md',
       port: 0,
+      host: '127.0.0.1',
+      allowInsecureLoopback: true,
       readPath: '/internal/permanent-memory/read',
     }).start();
 

@@ -1,54 +1,73 @@
-const logger = require('./src/logger');
 require('dotenv').config();
+
 const cron = require('node-cron');
 const { Client, GatewayIntentBits } = require('discord.js');
+const logger = require('./src/logger');
 const { createDiscordRestDelivery } = require('./src/discord-rest-delivery');
-const { getPendingReminders, updateReminder } = require('./src/google-sheets');
-const { calculateNextDate } = require('./src/utils');
 const { processReminders } = require('./src/reminder-processor');
 const { getBotToken } = require('./src/config');
 const { writeHeartbeat } = require('./src/scheduler-heartbeat');
+const { createSingleFlightRunner } = require('./src/scheduler-runner');
 
-logger.info('Scheduler process started.');
-
-const token = getBotToken();
-const deliveryMode = String(process.env.SCHEDULER_DISCORD_DELIVERY_MODE || 'gateway').trim().toLowerCase();
-
-const runOnce = async (client) => {
-    try {
-        await processReminders(client);
-        writeHeartbeat();
-    } catch (error) {
-        const errorCode = String(error && (error.code || error.name) || 'REMINDER_PROCESS_FAILED')
-            .replace(/[^A-Za-z0-9_.:-]+/g, '_')
-            .slice(0, 80) || 'REMINDER_PROCESS_FAILED';
-        logger.error({ error_code: errorCode }, '[scheduler] Failed to process reminders');
-    }
+const scheduleReminderProcessing = (
+  client,
+  {
+    cronImpl = cron,
+    processRemindersImpl = processReminders,
+    writeHeartbeatImpl = writeHeartbeat,
+    loggerImpl = logger,
+  } = {}
+) => {
+  const runOnce = createSingleFlightRunner({
+    run: () => processRemindersImpl(client),
+    writeHeartbeat: writeHeartbeatImpl,
+    logger: loggerImpl,
+  });
+  const task = cronImpl.schedule('* * * * *', () => void runOnce());
+  loggerImpl.info('Cron job scheduled to run every minute.');
+  return { runOnce, task };
 };
 
-const scheduleReminderProcessing = (client) => {
-    writeHeartbeat();
-    cron.schedule('* * * * *', () => runOnce(client));
-    logger.info('Cron job scheduled to run every minute.');
+const startScheduler = ({
+  env = process.env,
+  getBotTokenImpl = getBotToken,
+  createRestDeliveryImpl = createDiscordRestDelivery,
+  ClientImpl = Client,
+  scheduleImpl = scheduleReminderProcessing,
+  loggerImpl = logger,
+} = {}) => {
+  loggerImpl.info('Scheduler process started.');
+  const token = getBotTokenImpl();
+  const deliveryMode = String(env.SCHEDULER_DISCORD_DELIVERY_MODE || 'gateway').trim().toLowerCase();
+
+  if (deliveryMode === 'rest') {
+    const client = createRestDeliveryImpl({
+      token,
+      apiBaseUrl: env.DISCORD_API_BASE_URL,
+    });
+    loggerImpl.info('[scheduler] Using Discord REST delivery mode; Gateway login is disabled.');
+    const scheduled = scheduleImpl(client);
+    return { mode: 'rest', client, ...scheduled };
+  }
+
+  const client = new ClientImpl({ intents: [GatewayIntentBits.Guilds] });
+  client.once('ready', () => {
+    loggerImpl.info(`Scheduler logged in as ${client.user.tag}`);
+    scheduleImpl(client);
+  });
+
+  client.login(token).catch((error) => {
+    loggerImpl.error({ err: error }, 'Scheduler failed to log in');
+    process.exitCode = 1;
+  });
+  return { mode: 'gateway', client };
 };
 
-if (deliveryMode === 'rest') {
-    const client = createDiscordRestDelivery({
-        token,
-        apiBaseUrl: process.env.DISCORD_API_BASE_URL,
-    });
-    logger.info('[scheduler] Using Discord REST delivery mode; Gateway login is disabled.');
-    scheduleReminderProcessing(client);
-} else {
-    const client = new Client({ intents: [GatewayIntentBits.Guilds] });
-
-    client.once('ready', () => {
-        logger.info(`Scheduler logged in as ${client.user.tag}`);
-        scheduleReminderProcessing(client);
-    });
-
-    client.login(token).catch(err => {
-        logger.error('Scheduler failed to log in:', err);
-        process.exit(1);
-    });
+if (require.main === module) {
+  startScheduler();
 }
+
+module.exports = {
+  scheduleReminderProcessing,
+  startScheduler,
+};

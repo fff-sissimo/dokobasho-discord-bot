@@ -24,6 +24,7 @@ Discord上で動作する多機能ボット。リマインダー機能と、停�
     npm install
     ```
     private package は runtime dependency ではありません。`NODE_AUTH_TOKEN` が未設定または無効でも bot は起動できます。
+    Node.js は `22.12.0` 以上の22系を使用してください（`.nvmrc` を正本とします）。
 
 3.  **環境変数を設定:**
     `discord-bot` ディレクトリにある `.env_example` をコピーして `.env` ファイルを作成します。
@@ -62,6 +63,7 @@ Discord上で動作する多機能ボット。リマインダー機能と、停�
     - `FAIRY_CONTEXT_AROUND_LIMIT`: (任意) Discord URL や reply 参照 message 周辺を取得する件数。未指定時 `50`。
     - `FAIRY_CONTEXT_MAX_FETCH_BATCHES`: (任意) 通常履歴をさかのぼる fetch 回数。未指定時 `3`。
     - `PERMANENT_MEMORY_SYNC_ENABLED`: (任意) `true/1` で恒久記憶同期Webhook受信を有効化。未指定時 `true`。
+    - `PERMANENT_MEMORY_SYNC_HOST`: (任意) 同期Webhook待受ホスト。未指定時 `0.0.0.0`。非loopbackではtoken必須です。
     - `PERMANENT_MEMORY_SYNC_PORT`: (任意) 同期Webhook受信ポート。未指定時 `8789`。
     - `PERMANENT_MEMORY_SYNC_PATH`: (任意) 同期Webhook受信パス。未指定時 `/internal/permanent-memory/sync`。
     - `PERMANENT_MEMORY_READ_PATH`: (任意) 恒久記憶Markdown読取パス。未指定時 `/internal/permanent-memory/read`。
@@ -73,6 +75,7 @@ Discord上で動作する多機能ボット。リマインダー機能と、停�
     - `RESOURCE_API_PORT`: (任意) Hermes連携用 reminder 内部APIの待受ポート。未指定時 `8790`。
     - `RESOURCE_API_PATH_PREFIX`: (任意) reminder 内部APIのpath prefix。未指定時 `/internal/remind`。
     - `RESOURCE_API_TOKEN`: (推奨) Hermes plugin から `x-resource-api-token` で送る共有トークン。
+    - `INTERNAL_API_ALLOW_INSECURE_LOOPBACK`: tokenなしでloopbackへ待ち受けるローカル開発時だけ `true`。非loopbackではtokenが常に必須です。
     - `SCHEDULER_DISCORD_DELIVERY_MODE`: (任意) `gateway` または `rest`。Hermes Gateway一本化時は `rest` を使い、schedulerのDiscord Gateway loginを止めます。
     - `DISCORD_API_BASE_URL`: (任意) Discord REST API base URL。未指定時 `https://discord.com/api/v10`。
     - `DOKOBASHO_IMAGE_ENABLED`: 画像生成runtimeの明示enable。未指定/defaultは `false`。初回E2E時だけ `true` にしてください。
@@ -92,6 +95,13 @@ Discord上で動作する多機能ボット。リマインダー機能と、停�
     - `DOKOBASHO_IMAGE_GUILD_CONCURRENCY`: サーバー単位同時実行数。未指定時 `2`。
     - `DOKOBASHO_IMAGE_GUILD_QUEUE_SIZE`: サーバー単位queue上限。未指定時 `5`。
     - `DOKOBASHO_IMAGE_QUEUE_TTL_SECONDS`: queue待ち期限。未指定時 `900`。
+    - `VC_MEMO_ENABLED`: `/vc-memo` の有効化。既定は `false`。
+    - `VC_MEMO_CACHE_DIR`: 音声、全文文字起こし、ドラフトの永続保存先。Docker既定は `/opt/dokobasho/vc-memo`。
+    - `VC_MEMO_ALLOWED_GUILD_IDS` / `VC_MEMO_ALLOWED_CHANNEL_IDS`: `VC_MEMO_ENABLED=true` の場合は必須。録音を許可するサーバー/VCをカンマ区切りで指定します。
+    - `VC_MEMO_MAX_SESSION_BYTES`: (任意) 1セッションあたりのPCM保存上限bytes。未指定時は `104857600`。
+    - `VC_MEMO_STT_TIMEOUT_MS` / `VC_MEMO_STT_RETRIES`: STTのtimeoutと再試行回数。
+    - `VC_MEMO_SUMMARY_TIMEOUT_MS` / `VC_MEMO_SUMMARY_MAX_CHUNK_CHARS`: 要約timeoutと長文分割サイズ。
+    - `DISCORD_MESSAGE_CONTENT_INTENT_ENABLED`: Message Content Intentを要求するか。既定は `true`。
 
 4.  **Google Service Account と Google Sheets API の設定:**
     - Google Cloud Platformでプロジェクトを作成し、Google Sheets APIを有効にします。
@@ -133,6 +143,11 @@ Discord上で動作する多機能ボット。リマインダー機能と、停�
     npm test
     ```
 
+-   **統合チェック:**
+    ```bash
+    npm run check
+    ```
+
 ### 画像生成の運用メモ
 
 - `/image` コマンド登録後に使えます。初回E2Eでは `DOKOBASHO_IMAGE_ENABLED=true`、`DOKOBASHO_IMAGE_WEBHOOK_TOKEN`、`DOKOBASHO_IMAGE_ALLOWED_CHANNEL_IDS` の指定が必須です。
@@ -172,6 +187,10 @@ Discord上で動作する多機能ボット。リマインダー機能と、停�
     ```bash
     docker compose down -v
     ```
+
+-   **Hostingerのソース固定:**
+    Hostinger構成では `APP_COMMIT` にデプロイ対象の完全な40桁commit SHAを設定してください。
+    branch名や可変HEADは受け付けず、checkout後のHEAD一致検証に失敗するとコンテナは起動しません。
 
 -   **Googleサービスアカウント鍵のマウント:**
     `GOOGLE_SA_KEY_PATH` を使う場合、ホストの鍵ファイルをコンテナにマウントします。

@@ -104,7 +104,10 @@ describe('image-generation-state', () => {
     store.createConfirmation(baseConfirmation);
 
     current = Date.parse('2026-05-25T00:03:01Z');
-    const result = store.claimConfirming('req-1', '2026-05-25T00:03:01Z');
+    const result = store.claimConfirming('req-1', {
+      userId: 'user-1',
+      now: Date.parse('2026-05-25T00:03:01Z'),
+    });
     const record = store.getRecord('req-1');
 
     expect(result).toEqual({ ok: false, reason: 'expired' });
